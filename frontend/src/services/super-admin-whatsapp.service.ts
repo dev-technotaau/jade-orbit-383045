@@ -43,8 +43,7 @@ import type {
   WaSuppression,
   WaSegment,
   WaConversion,
-  WaConversionSummary,
-  WaPlatformContext,
+  WaConversionSummary,
 } from '@/types/whatsapp';
 
 export interface WaConversationFilters {
@@ -827,13 +826,7 @@ export const superAdminWhatsappService = {
   async getConversionSummary(): Promise<ApiResponse<WaConversionSummary>> {
     const res = await api.get(API.SUPER_ADMIN.WA_ANALYTICS_CONVERSIONS);
     return res.data;
-  },
-
-  // ── Contact platform context (cross-references HireAdda user data) ──
-  async getPlatformContext(id: string): Promise<ApiResponse<WaPlatformContext>> {
-    const res = await api.get(API.SUPER_ADMIN.WA_PLATFORM_CONTEXT(id));
-    return res.data;
-  },
+  },
 };
 
 /**

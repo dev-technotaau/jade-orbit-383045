@@ -10,7 +10,6 @@ import {
   Check,
   AlertCircle,
   MessageCircle,
-  BadgeCheck,
   Ban,
   Plus,
   Smile,
@@ -72,11 +71,21 @@ import {
   ensureNotificationPermission,
   notifyInbound,
 } from '@/components/super-admin/whatsapp/wa-notify';
-import { useAuthStore } from '@/store/auth.store';
 
 type StatusFilter = 'all' | WaConversationStatus;
 type AssigneeFilter = 'all' | 'me' | 'unassigned';
-type PlatformFilter = 'all' | 'on' | 'off';
+
+/**
+ * Who "me" is.
+ *
+ * There are no user accounts — one shared password gates the module — so
+ * `WaConversation.assignedTo` is a free-text operator label rather than a user
+ * id. This MUST match the backend's `APP_ACTOR.id`
+ * (middleware/app-password.ts), which defaults to 'operator' and is overridden
+ * by the OPERATOR_LABEL env var. If the two drift, "Assigned to me" silently
+ * matches nothing.
+ */
+const OPERATOR = process.env.NEXT_PUBLIC_OPERATOR_LABEL || 'operator';
 
 const EMOJIS = [
   '😀',
@@ -493,8 +502,9 @@ function ConversationRow({
         onClick={onClick}
         className="flex min-w-0 flex-1 items-center gap-3 py-3 text-left"
       >
+        {/* No `src` — the avatar came from the linked platform User, a relation
+            removed with the in-platform contacts feature. Falls back to initials. */}
         <Avatar
-          src={conv.contact.user?.avatar}
           firstName={avatarNames(conv.contact).first}
           lastName={avatarNames(conv.contact).last}
           alt={displayName(conv.contact)}
@@ -510,13 +520,6 @@ function ConversationRow({
             >
               {displayName(conv.contact)}
             </span>
-            {conv.contact.userId && (
-              <BadgeCheck
-                className="h-3.5 w-3.5 shrink-0 text-[var(--primary)]"
-                aria-label="On-platform user"
-                role="img"
-              />
-            )}
             {conv.contact.isBlocked && (
               <Ban
                 className="h-3.5 w-3.5 shrink-0 text-[var(--error)]"
@@ -560,7 +563,6 @@ function ConversationRow({
 export default function SuperAdminWhatsappInboxPage() {
   const qc = useQueryClient();
   const { socket, emit } = useSocket();
-  const user = useAuthStore((s) => s.user);
   // Persisted across reloads (per device): SSR snapshot is null (matches
   // hydration), then reconciles to the stored id, reopening the last thread.
   const selectedId = useSyncExternalStore(subscribeOpenConv, getOpenConv, () => null);
@@ -578,7 +580,6 @@ export default function SuperAdminWhatsappInboxPage() {
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [assigneeFilter, setAssigneeFilter] = useState<AssigneeFilter>('all');
-  const [platformFilter, setPlatformFilter] = useState<PlatformFilter>('all');
   const [searchMessages, setSearchMessages] = useState(false);
   const [includeArchived, setIncludeArchived] = useState(false);
   const [draft, setDraft] = useState('');
@@ -671,10 +672,10 @@ export default function SuperAdminWhatsappInboxPage() {
     ensureNotificationPermission();
   }, []);
 
-  // "Assigned to me" maps to the current user's id; All / Unassigned send no param.
-  const assignedToParam = assigneeFilter === 'me' ? (user?.id ?? undefined) : undefined;
-  const onPlatformParam =
-    platformFilter === 'on' ? true : platformFilter === 'off' ? false : undefined;
+  // "Assigned to me" maps to the operator label. With a single shared password
+  // there is only one operator, so `assignedTo` is a free-text label rather than
+  // a user id — see the WaConversation.assignedTo note in schema.prisma.
+  const assignedToParam = assigneeFilter === 'me' ? OPERATOR : undefined;
   const statusParam = statusFilter === 'all' ? undefined : statusFilter;
 
   const convQuery = useQuery({
@@ -685,7 +686,6 @@ export default function SuperAdminWhatsappInboxPage() {
         unreadOnly,
         status: statusParam,
         assignedTo: assignedToParam,
-        onPlatform: onPlatformParam,
         searchMessages,
         includeArchived,
       },
@@ -696,7 +696,6 @@ export default function SuperAdminWhatsappInboxPage() {
         unread: unreadOnly,
         status: statusParam,
         assignedTo: assignedToParam,
-        onPlatform: onPlatformParam,
         searchMessages,
         includeArchived,
         page: 1,
@@ -709,7 +708,7 @@ export default function SuperAdminWhatsappInboxPage() {
   // filter/search) changes. Render-time adjustment to avoid an effect cascade.
   const [convPageKey, setConvPageKey] = useState<string | undefined>(undefined);
   const firstPageKey = convQuery.dataUpdatedAt
-    ? `${debouncedSearch}|${unreadOnly}|${statusParam}|${assignedToParam}|${onPlatformParam}|${searchMessages}|${includeArchived}`
+    ? `${debouncedSearch}|${unreadOnly}|${statusParam}|${assignedToParam}|${searchMessages}|${includeArchived}`
     : undefined;
   if (firstPageKey !== convPageKey) {
     setConvPageKey(firstPageKey);
@@ -745,7 +744,6 @@ export default function SuperAdminWhatsappInboxPage() {
         unread: unreadOnly,
         status: statusParam,
         assignedTo: assignedToParam,
-        onPlatform: onPlatformParam,
         searchMessages,
         includeArchived,
         page: next,
@@ -1110,7 +1108,7 @@ export default function SuperAdminWhatsappInboxPage() {
 
   const workflowMut = useMutation({
     mutationFn: (vars: { type: 'assign' } | { type: 'status'; status: 'OPEN' | 'RESOLVED' }) => {
-      if (vars.type === 'assign') return svc.assign(selectedId as string, user?.id ?? null);
+      if (vars.type === 'assign') return svc.assign(selectedId as string, OPERATOR);
       return svc.setStatus(selectedId as string, vars.status);
     },
     onSuccess: () => {
@@ -1224,7 +1222,6 @@ export default function SuperAdminWhatsappInboxPage() {
     unreadOnly,
     status: statusParam,
     assignedTo: assignedToParam,
-    onPlatform: onPlatformParam,
     searchMessages,
     includeArchived,
   };
@@ -1383,17 +1380,6 @@ export default function SuperAdminWhatsappInboxPage() {
                   { value: 'unassigned', label: 'Unassigned' },
                 ]}
               />
-              <Select
-                size="sm"
-                clearable={false}
-                value={platformFilter}
-                onChange={(v) => setPlatformFilter(v as PlatformFilter)}
-                options={[
-                  { value: 'all', label: 'All users' },
-                  { value: 'on', label: 'On-platform' },
-                  { value: 'off', label: 'Off-platform' },
-                ]}
-              />
             </div>
           </div>
           {/* Persistent select-all (page) toggle so a selection can be started. */}
@@ -1500,7 +1486,6 @@ export default function SuperAdminWhatsappInboxPage() {
                     <ChevronLeft className="h-5 w-5" />
                   </button>
                   <Avatar
-                    src={selected.contact.user?.avatar}
                     firstName={avatarNames(selected.contact).first}
                     lastName={avatarNames(selected.contact).last}
                     alt={displayName(selected.contact)}
@@ -1511,13 +1496,6 @@ export default function SuperAdminWhatsappInboxPage() {
                       <span className="truncate font-semibold text-[var(--text)]">
                         {displayName(selected.contact)}
                       </span>
-                      {selected.contact.userId && (
-                        <BadgeCheck
-                          className="h-4 w-4 text-[var(--primary)]"
-                          aria-label="On-platform user"
-                          role="img"
-                        />
-                      )}
                       {selectedSnoozed && (
                         <Tooltip content={`Snoozed until ${fmtTime(selected.snoozedUntil)}`}>
                           <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">
@@ -1542,7 +1520,6 @@ export default function SuperAdminWhatsappInboxPage() {
                     </div>
                     <p className="text-xs text-[var(--text-muted)]">
                       {selected.contact.phone}
-                      {selected.contact.userId ? ' · on-platform' : ' · off-platform'}
                       {selected.contact.optInStatus === 'OPTED_OUT' && ' · opted out'}
                     </p>
                     {selected.labels?.length > 0 && (

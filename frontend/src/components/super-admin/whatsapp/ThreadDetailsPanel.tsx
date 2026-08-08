@@ -10,12 +10,7 @@ import {
   StickyNote,
   Trash2,
   UserCircle2,
-  ExternalLink,
   Images,
-  Mail,
-  Briefcase,
-  CreditCard,
-  Gauge,
 } from 'lucide-react';
 import Link from 'next/link';
 import Input from '@/components/ui/Input';
@@ -25,9 +20,8 @@ import Select from '@/components/ui/Select';
 import Badge from '@/components/ui/Badge';
 import { showToast } from '@/components/ui/Toast';
 import { cn } from '@/lib/utils';
-import { ROUTES } from '@/constants/routes';
 import { superAdminWhatsappService as svc } from '@/services/super-admin-whatsapp.service';
-import type { WaAgent, WaConversation, WaPlatformContext } from '@/types/whatsapp';
+import type { WaAgent, WaConversation } from '@/types/whatsapp';
 import type { ApiError } from '@/types/api';
 import ScheduledMessagesPanel from './ScheduledMessagesPanel';
 
@@ -263,149 +257,6 @@ function StatusPill({ status }: { status: string }) {
   );
 }
 
-/**
- * On-platform user reference (Platform 360). Fetches and embeds the real
- * HireAdda context for the contact's linked user: identity, recent
- * applications, plan and profile completeness — plus the external profile link.
- */
-function PlatformPanel({ userId, contactId }: { userId: string; contactId: string }) {
-  const ctxQuery = useQuery({
-    queryKey: ['wa-platform-context', contactId],
-    queryFn: () => svc.getPlatformContext(contactId),
-    enabled: !!userId,
-  });
-  const ctx: WaPlatformContext | undefined = ctxQuery.data?.data;
-  const platformUser = ctx?.user ?? null;
-  const applications = ctx?.applications ?? [];
-  const plan = ctx?.plan ?? null;
-  const completeness = ctx?.profileCompleteness;
-
-  return (
-    <div>
-      <p className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-[var(--text-muted)]">
-        <UserCircle2 className="h-3.5 w-3.5" /> On-platform user
-      </p>
-      <div className="space-y-2.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-2">
-        <Badge variant="info" size="sm">
-          Verified user
-        </Badge>
-
-        {ctxQuery.isLoading && (
-          <p className="text-[11px] text-[var(--text-muted)]">Loading platform context…</p>
-        )}
-        {ctxQuery.isError && (
-          <p className="text-[11px] text-[var(--error)]">Could not load platform context.</p>
-        )}
-
-        {/* Identity */}
-        {platformUser ? (
-          <div className="space-y-0.5">
-            <p className="truncate text-[12px] font-semibold text-[var(--text)]">
-              {platformUser.name || '—'}
-            </p>
-            {platformUser.email && (
-              <p className="flex items-center gap-1 truncate text-[11px] text-[var(--text-muted)]">
-                <Mail className="h-3 w-3 shrink-0" /> {platformUser.email}
-              </p>
-            )}
-            {platformUser.role && (
-              <p className="text-[10px] font-medium tracking-wide text-[var(--text-muted)] uppercase">
-                {platformUser.role}
-              </p>
-            )}
-          </div>
-        ) : (
-          !ctxQuery.isLoading &&
-          !ctxQuery.isError && (
-            <p className="truncate font-mono text-[11px] text-[var(--text-muted)]">{userId}</p>
-          )
-        )}
-
-        {/* Plan */}
-        {plan && (
-          <div className="border-t border-[var(--border)] pt-2">
-            <p className="mb-1 flex items-center gap-1 text-[10px] font-semibold tracking-wide text-[var(--text-muted)] uppercase">
-              <CreditCard className="h-3 w-3" /> Plan
-            </p>
-            <div className="flex items-center justify-between gap-2">
-              <span className="truncate text-[11px] font-medium text-[var(--text)]">
-                {plan.name}
-              </span>
-              <StatusPill status={plan.status} />
-            </div>
-            {plan.currentEnd && (
-              <p className="mt-0.5 text-[10px] text-[var(--text-muted)]">
-                Renews/ends {fmtDateTime(plan.currentEnd)}
-              </p>
-            )}
-          </div>
-        )}
-
-        {/* Profile completeness */}
-        {typeof completeness === 'number' && (
-          <div className="border-t border-[var(--border)] pt-2">
-            <p className="mb-1 flex items-center gap-1 text-[10px] font-semibold tracking-wide text-[var(--text-muted)] uppercase">
-              <Gauge className="h-3 w-3" /> Profile completeness
-            </p>
-            <div className="flex items-center gap-2">
-              <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-[var(--bg)]">
-                <div
-                  className="h-full rounded-full bg-[var(--primary)]"
-                  style={{ width: `${Math.max(0, Math.min(100, completeness))}%` }}
-                />
-              </div>
-              <span className="shrink-0 text-[10px] font-semibold text-[var(--text)]">
-                {Math.round(completeness)}%
-              </span>
-            </div>
-          </div>
-        )}
-
-        {/* Recent applications */}
-        {applications.length > 0 && (
-          <div className="border-t border-[var(--border)] pt-2">
-            <p className="mb-1 flex items-center gap-1 text-[10px] font-semibold tracking-wide text-[var(--text-muted)] uppercase">
-              <Briefcase className="h-3 w-3" /> Recent applications
-            </p>
-            <ul className="space-y-1.5">
-              {applications.map((app) => (
-                <li key={app.id} className="rounded-md bg-[var(--bg)] px-2 py-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="truncate text-[11px] font-medium text-[var(--text)]">
-                      {app.jobTitle}
-                    </span>
-                    <StatusPill status={app.status} />
-                  </div>
-                  <p className="mt-0.5 text-[10px] text-[var(--text-muted)]">
-                    Applied {fmtDateTime(app.appliedAt)}
-                  </p>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-
-        {!ctxQuery.isLoading &&
-          !ctxQuery.isError &&
-          !plan &&
-          applications.length === 0 &&
-          typeof completeness !== 'number' && (
-            <p className="border-t border-[var(--border)] pt-2 text-[11px] text-[var(--text-muted)]">
-              No further platform activity.
-            </p>
-          )}
-
-        <Link
-          href={ROUTES.SUPER_ADMIN.USER_DETAIL(userId)}
-          className="text-primary inline-flex items-center gap-1 text-[11px] font-medium hover:underline"
-        >
-          Open user profile <ExternalLink className="h-3 w-3" />
-        </Link>
-      </div>
-    </div>
-  );
-}
-
 /** Internal notes list + add/delete. */
 function NotesPanel({ conversationId }: { conversationId: string }) {
   const qc = useQueryClient();
@@ -619,9 +470,6 @@ export default function ThreadDetailsPanel({
           >
             <Images className="h-4 w-4" /> View shared media
           </button>
-        )}
-        {conversation.contact.userId && (
-          <PlatformPanel userId={conversation.contact.userId} contactId={conversation.contactId} />
         )}
         <NotesPanel conversationId={conversation.id} />
         <ClearChatSection conversationId={conversation.id} onCleared={onCleared} />

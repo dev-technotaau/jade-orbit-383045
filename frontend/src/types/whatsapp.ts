@@ -22,15 +22,12 @@ export interface WaContactLite {
   id: string;
   phone: string;
   name: string | null;
-  userId: string | null;
   optInStatus: WaOptInStatus;
   isBlocked: boolean;
-  /**
-   * Linked Hire Adda account's avatar — present only for on-platform contacts.
-   * (The WhatsApp Cloud API does not expose customers' WhatsApp profile photos,
-   * so this is the only real photo we can show; others fall back to initials.)
-   */
-  user?: { avatar: string | null } | null;
+  // `userId` and `user` linked a contact to a platform account, which is how
+  // the UI showed a real avatar and an "on-platform" badge. That relation was
+  // dropped from WaContact — avatars now always fall back to initials, since
+  // the WhatsApp Cloud API does not expose customers' profile photos.
 }
 
 export interface WaConversation {
@@ -588,9 +585,3 @@ export interface WaConversionSummary {
   byCampaign: Array<{ campaignId: string; count: number }>;
 }
 
-export interface WaPlatformContext {
-  user: { id: string; name: string; email: string; role: string } | null;
-  applications?: Array<{ id: string; jobTitle: string; status: string; appliedAt: string }>;
-  plan?: { name: string; status: string; currentEnd: string | null } | null;
-  profileCompleteness?: number | null;
-}
