@@ -1,14 +1,8 @@
-// Trigger CI/CD rebuild: refresh GHCR credentials after VPS reboot
-import app from './app';
-import logger from './config/logger';
-import { initTelemetry } from './config/telemetry';
-import { initializeServices, shutdownServices } from './config/service-init';
-import { initializeWorkers, closeAllWorkers } from './jobs';
+// Trigger CI/CD rebuild: refresh GHCR credentials after VPS reboot
 import { closeAllImap } from './services/email-imap-pool';
 import { closeAllWatchers } from './services/email-idle.service';
 
 // Initialize OpenTelemetry (must be before other imports that need tracing)
-initTelemetry();
 
 const PORT: number = parseInt(process.env.PORT || '5000', 10);
 
