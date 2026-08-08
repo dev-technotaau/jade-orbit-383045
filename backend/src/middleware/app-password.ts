@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { AppError } from './error';
+import { env } from '../config/env';
 
 /**
  * Single app-level password.
@@ -28,12 +29,12 @@ const COOKIE_NAME = 'wa_unlock';
 
 /** Fixed actor. Not a user record — nothing in the schema points at it. */
 export const APP_ACTOR = {
-  id: process.env.OPERATOR_LABEL || 'operator',
+  id: env.OPERATOR_LABEL || 'operator',
   role: 'ADMIN' as const,
 };
 
 function secret(): string {
-  const s = process.env.APP_PASSWORD;
+  const s = env.APP_PASSWORD;
   if (!s) {
     // Fail closed. An unset password must never mean "everyone is allowed".
     throw new AppError('APP_PASSWORD is not configured', 500, 'APP_PASSWORD_UNSET');

@@ -1,7 +1,6 @@
 import type { Request, Response } from 'express';
 import prisma from '../config/prisma';
 import { redis } from '../config/redis';
-import elasticClient from '../config/elasticsearch';
 import {
   isBrowserRequest,
   renderHealthPage,
@@ -37,7 +36,6 @@ export const checkHealth = async (req: Request, res: Response) => {
   const checks: Record<string, string> = {
     database: 'down',
     redis: 'down',
-    elasticsearch: 'down',
   };
 
   // Check Database
@@ -57,15 +55,8 @@ export const checkHealth = async (req: Request, res: Response) => {
     // Redis is down
   }
 
-  // Check Elasticsearch
-  try {
-    const health = await elasticClient.cluster.health();
-    if (health.status !== 'red') {
-      checks.elasticsearch = 'up';
-    }
-  } catch {
-    // Elasticsearch is down
-  }
+  // Elasticsearch was checked here. This module does not search — it went with
+  // the host platform's job/candidate indexes.
 
   const allUp = !Object.values(checks).includes('down');
   const mem = process.memoryUsage();

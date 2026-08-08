@@ -240,6 +240,20 @@ const envSchema = z
     TWILIO_REGION: z.string().optional(),
     TWILIO_EDGE: z.string().optional(),
 
+    /**
+     * The single shared secret gating this module.
+     *
+     * There are no user accounts, roles or sessions — `requireAppPassword`
+     * (middleware/app-password.ts) compares this against an HMAC cookie or an
+     * X-App-Password header. Optional in the schema so local tooling and tests
+     * can boot without it, but the middleware FAILS CLOSED when it is absent:
+     * an unset password must never mean "everyone is allowed".
+     *
+     * Min length is a deliberate floor — this is the only credential there is.
+     */
+    APP_PASSWORD: z.string().min(16).optional(),
+    /** Optional label stamped onto createdBy / actorUserId. Defaults to 'operator'. */
+    OPERATOR_LABEL: z.string().optional(),
     /** Country calling code applied to numbers supplied without one. */
     DEFAULT_COUNTRY_CODE: z.string().default('91'),
     META_WHATSAPP_PHONE_ID: z.string().optional(),
