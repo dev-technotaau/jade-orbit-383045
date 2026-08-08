@@ -16,7 +16,6 @@ export {
   useUnreadCount,
   useMarkAsRead,
   useMarkAllAsRead,
-} from './use-notifications';
 export { usePopoverPlacement } from './use-popover-placement';
 export { usePresence } from './use-presence';
 export { usePresenceTracker } from './use-presence-tracker';
@@ -31,5 +30,4 @@ export {
   usePopularSearches,
   useAddToSearchHistory,
   useClearSearchHistory,
-} from './use-search';
 export { useSocket } from './use-socket';

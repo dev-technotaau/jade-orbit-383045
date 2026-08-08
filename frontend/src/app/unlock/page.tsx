@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Lock, AlertCircle } from 'lucide-react';
+import Logo from '@/components/common/Logo';
 import Input from '@/components/ui/Input';
 import Button from '@/components/ui/Button';
 import { useAuth } from '@/hooks/use-auth';
@@ -57,10 +58,12 @@ export default function UnlockPage() {
     <main className="flex min-h-screen items-center justify-center bg-[var(--bg-secondary)] px-4">
       <div className="w-full max-w-sm rounded-2xl border border-[var(--border)] bg-white p-8 shadow-sm">
         <div className="mb-6 flex flex-col items-center text-center">
-          <span className="bg-primary-light mb-3 inline-flex h-12 w-12 items-center justify-center rounded-full">
-            <Lock className="text-primary h-5 w-5" aria-hidden="true" />
+          {/* Same brand mark as the sidebar, and the same BRAND_NAME text
+              fallback when no logo file is present. */}
+          <Logo size="lg" href="" className="mb-4" />
+          <span className="bg-primary-light mb-3 inline-flex h-10 w-10 items-center justify-center rounded-full">
+            <Lock className="text-primary h-4 w-4" aria-hidden="true" />
           </span>
-          <h1 className="text-xl font-semibold text-[var(--text)]">WhatsApp Cloud Module</h1>
           <p className="mt-1 text-sm text-[var(--text-muted)]">
             Enter the app password to continue.
           </p>

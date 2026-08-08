@@ -1,8 +1,6 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import DashboardHeader from './DashboardHeader';
-import MobileSidebar from './MobileSidebar';
 import Sidebar from './Sidebar';
 
 interface DashboardLayoutProps {
@@ -10,14 +8,12 @@ interface DashboardLayoutProps {
   /**
    * Accepted and ignored.
    *
-   * The host application gated pages here on role (`['ADMIN','SUPER_ADMIN']`),
-   * MFA enrolment, PBAC permission keys and an employer plan guard. This module
-   * has no users, roles or permissions — a single app password gates everything,
-   * and it is enforced server-side by `requireAppPassword`. A client-side check
-   * would be decoration, not security.
+   * The host application gated pages here on role, MFA enrolment, PBAC keys and
+   * an employer plan guard. None of those exist: a single app password gates
+   * everything and it is enforced server-side by `requireAppPassword`. A
+   * client-side check would be decoration, not security.
    *
-   * The prop is kept so the ~16 existing call sites still compile. Remove them
-   * at leisure; passing it changes nothing.
+   * Kept so the existing call sites still compile.
    *
    * @deprecated no longer has any effect
    */
@@ -25,27 +21,25 @@ interface DashboardLayoutProps {
 }
 
 /**
- * Chrome for the operator UI: header, sidebar, content well.
+ * Chrome for the operator UI.
  *
- * Deliberately does NOT gate. If the app password is wrong or absent, every API
- * call returns 401 and the pages surface that — there is no session to check on
- * the client and nothing to redirect to.
+ * There is no header. DashboardHeader (632 lines) and MobileSidebar were removed
+ * and the parts worth keeping — logo, Online/Away toggle, lock — moved into the
+ * sidebar, which now also owns the mobile drawer and its trigger.
+ *
+ * Deliberately does NOT gate. If the password is wrong or absent every API call
+ * returns 401 and the pages surface it; there is no client session to check.
  */
 export default function DashboardLayout({ children }: DashboardLayoutProps) {
   return (
-    <div className="flex min-h-screen flex-1 flex-col bg-[var(--bg-secondary)]">
-      <DashboardHeader />
-      <MobileSidebar />
-      <div className="flex flex-1">
-        <Sidebar />
-        {/* Extra bottom padding (pb-20 at every breakpoint, set after each p-* so
-            the responsive shorthand can't override it) keeps the last row of
-            content — pagination especially — clear of the fixed BackToTop button
-            in the bottom-right corner. */}
-        <main className="flex flex-1 flex-col overflow-x-hidden p-4 pb-20 sm:p-6 sm:pb-20 lg:p-8 lg:pb-20">
-          {children}
-        </main>
-      </div>
+    <div className="flex min-h-screen bg-[var(--bg-secondary)]">
+      <Sidebar />
+      {/* pt-14 on mobile clears the fixed hamburger the sidebar renders.
+          Extra bottom padding keeps the last row — pagination especially —
+          clear of the fixed BackToTop button. */}
+      <main className="flex min-w-0 flex-1 flex-col overflow-x-hidden p-4 pt-16 pb-20 sm:p-6 sm:pb-20 lg:p-8 lg:pt-8 lg:pb-20">
+        {children}
+      </main>
     </div>
   );
 }

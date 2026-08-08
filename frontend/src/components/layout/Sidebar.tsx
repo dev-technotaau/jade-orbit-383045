@@ -12,25 +12,33 @@ import {
   BarChart3,
   Settings,
   ToggleLeft,
+  LogOut,
+  Menu,
+  X,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useSocket } from '@/hooks/use-socket';
+import { useAuth } from '@/hooks/use-auth';
+import { useUIStore } from '@/store/ui.store';
+import Logo from '@/components/common/Logo';
+import AwayToggle from '@/components/whatsapp/AwayToggle';
 import { whatsappService } from '@/services/whatsapp.service';
 
 /**
- * Operator sidebar.
+ * The only chrome.
  *
- * The host application's sidebar was 1,731 lines: nav trees per role
- * (candidate / employer / admin / super-admin), PBAC permission gating on every
- * item, feature-flag filtering, pinning, collapsible groups, billing sub-navs and
- * notification-category badges. This module has one role, one section and seven
- * pages, so the whole structure collapses to a flat list.
+ * DashboardHeader (632 lines) was removed and everything worth keeping moved
+ * here: the logo, the WhatsApp Online/Away toggle and sign-out. The rest of the
+ * header was host-application surface — candidate and employer search bars,
+ * quota bars, billing alert badges, employer quick actions, the notification
+ * bell, role labels and an account dropdown.
+ *
+ * The header also owned the mobile hamburger, so this now provides its own
+ * trigger and drawer rather than relying on a separate MobileSidebar.
  *
  * `getNavStructure`, `buildNavFilter` and `filterStructureByFeature` are kept as
- * exports because KeyboardShortcuts.tsx (the Ctrl+K palette) imports them. They
- * now return the flat list and pass everything through — the palette keeps
- * working without needing to know any of this changed.
+ * pass-through exports because KeyboardShortcuts.tsx (Ctrl+K) imports them.
  */
 
 export interface NavItem {
@@ -64,21 +72,15 @@ const NAV: NavItem[] = [
 
 /* ── Compatibility exports for the Ctrl+K palette ─────────────── */
 
-/** One structure regardless of argument — there are no roles left. */
 export function getNavStructure(_role?: string | undefined): NavStructure {
   return { top: NAV, groups: [] };
 }
-
-/** No permissions or feature flags to filter on: allow everything. */
 export function buildNavFilter(_opts?: unknown): (item: NavItem) => boolean {
   return () => true;
 }
-
-/** Pass-through. Kept so the palette's call site is untouched. */
 export function filterStructureByFeature(structure: NavStructure): NavStructure {
   return structure;
 }
-
 export function flattenNav(structure: NavStructure): NavItem[] {
   return [...structure.top, ...structure.groups.flatMap((g) => g.items)];
 }
@@ -96,8 +98,8 @@ function WhatsappUnreadBadge() {
     refetchOnWindowFocus: true,
   });
 
-  // Push beats polling: an inbound message invalidates immediately so the count
-  // is live rather than up-to-60s stale.
+  // Push beats polling: an inbound message invalidates immediately, so the count
+  // is live rather than up to 60s stale.
   useEffect(() => {
     if (!socket) return;
     const bump = () => qc.invalidateQueries({ queryKey: ['wa-inbox-unread-total'] });
@@ -119,40 +121,123 @@ function WhatsappUnreadBadge() {
   );
 }
 
-/* ── Sidebar ───────────────────────────────────────────────────── */
+/* ── Nav body, shared by the desktop rail and the mobile drawer ── */
 
-export default function Sidebar() {
+function NavList({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
 
   return (
-    <aside className="hidden w-56 shrink-0 border-r border-[var(--border)] bg-white lg:block">
-      <nav className="flex flex-col gap-0.5 p-3" aria-label="Main">
-        {NAV.map((item) => {
-          const Icon = item.icon;
-          // Exact match for the inbox so it does not stay highlighted on every
-          // /whatsapp/* child route.
-          const active =
-            item.href === '/whatsapp' ? pathname === item.href : pathname?.startsWith(item.href);
+    <nav className="flex flex-1 flex-col gap-0.5 p-3" aria-label="Main">
+      {NAV.map((item) => {
+        const Icon = item.icon;
+        // Exact match for the inbox, so it does not stay highlighted on every
+        // /whatsapp/* child route.
+        const active =
+          item.href === '/whatsapp' ? pathname === item.href : pathname?.startsWith(item.href);
 
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              aria-current={active ? 'page' : undefined}
-              className={cn(
-                'flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
-                active
-                  ? 'bg-primary-light text-primary'
-                  : 'text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text)]'
-              )}
-            >
-              <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
-              <span className="truncate">{item.label}</span>
-              {item.whatsappUnread && <WhatsappUnreadBadge />}
-            </Link>
-          );
-        })}
-      </nav>
-    </aside>
+        return (
+          <Link
+            key={item.href}
+            href={item.href}
+            onClick={onNavigate}
+            aria-current={active ? 'page' : undefined}
+            className={cn(
+              'flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+              active
+                ? 'bg-primary-light text-primary'
+                : 'text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text)]'
+            )}
+          >
+            <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
+            <span className="truncate">{item.label}</span>
+            {item.whatsappUnread && <WhatsappUnreadBadge />}
+          </Link>
+        );
+      })}
+    </nav>
+  );
+}
+
+function SidebarFooter() {
+  const { logout } = useAuth();
+
+  return (
+    <div className="mt-auto space-y-2 border-t border-[var(--border)] p-3">
+      {/* Online / Away — forces the away auto-reply regardless of business
+          hours. Lived in the header; it belongs with the operator controls. */}
+      <AwayToggle />
+      <button
+        type="button"
+        onClick={() => void logout()}
+        className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium text-[var(--text-secondary)] transition-colors hover:bg-red-50 hover:text-red-700"
+      >
+        <LogOut className="h-4 w-4 shrink-0" aria-hidden="true" />
+        Lock
+      </button>
+    </div>
+  );
+}
+
+export default function Sidebar() {
+  const pathname = usePathname();
+  const sidebarOpen = useUIStore((s) => s.sidebarOpen);
+  const setSidebarOpen = useUIStore((s) => s.setSidebarOpen);
+
+  // Close the drawer on navigation — otherwise it stays open over the new page.
+  useEffect(() => {
+    setSidebarOpen(false);
+  }, [pathname, setSidebarOpen]);
+
+  return (
+    <>
+      {/* Mobile trigger. The header used to own the hamburger. */}
+      <button
+        type="button"
+        onClick={() => setSidebarOpen(true)}
+        aria-label="Open menu"
+        className="fixed top-3 left-3 z-40 rounded-lg border border-[var(--border)] bg-white p-2 shadow-sm lg:hidden"
+      >
+        <Menu className="h-5 w-5 text-[var(--text-secondary)]" />
+      </button>
+
+      {/* Desktop rail */}
+      <aside className="hidden w-56 shrink-0 flex-col border-r border-[var(--border)] bg-white lg:flex">
+        <div className="flex h-14 items-center border-b border-[var(--border)] px-4">
+          <Logo size="sm" />
+        </div>
+        <NavList />
+        <SidebarFooter />
+      </aside>
+
+      {/* Mobile drawer */}
+      {sidebarOpen && (
+        <>
+          <div
+            className="fixed inset-0 z-40 bg-black/40 lg:hidden"
+            onClick={() => setSidebarOpen(false)}
+            aria-hidden="true"
+          />
+          <aside
+            className="fixed inset-y-0 left-0 z-50 flex w-64 flex-col bg-white shadow-xl lg:hidden"
+            role="dialog"
+            aria-label="Menu"
+          >
+            <div className="flex h-14 items-center justify-between border-b border-[var(--border)] px-4">
+              <Logo size="sm" />
+              <button
+                type="button"
+                onClick={() => setSidebarOpen(false)}
+                aria-label="Close menu"
+                className="rounded-lg p-1.5 text-[var(--text-muted)] hover:bg-[var(--bg-secondary)]"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <NavList onNavigate={() => setSidebarOpen(false)} />
+            <SidebarFooter />
+          </aside>
+        </>
+      )}
+    </>
   );
 }
