@@ -21,6 +21,7 @@ import metricsRoutes, {
   activeConnections,
 } from './routes/metrics.routes';
 import requestId from './middleware/request-id';
+import { requireAppPassword } from './middleware/app-password';
 import { isBrowserRequest, renderRootPage, renderNotFoundPage } from './utils/pretty-page';
 // Audit middleware applied per-route in admin.routes.ts
 
@@ -34,6 +35,11 @@ app.set('trust proxy', 1);
 
 import { env } from './config/env';
 
+import { xssSanitize } from './middleware/xss-sanitize';
+import { enforceContentType } from './middleware/content-type';
+import { ddosProtection } from './middleware/ddos-protection';
+import { waf } from './middleware/waf';
+import { Role } from '@prisma/client';
 
 // Security middleware
 app.use(requestId()); // Add request ID for tracing
@@ -168,8 +174,13 @@ app.get('/l/:code', async (req: Request, res: Response) => {
 // would be empty and every receipt silently ignored.
 // ----------------------------------------------------------
 // Apply rate limits
-// authLimiter is applied inside auth.routes.ts via router.use(authLimiter)
 app.use('/api', apiLimiter);
+
+// ----------------------------------------------------------
+// Razorpay webhook — MUST be mounted BEFORE the global JSON parser so
+// the raw bytes survive HMAC verification. CSRF is bypassed (signature is
+// the auth). Idempotent at the DB layer (RazorpayWebhookEvent.razorpayEventId).
+// ----------------------------------------------------------
 
 // WhatsApp outbound proxy (optional Chatwoot bridge) — own JSON parser, gated by
 // the X-Bridge-Secret header. Lets a self-hosted Chatwoot send through us.
@@ -189,6 +200,7 @@ app.use(cookieParser()); // Cookie parser must be before CSRF
 app.use(enforceContentType());
 
 // XSS sanitization (must run AFTER body parsing so req.body exists)
+app.use(xssSanitize());
 
 // Compression
 app.use(compression());
@@ -229,24 +241,25 @@ const swaggerSetup = swaggerUi.setup(swaggerSpec, {
   customSiteTitle: 'Hire Adda API Docs',
 });
 if (env.NODE_ENV === 'production') {
-  app.use(
-    '/api-docs',
-    protect,
-    restrictTo(Role.ADMIN, Role.SUPER_ADMIN),
-    swaggerUi.serve,
-    swaggerSetup
-  );
+  // Was protect + restrictTo(ADMIN, SUPER_ADMIN). With no users or roles, the
+  // single app password is the only gate there is.
+  app.use('/api-docs', requireAppPassword, swaggerUi.serve, swaggerSetup);
 } else {
   app.use('/api-docs', swaggerUi.serve, swaggerSetup);
 }
 
-// CSP violation reporting endpoint (before CSRF so browser reports aren't blocked)
+// CSP violation reporting endpoint (before CSRF so browser reports aren't blocked).
+// The host app's controller went with the rest of its reporting stack; this logs
+// and 204s, which is all a report sink has to do.
 app.post(
   '/api/csp-report',
   express.json({
     type: ['application/csp-report', 'application/json', 'application/reports+json'],
   }),
-  handleCspReport
+  (req: Request, res: Response) => {
+    logger.warn('CSP violation', { report: req.body });
+    res.status(204).end();
+  }
 );
 
 // CSRF Protection (stateless HMAC-signed token — no cookies needed for cross-origin)
@@ -339,19 +352,21 @@ app.use((req: Request, res: Response, next) => {
   next();
 });
 
-// Maintenance mode check (after health routes so probes still work)
+// Maintenance mode check (after health routes so probes still work)
+import { maintenanceCheck } from './middleware/maintenance';
+app.use('/api', maintenanceCheck());
+
+// Passport initialization
+
+// API v1 routes (versioning)
+// Mount all versioned API routes under /api/v1
 // alertmanagerRoutes is mounted earlier (before CSRF middleware) — see above.
 
-apiV1Router.use('/auth', authRoutes);
-apiV1Router.use('/candidates', candidateRoutes);
-apiV1Router.use('/notifications', notificationRoutes);
 // Mounted BEFORE `/super-admin` so its `/admin-control/*` paths are claimed
 // by the dedicated (triple-locked) router rather than falling through to the
 // general super-admin router.
-apiV1Router.use('/super-admin', superAdminRoutes);
-apiV1Router.use('/super-admin/email', superAdminEmailRoutes);
-import whatsappOptinRoutes from './routes/whatsapp-optin.routes';
-apiV1Router.use('/whatsapp-optin', whatsappOptinRoutes);
+import superAdminWhatsappRoutes from './routes/super-admin-whatsapp.routes';
+apiV1Router.use('/super-admin/whatsapp', superAdminWhatsappRoutes);
 // Company follow routes (mix of /companies/:slug/follow,
 // /candidate/following/*, /employer/followers — kept in one file
 // for cohesion, mounted at the API root).

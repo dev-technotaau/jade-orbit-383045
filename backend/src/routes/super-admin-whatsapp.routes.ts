@@ -2,13 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import rateLimit from 'express-rate-limit';
 import { RedisStore } from 'rate-limit-redis';
-import { Role } from '@prisma/client';
-import { protect } from '../middleware/auth';
-import { restrictTo } from '../middleware/rbac';
-import { requireMfaEnabled } from '../middleware/require-mfa';
-import { enforcePermissionMap } from '../middleware/require-permission';
-import { trackAdminActivity } from '../middleware/admin-activity';
-import { WHATSAPP_FALLBACK, WHATSAPP_PERMISSION_RULES } from '../config/permission-maps';
+import { requireAppPassword } from '../middleware/app-password';
 import { validate } from '../validators/validate';
 import { audit } from '../middleware/audit';
 import { redis } from '../config/redis';
@@ -24,7 +18,6 @@ import * as scheduledMsgCtrl from '../controllers/whatsapp-scheduled-message.con
 import * as suppressionCtrl from '../controllers/whatsapp-suppression.controller';
 import * as segmentCtrl from '../controllers/whatsapp-segment.controller';
 import * as conversionCtrl from '../controllers/whatsapp-conversion.controller';
-import * as platformCtxCtrl from '../controllers/whatsapp-platform-context.controller';
 import {
   waSendMessageSchema,
   waAssignSchema,
@@ -74,9 +67,10 @@ const waSendLimiter = rateLimit({
   max: 60, // 60 outbound send actions per admin per minute
   standardHeaders: true,
   legacyHeaders: false,
-  // These routes always run behind `protect` + `restrictTo`, so req.user is
-  // guaranteed — key per-admin (no IP fallback, which would need ipKeyGenerator).
-  keyGenerator: (req) => req.user?.id ?? 'anonymous',
+  // Single-tenant: every caller is the same operator, so this is effectively a
+  // global send limit rather than a per-user one. Kept keyed on the actor so
+  // the shape still works if per-operator labels are introduced later.
+  keyGenerator: (req) => req.user?.id ?? 'operator',
   store: new RedisStore({
     prefix: 'rl:wa-send:',
     sendCommand: (...args: string[]) => redis.call(args[0], ...args.slice(1)) as Promise<number>,
@@ -87,18 +81,14 @@ const waSendLimiter = rateLimit({
   },
 });
 
-// All routes: an authenticated admin with MFA, holding the WhatsApp
-// permission the specific route requires.
+// Every route below is gated by the single app password.
 //
-// The role gate admits ADMIN as well as SUPER_ADMIN; the permission map in
-// config/permission-maps.ts then decides which admins reach which routes.
-// That map is the readable statement of this domain's access model — read
-// it, not this line, to know who can send a campaign.
-router.use(protect);
-router.use(restrictTo(Role.ADMIN, Role.SUPER_ADMIN));
-router.use(requireMfaEnabled);
-router.use(trackAdminActivity);
-router.use(enforcePermissionMap(WHATSAPP_PERMISSION_RULES, WHATSAPP_FALLBACK));
+// This replaces the host application's five-layer gate (protect + restrictTo +
+// requireMfaEnabled + trackAdminActivity + enforcePermissionMap). There are no
+// users, roles or per-route permissions in this module: whoever holds the
+// password can do everything. `requireAppPassword` also sets the synthetic
+// `req.user` the controllers stamp onto createdBy / actorUserId.
+router.use(requireAppPassword);
 
 router.get('/channels', ctrl.getChannels);
 router.get('/agents', ctrl.getAgents);
@@ -515,7 +505,6 @@ router.patch('/segments/:id', segmentCtrl.update);
 router.delete('/segments/:id', segmentCtrl.remove);
 
 // ── Per-contact platform context (linked-user enrichment) ──
-router.get('/contacts/:id/platform-context', platformCtxCtrl.getContext);
 
 router.get('/media/:id', audit('WA_MEDIA_VIEW', 'WaMessage'), ctrl.getMedia);
 

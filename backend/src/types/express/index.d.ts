@@ -1,33 +1,23 @@
-import type { Role } from '@prisma/client';
-import type { EffectivePermissions } from '../../services/permission.service';
-
 declare global {
   namespace Express {
+    /**
+     * The synthetic operator set by `requireAppPassword`.
+     *
+     * This is NOT a database record — the User model and every auth concept
+     * (roles, sessions, permissions) were removed when this became a
+     * single-password module. It exists so the WhatsApp controllers can keep
+     * stamping `createdBy` / `actorUserId` / `performedBy` unchanged; those
+     * columns are plain nullable strings with no foreign key.
+     */
     interface User {
       id: string;
-      email: string;
-      role: Role;
-      firstName?: string | null;
-      lastName?: string | null;
-      isEmailVerified?: boolean;
-      mfaEnabled?: boolean;
-      sessionId?: string;
+      role: 'ADMIN';
     }
 
     interface Request {
       user?: User;
-      /**
-       * Registry key enforced by `requirePermission` on this route, stamped
-       * so the activity middleware can attribute the call to a domain
-       * without re-deriving it from the URL.
-       */
-      permissionKey?: string;
-      /**
-       * The admin's resolved grant list, memoised for the duration of the
-       * request by `requirePermission`. Lets a handler run a second,
-       * finer-grained check (e.g. per-field) without another Redis/DB hit.
-       */
-      adminPermissions?: EffectivePermissions;
     }
   }
 }
+
+export {};
