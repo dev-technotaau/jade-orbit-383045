@@ -2,7 +2,6 @@ import type { Request, Response } from 'express';
 import prisma from '../config/prisma';
 import { redis } from '../config/redis';
 import elasticClient from '../config/elasticsearch';
-import { getConsumerLag } from '../utils/kafka-lag-monitor';
 import {
   isBrowserRequest,
   renderHealthPage,
@@ -121,32 +120,8 @@ export const checkReadiness = async (req: Request, res: Response) => {
     // Redis not ready
   }
 
-  // Check Kafka consumer lag (non-blocking, informational)
-  let kafkaInfo: {
-    connected: boolean;
-    lag: Record<string, number> | null;
-    totalLag: number;
-    healthy: boolean;
-  } = {
-    connected: false,
-    lag: null,
-    totalLag: -1,
-    healthy: false,
-  };
-  try {
-    const lag = await getConsumerLag();
-    if (lag) {
-      const totalLag = Object.values(lag).reduce((sum, val) => sum + val, 0);
-      kafkaInfo = {
-        connected: true,
-        lag,
-        totalLag,
-        healthy: totalLag < 10000, // Healthy if lag < 10k messages
-      };
-    }
-  } catch {
-    // Kafka lag check is non-critical
-  }
+  // Kafka consumer-lag reporting lived here. Kafka was removed with the host
+  // platform's event backbone, so readiness is database + Redis only.
 
   const ready = dbReady && redisReady;
 
@@ -155,7 +130,6 @@ export const checkReadiness = async (req: Request, res: Response) => {
     checks: {
       database: dbReady ? 'up' : 'down',
       redis: redisReady ? 'up' : 'down',
-      kafka: kafkaInfo,
     },
     timestamp: new Date().toISOString(),
   };

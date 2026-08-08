@@ -1,7 +1,5 @@
 import logger from '../config/logger';
 import { webhookService } from './webhook.service';
-import { publishEvent } from '../kafka/producer';
-import { KafkaTopics } from '../kafka/topics';
 
 /**
  * Outbound-webhook emitter for WhatsApp domain events.
@@ -34,19 +32,14 @@ import { KafkaTopics } from '../kafka/topics';
  * @param event   Webhook event name (e.g. 'whatsapp.message.inbound').
  * @param payload Arbitrary JSON-serializable payload delivered to subscribers.
  */
-/** Maps a WA event name → its Kafka event type. The subset here flows onto the
- *  platform's Kafka backbone (BigQuery analytics, admin event viewer, replay, DLQ)
- *  alongside every other domain; events not in the map are webhook-only. */
-const WA_EVENT_TO_KAFKA: Record<string, KafkaTopics> = {
-  'whatsapp.message.inbound': KafkaTopics.WHATSAPP_MESSAGE_INBOUND,
-  'whatsapp.contact.created': KafkaTopics.WHATSAPP_CONTACT_CREATED,
-  'whatsapp.contact.opted_out': KafkaTopics.WHATSAPP_CONTACT_OPTED_OUT,
-  'whatsapp.campaign.completed': KafkaTopics.WHATSAPP_CAMPAIGN_COMPLETED,
-};
-
 export async function emitWaEvent(event: string, payload: Record<string, unknown>): Promise<void> {
-  // 1) External webhook subscribers (CRM/Zapier/no-code). Done directly here so
-  //    it stays resilient even when Kafka is disabled/unavailable.
+  // External webhook subscribers (CRM/Zapier/no-code).
+  //
+  // The host platform also fanned a subset of these onto a Kafka backbone for
+  // BigQuery analytics, an admin event viewer and replay/DLQ. That backbone was
+  // infrastructure for a multi-domain product; a standalone module deployed to
+  // Vercel/Render has no use for it, so Kafka was removed entirely and webhooks
+  // are now the single fan-out path.
   try {
     await webhookService.dispatch(event, {
       event,
@@ -56,14 +49,5 @@ export async function emitWaEvent(event: string, payload: Record<string, unknown
   } catch (error) {
     // Never let webhook fan-out break the WhatsApp flow that triggered it.
     logger.error(`Failed to emit WhatsApp webhook event "${event}"`, error);
-  }
-
-  // 2) Platform Kafka event backbone — analytics (BigQuery), the admin event
-  //    viewer, replay + DLQ, like every other domain. Fire-and-forget;
-  //    publishEvent() is a no-op when the Kafka producer isn't available.
-  const kafkaType = WA_EVENT_TO_KAFKA[event];
-  if (kafkaType) {
-    const key = String(payload.contactId ?? payload.campaignId ?? payload.conversationId ?? 'wa');
-    void publishEvent(kafkaType, key, payload).catch(() => {});
   }
 }
