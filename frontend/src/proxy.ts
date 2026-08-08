@@ -277,153 +277,60 @@ function nextWithCsp(): NextResponse {
 
   return response;
 }
-
-const publicPaths = [
-  '/',
-  '/about',
-  '/contact',
-  '/help',
-  '/privacy',
-  '/terms',
-  '/cookie-policy',
-  '/refund-policy',
-  '/accessibility',
-  '/disclaimer',
-  // Enterprise "Contact Sales" page — sits under /billing/* but is
-  // intentionally guest-accessible (B2B lead capture). The page itself
-  // renders DashboardLayout for logged-in users and PublicLayout for
-  // guests, so no proxy-level redirect is needed here.
-  '/billing/quote',
-];
-// Auth paths where authenticated users should be redirected away (no reason to visit)
-const guestOnlyPaths = ['/auth/login', '/auth/register', '/auth/forgot-password', '/portal/login'];
-// Auth paths accessible regardless of auth state (needed post-login)
-const authPaths = [...guestOnlyPaths, '/auth/reset-password', '/auth/verify-email'];
-
 /**
- * `/super-admin` admits ADMIN as well.
+ * Paths reachable without unlocking.
  *
- * The admin console is ONE set of pages shared by both roles, unlocked
- * per-item by PBAC grants (see `Sidebar.tsx#adminConsoleStructure`). An
- * admin granted `whatsapp.inbox.view` opens the real
- * `/super-admin/whatsapp` page rather than a duplicate maintained under
- * `/admin`. The path prefix is a legacy URL, not an authorisation claim.
- *
- * Actual authorisation happens in two places that this middleware cannot
- * and should not replicate:
- *   • `DashboardLayout`'s `requiredPermission` gates the render.
- *   • Every API endpoint re-checks via `requirePermission`.
- *
- * This map only answers "does this path need a login at all", which is why
- * the comment below about client-side enforcement still holds.
+ * The host application had a role-based routing table here: publicPaths,
+ * guestOnlyPaths, authPaths, a rolePrefixMap and a JWT decoder that read the
+ * role out of ha_access_token to pick a dashboard. None of that survives — there
+ * is one password and one dashboard.
  */
-const rolePrefixMap: Record<string, string[]> = {
-  '/candidate': ['CANDIDATE'],
-  '/employer': ['EMPLOYER'],
-  '/admin': ['ADMIN', 'SUPER_ADMIN'],
-  '/super-admin': ['ADMIN', 'SUPER_ADMIN'],
-};
+const OPEN_PATHS = ['/unlock'];
 
-const roleDashboards: Record<string, string> = {
-  CANDIDATE: '/candidate',
-  EMPLOYER: '/employer',
-  ADMIN: '/admin',
-  SUPER_ADMIN: '/super-admin',
-};
-
-/** Decode JWT payload without verification (Edge-compatible, no crypto needed — just for routing).
- *  Returns null if the token is malformed or expired so the middleware treats it as unauthenticated. */
-function getRoleFromToken(token: string): string | null {
-  try {
-    const parts = token.split('.');
-    if (parts.length !== 3) return null;
-    // base64url → base64 → decode
-    const payload = parts[1].replace(/-/g, '+').replace(/_/g, '/');
-    const json = atob(payload);
-    const data = JSON.parse(json) as { role?: string; exp?: number };
-    // Treat expired tokens as unauthenticated to prevent redirect loops
-    if (data.exp && data.exp * 1000 < Date.now()) return null;
-    return data.role || null;
-  } catch {
-    return null;
-  }
-}
+/** Cookie set by /api/unlock. Its presence means unlocked. */
+const UNLOCK_COOKIE = 'wa_unlock';
 
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // Allow static assets, API routes, etc.
+  // Static assets, the BFF itself and the Meta webhook never gate. /api/unlock
+  // must stay reachable while locked, or there would be no way to unlock.
   if (
     pathname.startsWith('/_next') ||
-    pathname.startsWith('/api') ||
-    pathname.startsWith('/favicon') ||
+    pathname.startsWith('/api/') ||
+    pathname === '/favicon.ico' ||
     pathname.includes('.')
   ) {
     return nextWithCsp();
   }
 
-  const token = request.cookies.get('ha_access_token')?.value;
+  const unlocked = Boolean(request.cookies.get(UNLOCK_COOKIE)?.value);
 
-  // Homepage: authenticated users go to their dashboard, guests see
-  // landing page. Exception: `?stayhome=1` is an explicit opt-out used
-  // by the "Visit Homepage" entry in the dashboard account dropdown —
-  // the user is already in their dashboard and consciously wants to
-  // see the marketing page (e.g. to grab a public link, check copy,
-  // demo to a friend). Without this bypass that link bounces straight
-  // back to the dashboard. Any OTHER navigation to `/` (typing the URL,
-  // following an external link, etc.) still redirects to the dashboard.
+  // Already unlocked and sitting on /unlock — nothing to do here.
+  if (unlocked && OPEN_PATHS.includes(pathname)) {
+    return NextResponse.redirect(new URL('/whatsapp', request.url));
+  }
+
+  if (OPEN_PATHS.includes(pathname)) {
+    return nextWithCsp();
+  }
+
+  // Everything else needs the cookie. The redirect carries the intended path so
+  // unlocking lands where the operator was headed.
+  //
+  // NOTE: this is a convenience gate, not the security boundary. The cookie's
+  // VALUE is never checked here — only its presence — because the middleware has
+  // no way to verify an HMAC without the secret. Real enforcement is
+  // requireAppPassword on the backend, which every API call passes through.
+  if (!unlocked) {
+    const url = new URL('/unlock', request.url);
+    if (pathname !== '/') url.searchParams.set('redirect', pathname);
+    return NextResponse.redirect(url);
+  }
+
+  // Root goes to the one dashboard there is.
   if (pathname === '/') {
-    if (token && request.nextUrl.searchParams.get('stayhome') !== '1') {
-      const role = getRoleFromToken(token);
-      const dashboard = role && roleDashboards[role];
-      if (dashboard) {
-        return NextResponse.redirect(new URL(dashboard, request.url));
-      }
-    }
-    return nextWithCsp();
-  }
-
-  // Other public paths (about, contact, etc.) — no auth check needed
-  if (publicPaths.includes(pathname)) {
-    return nextWithCsp();
-  }
-
-  // Auth/portal paths: redirect authenticated users away from login/register pages
-  if (authPaths.some((p) => pathname.startsWith(p))) {
-    if (token && guestOnlyPaths.some((p) => pathname.startsWith(p))) {
-      const role = getRoleFromToken(token);
-      // Only redirect if the token is valid AND not expired.
-      // If role is null (expired/invalid JWT), let the user through to the login page
-      // so they can re-authenticate. Stale cookies are cleaned up by the BFF on next getMe().
-      if (role) {
-        const dashboard = roleDashboards[role] || '/';
-        return NextResponse.redirect(new URL(dashboard, request.url));
-      }
-    }
-    return nextWithCsp();
-  }
-
-  // Protected paths: check if the path requires a specific role
-  for (const [prefix] of Object.entries(rolePrefixMap)) {
-    if (pathname.startsWith(prefix)) {
-      // If no token, redirect to login
-      if (!token) {
-        const loginUrl = new URL('/auth/login', request.url);
-        loginUrl.searchParams.set('redirect', pathname);
-        return NextResponse.redirect(loginUrl);
-      }
-      // Role-based access is enforced client-side by DashboardLayout
-      return nextWithCsp();
-    }
-  }
-
-  // Notifications page requires auth
-  if (pathname === '/notifications') {
-    if (!token) {
-      const loginUrl = new URL('/auth/login', request.url);
-      loginUrl.searchParams.set('redirect', pathname);
-      return NextResponse.redirect(loginUrl);
-    }
+    return NextResponse.redirect(new URL('/whatsapp', request.url));
   }
 
   return nextWithCsp();

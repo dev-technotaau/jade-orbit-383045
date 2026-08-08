@@ -81,23 +81,6 @@ export const initSocket = (httpServer: HttpServer) => {
       }
     });
 
-    // ── Soft locks / presence ──
-    // Opening a shared record joins that record's room so lock and presence
-    // changes arrive without polling. A room only carries lock STATE (who is
-    // here), never the record itself.
-    socket.on('lock:watch', (payload: { resourceType?: string; resourceId?: string }) => {
-      const { resourceType, resourceId } = payload ?? {};
-      if (typeof resourceType !== 'string' || typeof resourceId !== 'string') return;
-      if (!resourceType || !resourceId) return;
-      socket.join(`lock:${resourceType}:${resourceId}`);
-    });
-    socket.on('lock:unwatch', (payload: { resourceType?: string; resourceId?: string }) => {
-      const { resourceType, resourceId } = payload ?? {};
-      if (typeof resourceType !== 'string' || typeof resourceId !== 'string') return;
-      if (!resourceType || !resourceId) return;
-      socket.leave(`lock:${resourceType}:${resourceId}`);
-    });
-
     // The `email:*` and `mailbox:*` handlers (campaign reply inbox and the
     // one-on-one webmail IMAP IDLE push) went with the email system.
 
