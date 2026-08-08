@@ -1,5 +1,5 @@
 // WhatsApp text-formatting helpers (plain-string utilities). The rich renderer
-// lives in components/super-admin/whatsapp/MessageText.tsx; these are for places
+// lives in components/whatsapp/MessageText.tsx; these are for places
 // that need a plain string — compact previews and detection.
 //
 //   *bold*  _italic_  ~strikethrough~  ```monospace```  `inline code`

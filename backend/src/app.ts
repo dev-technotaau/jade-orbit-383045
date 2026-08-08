@@ -365,12 +365,12 @@ app.use('/api', maintenanceCheck());
 // Mounted BEFORE `/super-admin` so its `/admin-control/*` paths are claimed
 // by the dedicated (triple-locked) router rather than falling through to the
 // general super-admin router.
-import superAdminWhatsappRoutes from './routes/super-admin-whatsapp.routes';
+import whatsappRoutes from './routes/whatsapp.routes';
 // The only unauthenticated route: exchange the app password for a token.
 import unlockRoutes from './routes/unlock.routes';
 apiV1Router.use('/unlock', unlockRoutes);
 
-apiV1Router.use('/super-admin/whatsapp', superAdminWhatsappRoutes);
+apiV1Router.use('/whatsapp', whatsappRoutes);
 // Company follow routes (mix of /companies/:slug/follow,
 // /candidate/following/*, /employer/followers — kept in one file
 // for cohesion, mounted at the API root).

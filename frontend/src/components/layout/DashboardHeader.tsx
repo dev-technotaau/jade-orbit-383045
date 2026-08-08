@@ -20,7 +20,7 @@ import Badge from '@/components/ui/Badge';
 import Tooltip from '@/components/ui/Tooltip';
 import Logo from '@/components/common/Logo';
 import NotificationBell from '@/components/notifications/NotificationBell';
-import AwayToggle from '@/components/super-admin/whatsapp/AwayToggle';
+import AwayToggle from '@/components/whatsapp/AwayToggle';
 import QuotaBar from '@/components/billing/QuotaBar';
 import BillingAlertBadge from '@/components/billing/BillingAlertBadge';
 import EmployerQuickActions from '@/components/billing/EmployerQuickActions';
