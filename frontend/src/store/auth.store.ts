@@ -1,115 +1,92 @@
+'use client';
+
 import { create } from 'zustand';
-import type { User } from '@/types/auth';
-import { storage, STORAGE_KEYS } from '@/utils/storage';
+import { persist } from 'zustand/middleware';
 
 /**
- * Auth store — enterprise httpOnly cookie edition.
+ * Unlock state for the single app password.
  *
- * Tokens are NEVER stored in JavaScript-accessible storage.
- * They live exclusively in httpOnly cookies managed by the BFF layer.
+ * This replaces the host application's auth store (JWT access/refresh tokens,
+ * a real User record fetched from /auth/me, role, MFA state, cross-tab session
+ * sync). There are no accounts here — one shared secret gates the module.
  *
- * This store only tracks:
- *   - User object (cached in localStorage for quick hydration)
- *   - isAuthenticated flag (derived from the `ha_auth_session` cookie)
- *   - Loading/hydrated state
+ * The store keeps the ORIGINAL SHAPE on purpose. `user`, `isAuthenticated`,
+ * `login`, `logout` and `setUser` are read by ~24 files (header, sidebar,
+ * command palette, inbox); reshaping them would mean touching every one. So
+ * `user` is a fixed synthetic operator and `isAuthenticated` means "unlocked",
+ * not "signed in".
+ *
+ * Only the unlocked FLAG is persisted — never the password. The real credential
+ * lives in an httpOnly cookie set by the backend, which JavaScript cannot read.
  */
+export interface OperatorUser {
+  id: string;
+  email: string;
+  role: 'ADMIN';
+  firstName: string | null;
+  lastName: string | null;
+  avatar: string | null;
+  mobileNumber: string | null;
+  isMobileVerified: boolean;
+  isWhatsappVerified: boolean;
+  whatsappNumber?: string | null;
+  isActive: boolean;
+  isSuspended: boolean;
+  isEmailVerified: boolean;
+  mfaEnabled: boolean;
+}
+
+/**
+ * Must match the backend's APP_ACTOR (middleware/app-password.ts) — the inbox
+ * compares `assignedTo` against this id for its "Assigned to me" filter.
+ */
+export const OPERATOR: OperatorUser = {
+  id: process.env.NEXT_PUBLIC_OPERATOR_LABEL || 'operator',
+  email: 'operator@localhost',
+  role: 'ADMIN',
+  firstName: 'Operator',
+  lastName: null,
+  avatar: null,
+  mobileNumber: null,
+  isMobileVerified: false,
+  isWhatsappVerified: false,
+  isActive: true,
+  isSuspended: false,
+  isEmailVerified: true,
+  // True so the removed MFA gates never trip anything that still reads it.
+  mfaEnabled: true,
+};
 
 interface AuthState {
-  user: User | null;
+  user: OperatorUser | null;
   isAuthenticated: boolean;
   isLoading: boolean;
-  isHydrated: boolean;
-  /** Timestamp of last storeLogin() call — used to skip re-verification right after login */
-  lastLoginAt: number;
-
-  setUser: (user: User | null) => void;
-  login: (user: User) => void;
+  setUser: (user: OperatorUser | null) => void;
+  login: (user?: OperatorUser) => void;
   logout: () => void;
   setLoading: (loading: boolean) => void;
   hydrate: () => void;
 }
 
-/** Check if the non-httpOnly session indicator cookie exists */
-function hasSessionCookie(): boolean {
-  if (typeof document === 'undefined') return false;
-  return document.cookie.includes('ha_auth_session=1');
-}
-
-export const useAuthStore = create<AuthState>((set) => ({
-  user: null,
-  isAuthenticated: false,
-  isLoading: true,
-  isHydrated: false,
-  lastLoginAt: 0,
-
-  setUser: (user) => {
-    set({ user, isAuthenticated: !!user });
-    if (user) {
-      storage.set(STORAGE_KEYS.USER, user);
-    } else {
-      storage.remove(STORAGE_KEYS.USER);
-    }
-  },
-
-  login: (user) => {
-    set({
-      user,
-      isAuthenticated: true,
-      isLoading: false,
-      isHydrated: true,
-      lastLoginAt: Date.now(),
-    });
-
-    // Cache user for quick hydration
-    storage.set(STORAGE_KEYS.USER, user);
-  },
-
-  logout: () => {
-    set({
+export const useAuthStore = create<AuthState>()(
+  persist(
+    (set) => ({
       user: null,
       isAuthenticated: false,
+      // Starts false, not true: there is nothing async to wait for. A `true`
+      // here would make every consumer render a spinner forever.
       isLoading: false,
-    });
-    storage.remove(STORAGE_KEYS.USER);
-  },
 
-  setLoading: (isLoading) => set({ isLoading }),
-
-  hydrate: () => {
-    // Check the non-httpOnly session cookie to know if we're authenticated
-    const hasSession = hasSessionCookie();
-
-    if (!hasSession) {
-      // No session cookie → not authenticated. Auth state is fully
-      // determined at this point — no verification call needed.
-      storage.remove(STORAGE_KEYS.USER);
-      set({
-        user: null,
-        isAuthenticated: false,
-        isLoading: false,
-        isHydrated: true,
-      });
-      return;
+      setUser: (user) => set({ user, isAuthenticated: !!user }),
+      login: () => set({ user: OPERATOR, isAuthenticated: true, isLoading: false }),
+      logout: () => set({ user: null, isAuthenticated: false, isLoading: false }),
+      setLoading: (isLoading) => set({ isLoading }),
+      hydrate: () => set({ isLoading: false }),
+    }),
+    {
+      name: 'wa-unlock',
+      // Persist the flag only. The password itself is never held in JS.
+      partialize: (s) => ({ user: s.user, isAuthenticated: s.isAuthenticated }),
     }
-
-    // Session cookie exists → restore cached user for instant UI, but
-    // KEEP isLoading=true so React Query hooks gated on
-    // `isAuthenticated && !isLoading` don't fire optimistic requests
-    // before useAuth's effect verifies the access token via
-    // /api/auth/me. The verification path flips isLoading→false in
-    // its finally() handler (use-auth.ts).
-    //
-    // Without this gate, a stale/expired access token plus 2 frontend
-    // pods (no sticky session) causes 4 parallel queries → 4 parallel
-    // BFF refresh attempts → refresh-token rotation race → backend
-    // revokes the token family → user gets auto-logged-out mid-session.
-    const user = storage.get<User>(STORAGE_KEYS.USER);
-
-    set({
-      user,
-      isAuthenticated: true,
-      isLoading: true,
-      isHydrated: true,
-    });
-  },
-}));
+  )
+);

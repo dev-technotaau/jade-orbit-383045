@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { BACKEND_URL, BFF_SECRET } from '../auth/_lib/config';
+import { BACKEND_URL, BFF_SECRET } from '../_lib/config';
 
 /**
  * GET /api/csrf-token
