@@ -7,6 +7,5 @@ export { default as Logo } from './Logo';
 export { default as MaintenancePage } from './MaintenancePage';
 export { default as OfflineBanner } from './OfflineBanner';
 export { generateMetadata } from './SEO';
-export { default as StatsSection } from './StatsSection';
 export { default as TopLoadingBar } from './TopLoadingBar';
 export { default as WebVitals } from './WebVitals';
