@@ -1,21 +1,5 @@
 // Trigger CI/CD rebuild: refresh GHCR credentials after VPS reboot
 // Trigger CI/CD rebuild — re-run full pipeline after SiLinkedin → FaLinkedinIn fix
-import FacebookPixel from '@/components/analytics/FacebookPixel';
-import GoogleAnalytics from '@/components/analytics/GoogleAnalytics';
-import { GTMBody, GTMHead } from '@/components/analytics/GTM';
-import MicrosoftClarity from '@/components/analytics/MicrosoftClarity';
-import LinkedInInsight from '@/components/analytics/LinkedInInsight';
-import Contentsquare from '@/components/analytics/Contentsquare';
-import PinterestTag from '@/components/analytics/PinterestTag';
-import RedditPixel from '@/components/analytics/RedditPixel';
-import TwitterPixel from '@/components/analytics/TwitterPixel';
-import TikTokPixel from '@/components/analytics/TikTokPixel';
-import QuoraPixel from '@/components/analytics/QuoraPixel';
-import BingUET from '@/components/analytics/BingUET';
-import SnapPixel from '@/components/analytics/SnapPixel';
-import PostHog from '@/components/analytics/PostHog';
-import CloudflareAnalytics from '@/components/analytics/CloudflareAnalytics';
-import AdobeAnalytics from '@/components/analytics/AdobeAnalytics';
 import BackToTop from '@/components/common/BackToTop';
 import WhatsAppChannelCta from '@/components/common/WhatsAppChannelCta';
 import SmoothScroll from '@/components/common/SmoothScroll';
@@ -287,7 +271,6 @@ export default async function RootLayout({
           }}
         />
 
-        <GTMHead nonce={nonce} />
 
         {/* ── Favicons ── */}
         <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
@@ -551,7 +534,6 @@ export default async function RootLayout({
           the live viewport, so both edges stay where they should. Identical to
           `100vh` on desktop. */}
       <body className="flex min-h-dvh flex-col antialiased">
-        <GTMBody />
         {/* Skip-to-content for accessibility */}
         <a
           href="#main-content"
@@ -609,21 +591,6 @@ export default async function RootLayout({
               FacebookPixel · LinkedInInsight · PinterestTag ·
               RedditPixel · TwitterPixel · TikTokPixel · QuoraPixel ·
               BingUET · SnapPixel */}
-        <GoogleAnalytics nonce={nonce} />
-        <FacebookPixel nonce={nonce} />
-        <MicrosoftClarity nonce={nonce} />
-        <LinkedInInsight nonce={nonce} />
-        <Contentsquare nonce={nonce} />
-        <PinterestTag nonce={nonce} />
-        <RedditPixel nonce={nonce} />
-        <TwitterPixel nonce={nonce} />
-        <TikTokPixel nonce={nonce} />
-        <QuoraPixel nonce={nonce} />
-        <BingUET nonce={nonce} />
-        <SnapPixel nonce={nonce} />
-        <PostHog nonce={nonce} />
-        <CloudflareAnalytics nonce={nonce} />
-        <AdobeAnalytics nonce={nonce} />
         <BackToTop />
         {/* Mounted in the ROOT layout on purpose: it keeps its collapsed state
             across client navigation, so the 10s intro plays once per page load
