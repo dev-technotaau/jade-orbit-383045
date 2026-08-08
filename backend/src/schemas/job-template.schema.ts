@@ -1,0 +1,17 @@
+import { z } from 'zod';
+
+export const createJobTemplateSchema = z.object({
+  body: z.object({
+    name: z.string().min(1).max(100),
+    description: z.string().max(500).optional(),
+    templateData: z.record(z.string(), z.unknown()),
+  }),
+});
+
+export const updateJobTemplateSchema = z.object({
+  body: z.object({
+    name: z.string().min(1).max(100).optional(),
+    description: z.string().max(500).optional(),
+    templateData: z.record(z.string(), z.unknown()).optional(),
+  }),
+});

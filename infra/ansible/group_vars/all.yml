@@ -1,0 +1,99 @@
+# ============================================================
+# Hire Adda — Ansible Global Variables
+# ============================================================
+
+# ── Domain ──
+domain: hireadda.in
+hostname: hireadda
+
+# ── SSH ──
+ssh_port: 22
+ssh_allowed_users:
+  - deploy
+
+# ── Deploy User ──
+deploy_user: deploy
+deploy_group: deploy
+
+# ── Admin IPs (allowed to access K3s API on 6443) ──
+# Replace with your actual admin IPs
+admin_ips:
+  - 'YOUR_HOME_IP/32'
+
+# ── Timezone ──
+timezone: Asia/Kolkata
+
+# ── K3s ──
+k3s_version: 'v1.31.4+k3s1'
+k3s_disable:
+  - traefik # We use nginx-ingress instead
+  - servicelb # We use hostNetwork for ingress
+kubeconfig_mode: '644'
+
+# ── Kubernetes Namespaces ──
+k8s_namespaces:
+  - hire-adda
+  - monitoring
+  - logging
+  - argocd
+  - cert-manager
+  - ingress-nginx
+  - velero
+
+# ── System Tuning ──
+sysctl_settings:
+  # OpenSearch requirement
+  vm.max_map_count: 262144
+  # Network performance
+  net.core.somaxconn: 65535
+  net.core.netdev_max_backlog: 5000
+  net.ipv4.tcp_max_syn_backlog: 65535
+  # Required for K3s / container networking
+  net.ipv4.ip_forward: 1
+  net.bridge.bridge-nf-call-iptables: 1
+  net.bridge.bridge-nf-call-ip6tables: 1
+  # File handles
+  fs.file-max: 2097152
+  fs.inotify.max_user_instances: 8192
+  fs.inotify.max_user_watches: 524288
+  # Swap (minimize on 16GB)
+  vm.swappiness: 10
+
+# ── UFW Firewall Ports ──
+ufw_rules:
+  - { port: '{{ ssh_port }}', proto: tcp, rule: limit, comment: 'SSH (rate-limited)' }
+  - { port: 80, proto: tcp, rule: allow, comment: 'HTTP' }
+  - { port: 443, proto: tcp, rule: allow, comment: 'HTTPS' }
+  - { port: 25, proto: tcp, rule: allow, comment: 'SMTP inbound' }
+  - { port: 465, proto: tcp, rule: allow, comment: 'SMTPS' }
+  - { port: 587, proto: tcp, rule: allow, comment: 'SMTP STARTTLS' }
+  - { port: 993, proto: tcp, rule: allow, comment: 'IMAPS' }
+  - { port: 2525, proto: tcp, rule: allow, comment: 'SMTPS alt (for hosts blocking 465)' }
+
+# K3s API port — restricted to admin IPs (handled separately in playbook)
+
+# ── fail2ban ──
+fail2ban_maxretry: 5
+fail2ban_bantime: 3600
+fail2ban_findtime: 600
+
+# ── Packages ──
+base_packages:
+  - curl
+  - wget
+  - jq
+  - htop
+  - iotop
+  - ncdu
+  - unzip
+  - git
+  - apt-transport-https
+  - ca-certificates
+  - gnupg
+  - lsb-release
+  - python3-pip
+  - ufw
+  - fail2ban
+  - unattended-upgrades
+  - logrotate
+  - net-tools

@@ -1,0 +1,104 @@
+# ============================================================
+# PrometheusRule — SLI Recording Rules + Error Budget Alerts
+# Defines availability and latency SLIs, error budget tracking,
+# and multi-window burn rate alerts for the backend API.
+# ============================================================
+# SLO Target: 99.5% availability (0.5% error budget over 30 days)
+# ============================================================
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: slo-rules
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: hire-adda
+spec:
+  groups:
+    # ── Recording Rules ────────────────────────────────────────
+    - name: slo-recording-rules
+      interval: 30s
+      rules:
+        # Backend API Availability SLI (5-minute rate)
+        # Ratio of non-5xx requests to total requests
+        - record: sli:http_availability:ratio_rate5m
+          expr: |
+            1 - (
+              sum(rate(http_requests_total{namespace="hire-adda",app="backend",status=~"5.."}[5m]))
+              /
+              sum(rate(http_requests_total{namespace="hire-adda",app="backend"}[5m]))
+            )
+
+        # Backend API Availability SLI (1-hour rate — for burn rate)
+        - record: sli:http_availability:ratio_rate1h
+          expr: |
+            1 - (
+              sum(rate(http_requests_total{namespace="hire-adda",app="backend",status=~"5.."}[1h]))
+              /
+              sum(rate(http_requests_total{namespace="hire-adda",app="backend"}[1h]))
+            )
+
+        # Backend API Availability SLI (6-hour rate — for slow burn)
+        - record: sli:http_availability:ratio_rate6h
+          expr: |
+            1 - (
+              sum(rate(http_requests_total{namespace="hire-adda",app="backend",status=~"5.."}[6h]))
+              /
+              sum(rate(http_requests_total{namespace="hire-adda",app="backend"}[6h]))
+            )
+
+        # Backend API Latency SLI — ratio of requests under 500ms
+        - record: sli:http_latency:ratio_rate5m
+          expr: |
+            sum(rate(http_request_duration_seconds_bucket{namespace="hire-adda",app="backend",le="0.5"}[5m]))
+            /
+            sum(rate(http_request_duration_seconds_count{namespace="hire-adda",app="backend"}[5m]))
+
+        # Error budget remaining (30-day window, target 99.5%)
+        - record: slo:error_budget_remaining:ratio
+          expr: |
+            1 - (
+              (1 - avg_over_time(sli:http_availability:ratio_rate5m[30d]))
+              /
+              (1 - 0.995)
+            )
+
+    # ── Burn Rate Alerts ───────────────────────────────────────
+    - name: slo-burn-rate-alerts
+      rules:
+        # Fast burn: 14.4x budget consumption (burns 2% of 30-day budget in 1 hour)
+        # Uses 5m + 1h windows for fast detection with noise filtering
+        - alert: SLOBudgetBurnFast
+          expr: |
+            (1 - sli:http_availability:ratio_rate5m) > (14.4 * 0.005)
+            and
+            (1 - sli:http_availability:ratio_rate1h) > (14.4 * 0.005)
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: 'API error budget burning fast — 14.4x rate'
+            description: 'At current error rate, 30-day error budget will be exhausted in ~2 hours.'
+
+        # Slow burn: 3x budget consumption (burns 10% of 30-day budget in 1 day)
+        # Uses 1h + 6h windows for slow degradation detection
+        - alert: SLOBudgetBurnSlow
+          expr: |
+            (1 - sli:http_availability:ratio_rate1h) > (3 * 0.005)
+            and
+            (1 - sli:http_availability:ratio_rate6h) > (3 * 0.005)
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: 'API error budget burning slowly — 3x rate'
+            description: 'At current error rate, 30-day error budget will be exhausted in ~10 days.'
+
+        # Budget exhausted: error budget is at or below 0%
+        - alert: SLOBudgetExhausted
+          expr: slo:error_budget_remaining:ratio <= 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: 'API error budget exhausted'
+            description: 'The 30-day error budget for 99.5% availability SLO is fully consumed.'

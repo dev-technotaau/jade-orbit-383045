@@ -1,0 +1,19 @@
+# ============================================================
+# OpenSearch — PodDisruptionBudget
+# Ensures quorum (2/3 nodes) during voluntary disruptions
+# ============================================================
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: opensearch-pdb
+  namespace: hire-adda
+  labels:
+    app: opensearch
+    app.kubernetes.io/name: opensearch
+    app.kubernetes.io/component: search
+    app.kubernetes.io/part-of: hire-adda
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: opensearch

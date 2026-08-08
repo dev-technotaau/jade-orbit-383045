@@ -1,0 +1,46 @@
+# ============================================================
+# SealedSecret — Cloudflare API Token (DNS-01 ACME challenge)
+# ============================================================
+# Used by `letsencrypt-prod-dns` ClusterIssuer to create the
+# `_acme-challenge.<host>` TXT records that Let's Encrypt reads
+# during the DNS-01 ACME challenge.
+#
+# Token scope (from Cloudflare API token edit page):
+#   Permissions:
+#     - Zone:Zone:Read
+#     - Zone:DNS:Edit
+#   Zone Resources:
+#     - Include / Specific zone / hireadda.in
+#
+# Regenerate (e.g. after token rotation):
+#   TOKEN="cfut_..."
+#   printf "%s" "$TOKEN" | kubectl create secret generic cf-api-token-secret \
+#     --namespace=cert-manager \
+#     --from-file=api-token=/dev/stdin \
+#     --dry-run=client -o yaml \
+#   | kubeseal \
+#       --controller-name sealed-secrets \
+#       --controller-namespace kube-system \
+#       --format=yaml
+# ============================================================
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  name: cf-api-token-secret
+  namespace: cert-manager
+  labels:
+    app.kubernetes.io/name: cf-api-token-secret
+    app.kubernetes.io/component: dns-01-solver
+    app.kubernetes.io/part-of: hire-adda
+spec:
+  encryptedData:
+    api-token: AgAbTKW8M/5prPlw3Y8wNPxBrgOb/TqoG44GfNKwJPi3I3Ouh/kO53RsOrWbOFGAHCAxGW8dQ4oh5Vd7vLo6WLghaheUpVP2lnT/3oet48A1BPyd8JywCpDitxraCK7CEdXKiNXseH/DbutfWIxfTH7NV5333jv0x64ekG3r24NWXeC/aU5gO+ygzi2umzqT+MjGFQuFaltHeMMOFdvQqSei79+Wx4OQk1o7WS8cauKdxZc6bw5WCANPsle6i6kJhiO/l+e0gvuc+FKFdMkxAutzc8/Dgs7zRYVCSj2BJChYymYJ3klXhJZpFk0EyuWOXoyf2S95QFMD0yH5OJci/ZeU6aqua+ETHmPrIWgp+Z9CHFunJ+oxfHjScTh/bmtwjbIds4CP1qbCeDnidXrT7MvdMfQkmfGIGTBtAQm3aHNjaBjU/RF39uRDy9QNIgQXPTuj6fYwbD28g/gy8dppW5Z2LdAIv/Ry2RMgCOHIPNEbDeftR+SN0RmIwA8+Q6aL5eJZKbXaCFOXGzjkT82sXr+tFh4NBoFevmUexXk4z5AhMPYqdrA2hOS/nmMLLM+vQ5eLnkbAiMK6Hsejm7GbwcxsRKcroRWzyRBjoiZImjiazjUEAEAA7gebIWT4C6DRYIdx59rHZR+JAPaP6B8ukPTN74nbq4OwGtFMTikQj3AWvQ5z3Jsk0MkYpJID3RMfbVnbD9qC4bs7hbjXLpuJz+gpNbLG2cHw00QCEo3tOLsJ8zM5OphdhtPhEoynvcX5BNv2A4bF6g==
+  template:
+    metadata:
+      name: cf-api-token-secret
+      namespace: cert-manager
+      labels:
+        app.kubernetes.io/name: cf-api-token-secret
+        app.kubernetes.io/component: dns-01-solver
+        app.kubernetes.io/part-of: hire-adda
+    type: Opaque

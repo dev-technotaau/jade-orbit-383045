@@ -1,0 +1,301 @@
+# ============================================================
+# Backend API — ConfigMap (non-secret environment variables)
+# Secrets are in SealedSecrets (security/sealed-secrets/)
+# ============================================================
+# Source of truth: infra/docker/.env (production)
+# Keep in sync — run `sealed-secret-create.sh` for secrets.
+# ============================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  namespace: hire-adda
+  labels:
+    app: backend
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: hire-adda
+data:
+  # ══════════════════════════════════════════════════════════════
+  # Infrastructure Profile: All Local K8s
+  # ══════════════════════════════════════════════════════════════
+  # PostgreSQL, Redis, Kafka, OpenSearch: all local K8s
+  # ══════════════════════════════════════════════════════════════
+
+  # ── Server ──
+  NODE_ENV: 'production'
+  PORT: '5000'
+
+  # ── Database (Local K8s PostgreSQL) ──
+  # DATABASE_URL and DIRECT_URL are in backend-secrets (contain password)
+  DATABASE_POOL_SIZE: '10'
+  DATABASE_POOL_TIMEOUT: '10'
+  DATABASE_SSL_MODE: 'disable'
+
+  # ── Redis (LOCAL — Phase 2 override, shadows SealedSecret cloud values) ──
+  REDIS_HOST: 'redis'
+  REDIS_PORT: '6379'
+  REDIS_ENABLED: 'true'
+  REDIS_TLS: 'false'
+  REDIS_PASSWORD: '10e4c845b45ebeb6f2a4b31a12f82d431735eeb970b63f45d726b4f7aa6e12c6'
+  REDIS_URL: 'redis://default:10e4c845b45ebeb6f2a4b31a12f82d431735eeb970b63f45d726b4f7aa6e12c6@redis:6379'
+
+  # ── Elasticsearch/OpenSearch (K8s service DNS) ──
+  ELASTICSEARCH_URL: 'http://opensearch:9200'
+
+  # ── Kafka (Local K8s — 3-node KRaft cluster, no SASL) ──
+  KAFKA_BROKERS: 'kafka-0.kafka.hire-adda.svc.cluster.local:9092,kafka-1.kafka.hire-adda.svc.cluster.local:9092'
+  KAFKA_CLIENT_ID: 'hire-adda-api'
+
+  # ── JWT Authentication ──
+  # JWT_SECRET, JWT_REFRESH_SECRET, JWT_PRIVATE_KEY, JWT_PUBLIC_KEY are in SealedSecret
+  JWT_EXPIRES_IN: '15m'
+  JWT_REFRESH_EXPIRES_IN: '30d'
+  JWT_ALGORITHM: 'HS256'
+  COOKIE_ACCESS_MAX_AGE_DAYS: '7'
+  COOKIE_REFRESH_MAX_AGE_DAYS: '30'
+
+  # ── MFA & Security ──
+  # COOKIE_SECRET, CSRF_SECRET, BFF_SECRET are in SealedSecret
+  MFA_ISSUER: 'HireAdda'
+  MFA_ENABLED: 'true'
+  HIBP_ENABLED: 'true'
+
+  # ── Frontend URLs ──
+  FRONTEND_URL: 'https://hireadda.in'
+  CORS_ORIGIN: 'https://hireadda.in,https://www.hireadda.in'
+
+  # ── WebAuthn ──
+  WEBAUTHN_RP_ID: 'hireadda.in'
+  WEBAUTHN_RP_NAME: 'HireAdda'
+  WEBAUTHN_ORIGIN: 'https://hireadda.in'
+
+  # ── OAuth Callbacks ──
+  # GOOGLE_CLIENT_ID/SECRET, LINKEDIN_CLIENT_ID/SECRET are in SealedSecret
+  GOOGLE_CALLBACK_URL: 'https://api.hireadda.in/api/v1/auth/google/callback'
+  LINKEDIN_CALLBACK_URL: 'https://api.hireadda.in/api/v1/auth/linkedin/callback'
+
+  # ── Email (SMTP via Docker Mailserver on host) ──
+  # SMTP_USER, SMTP_PASS are in SealedSecret
+  SMTP_HOST: 'mailserver-external'
+  SMTP_PORT: '465'
+  SMTP_SECURE: 'true'
+  SMTP_FROM_NAME: 'Hire Adda'
+  EMAIL_FROM: 'noreply@hireadda.in'
+  EMAIL_REPLY_TO: 'support@hireadda.in'
+  EMAIL_MAX_SEND_PER_HOUR: '25000'
+  EMAIL_MAX_SEND_PER_DAY: '1000000'
+
+  # ── Email — bulk campaign system (super-admin) ──
+  EMAIL_CAMPAIGN_RATE_PER_SEC: '20'
+  BULLMQ_EMAIL_CAMPAIGN_CONCURRENCY: '1'
+  EMAIL_TRACKING_BASE_URL: 'https://api.hireadda.in'
+  EMAIL_BOUNCE_DOMAIN: 'bounce.hireadda.in'
+  # IMAP inbound (bounces + replies) — IMAP_USER / IMAP_PASS are in SealedSecret
+  IMAP_HOST: 'mailserver-external'
+  IMAP_PORT: '993'
+  IMAP_SECURE: 'true'
+  EMAIL_BOUNCE_MAILBOX: 'INBOX'
+  EMAIL_REPLIES_MAILBOX: 'INBOX'
+  IMAP_POLL_INTERVAL_MS: '60000'
+
+  # ── SMS & WhatsApp ──
+  # Credentials (TWILIO_ACCOUNT_SID/AUTH_TOKEN/PHONE_NUMBER/API_KEY_*,
+  # TWILIO_MESSAGING_SERVICE_SID, TWILIO_VERIFY_SERVICE_SID, META_WHATSAPP_*)
+  # are in the SealedSecret. Only non-sensitive transport tuning lives here.
+  ENABLE_TRANSACTIONAL_SMS: 'true'
+  # Public URL Twilio POSTs delivery receipts to (signature-verified handler).
+  TWILIO_STATUS_CALLBACK_URL: 'https://api.hireadda.in/api/v1/webhooks/sms/status'
+  # Seconds Twilio may keep retrying before dropping — matches OTP_EXPIRY_MINUTES
+  # so a code can never arrive after it has already expired.
+  TWILIO_SMS_VALIDITY_PERIOD: '600'
+  TWILIO_HTTP_TIMEOUT_MS: '10000'
+  # Country calling code applied to numbers entered without one.
+  DEFAULT_COUNTRY_CODE: '91'
+
+  # ── WhatsApp system (non-secret tunables) ──
+  # SECRET keys (META_WHATSAPP_WABA_ID, META_WHATSAPP_APP_SECRET,
+  # META_WHATSAPP_WEBHOOK_VERIFY_TOKEN, META_WHATSAPP_TOKEN,
+  # CHATWOOT_BRIDGE_SECRET, CHATWOOT_BASE_URL, CHATWOOT_INBOUND_PHONE)
+  # go into the backend SealedSecret as the final deploy step.
+  META_WHATSAPP_API_VERSION: 'v21.0'
+  WHATSAPP_CAMPAIGN_BATCH_SIZE: '100'
+  WHATSAPP_CAMPAIGN_THROTTLE_PER_SEC: '15'
+  WHATSAPP_CAMPAIGN_CONCURRENCY: '1'
+  WHATSAPP_PRICE_MARKETING_PAISE: '78'
+  WHATSAPP_PRICE_UTILITY_PAISE: '30'
+  WHATSAPP_PRICE_AUTH_PAISE: '30'
+  WHATSAPP_OPT_OUT_KEYWORDS: 'STOP,UNSUBSCRIBE,CANCEL'
+  WHATSAPP_CHATWOOT_BRIDGE_ENABLED: 'false'
+
+  # ── Web Push (VAPID) ──
+  # VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY are in SealedSecret
+  VAPID_SUBJECT: 'mailto:admin@hireadda.in'
+
+  # ── Google Cloud Platform ──
+  # GOOGLE_APPLICATION_CREDENTIALS_JSON is in SealedSecret
+  GOOGLE_CLOUD_PROJECT_ID: 'job-portal-ca578'
+  # `us` matches where the Document AI processor was created
+  # (verified by direct API call: processor responds in 'us', returns
+  # INVALID_ARGUMENT "must match server deployment 'us'" with any
+  # other location value). Don't change this without re-verifying.
+  GOOGLE_CLOUD_LOCATION_ID: 'us'
+  # Vertex AI (Gemini) used by the resume-parser pipeline for
+  # OCR-text → structured candidate-profile extraction. Region is a
+  # *real* GCP region (Document AI's pseudo-region "us" is invalid
+  # here). As of mid-2026 only the 2.5 family is GA in this project —
+  # 1.5/2.0 model versions return 404. Pro for accuracy, swap to
+  # `gemini-2.5-flash` for cheaper/faster batch.
+  VERTEX_AI_LOCATION: 'us-central1'
+  VERTEX_AI_MODEL: 'gemini-2.5-pro'
+  CLOUD_TALENT_TENANT_ID: 'e54dbdcb-3ac1-4f67-a57b-d73d15c231cb'
+
+  # ── Geocoding ──
+  GEOCODING_PROVIDER: 'nominatim'
+  NOMINATIM_BASE_URL: 'https://nominatim.openstreetmap.org'
+  NOMINATIM_USER_AGENT: 'HireAdda/1.0'
+
+  # ── Cloudflare R2 (public URL) ──
+  # R2 credentials are in SealedSecret
+  R2_PUBLIC_URL: 'https://assets.hireadda.in'
+
+  # ── Webhooks ──
+  # WEBHOOK_SECRET is in SealedSecret
+  WEBHOOK_CALLBACK_URL: 'https://api.hireadda.in/api/v1/webhooks'
+
+  # ── Rate Limiting ──
+  RATE_LIMIT_WINDOW_MS: '900000'
+  RATE_LIMIT_MAX_REQUESTS: '1000'
+  AUTH_RATE_LIMIT_WINDOW_MS: '300000'
+  AUTH_RATE_LIMIT_MAX_ATTEMPTS: '10'
+
+  # ── File Uploads ──
+  UPLOAD_MAX_SIZE: '5242880'
+  UPLOAD_DIR: 'uploads'
+
+  # ── BullMQ Settings ──
+  BULLMQ_DEFAULT_JOB_OPTIONS_ATTEMPTS: '3'
+  BULLMQ_DEFAULT_JOB_OPTIONS_BACKOFF: '1000'
+  BULLMQ_REMOVE_ON_COMPLETE: '100'
+  BULLMQ_REMOVE_ON_FAIL: '500'
+
+  # ── BullMQ Worker Concurrency ──
+  BULLMQ_EMAIL_CONCURRENCY: '5'
+  BULLMQ_SMS_CONCURRENCY: '5'
+  BULLMQ_FCM_CONCURRENCY: '5'
+  BULLMQ_WHATSAPP_CONCURRENCY: '10'
+  BULLMQ_WEBPUSH_CONCURRENCY: '5'
+  BULLMQ_INAPP_CONCURRENCY: '10'
+  BULLMQ_WEBHOOK_CONCURRENCY: '5'
+  BULLMQ_MATCHING_CONCURRENCY: '3'
+  BULLMQ_GEOCODING_CONCURRENCY: '1'
+  BULLMQ_RESUME_PARSE_CONCURRENCY: '2'
+  BULLMQ_ES_REINDEX_CONCURRENCY: '3'
+  BULLMQ_SCHEDULER_CONCURRENCY: '2'
+  BULLMQ_ONBOARDING_DRIP_CONCURRENCY: '3'
+  BULLMQ_IMAGE_PROCESSING_CONCURRENCY: '2'
+
+  # ── BullMQ Worker Concurrency (Billing / Razorpay) ──
+  BULLMQ_RAZORPAY_WEBHOOK_CONCURRENCY: '5'
+  BULLMQ_BILLING_REMINDER_CONCURRENCY: '5'
+  BULLMQ_BILLING_RETRY_CONCURRENCY: '3'
+  BULLMQ_INVOICE_GEN_CONCURRENCY: '2'
+  BULLMQ_SETTLEMENT_SYNC_CONCURRENCY: '1'
+  BULLMQ_FRAUD_SCAN_CONCURRENCY: '3'
+  BULLMQ_ENTITLEMENT_EXPIRY_CONCURRENCY: '2'
+  BULLMQ_BIGQUERY_BILLING_CONCURRENCY: '5'
+  BULLMQ_PAYMENT_STATUS_POLL_CONCURRENCY: '2'
+
+  # ── Razorpay (non-secret config) ──
+  # RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET, RAZORPAY_WEBHOOK_SECRET are in SealedSecret
+  RAZORPAY_API_BASE_URL: 'https://api.razorpay.com/v1'
+  RAZORPAY_DEFAULT_CURRENCY: 'INR'
+  RAZORPAY_PAYMENT_CAPTURE_AUTO: 'false'
+  RAZORPAY_INTERNATIONAL_ENABLED: 'false'
+  RAZORPAY_NOTIFY_EMAIL: 'true'
+  RAZORPAY_NOTIFY_SMS: 'true'
+
+  # ── Billing Identity (Seller — printed on invoices) ──
+  # Parent: Opportunity Makers Group (Proprietorship of Harpreet Kaur)
+  HA_GSTIN: '03EBLPK4190M1ZA'
+  HA_LEGAL_NAME: 'Harpreet Kaur (Proprietor of M/S Opportunity Makers Group)'
+  HA_TRADE_NAME: 'Hire Adda'
+  HA_BILLING_LINE1: 'House No. 302, Village Dhogri Road'
+  HA_BILLING_LINE2: 'Tehsil Nangal Salempur-1'
+  HA_BILLING_CITY: 'Jalandhar'
+  HA_BILLING_STATE_NAME: 'Punjab'
+  HA_BILLING_STATE_CODE: '03'
+  HA_BILLING_PINCODE: '144004'
+  HA_BILLING_COUNTRY: 'India'
+  HA_PAN: 'EBLPK4190M'
+  HA_CIN: ''
+  HA_UDYAM_NUMBER: 'UDYAM-PB-10-0009173'
+  HA_SUPPORT_EMAIL: 'support@hireadda.in'
+  HA_SUPPORT_PHONE: '8054050551'
+
+  # ── Tax / GST / Invoice Settings ──
+  HA_HSN_SAC_CODE: '998314'
+  HA_GST_RATE_PERCENT: '18'
+  HA_GST_INCLUSIVE_PRICING: 'true'
+  HA_INVOICE_PREFIX: 'HA'
+  HA_FY_START_MONTH: '4'
+  # E-invoice (IRP) — only required when turnover crosses ₹5 crore
+  HA_E_INVOICE_REQUIRED: 'false'
+  HA_E_INVOICE_API_URL: ''
+  # HA_E_INVOICE_USERNAME, HA_E_INVOICE_PASSWORD are in SealedSecret
+  HA_PLACE_OF_SUPPLY_DEFAULT_STATE: '03'
+  # Export-of-services treatment (LUT filed → 0%, no LUT → 18% IGST)
+  HA_GST_EXPORT_WITH_LUT: 'true'
+
+  # ── Billing Operational Settings ──
+  BILLING_REFUND_WINDOW_DAYS: '2'
+  BILLING_CUSTOM_OFFER_EXPIRY_DAYS: '7'
+  BILLING_AUTO_RENEW_RETRY_MAX: '4'
+  BILLING_GRACE_PERIOD_DAYS: '3'
+  BILLING_EMI_MIN_AMOUNT_PAISE: '300000'
+  BILLING_ORDER_EXPIRY_MINUTES: '30'
+  BILLING_INVOICE_PDF_RETENTION_DAYS: '2555'
+  BILLING_FRAUD_ENABLED: 'true'
+  BILLING_FRAUD_MULTI_ACCOUNT_THRESHOLD: '3'
+  BILLING_FRAUD_VELOCITY_WINDOW_SECONDS: '300'
+  BILLING_FRAUD_VELOCITY_THRESHOLD: '5'
+  BILLING_BIGQUERY_SYNC_ENABLED: 'true'
+  BILLING_BQ_DATASET: 'hire_adda_analytics'
+  BILLING_BQ_TABLE: 'billing_events'
+
+  # ── OTP & Password Reset ──
+  OTP_EXPIRY_MINUTES: '10'
+  OTP_LENGTH: '6'
+  OTP_MAX_RESEND_ATTEMPTS: '5'
+  OTP_RESEND_COOLDOWN_SECONDS: '60'
+  PASSWORD_RESET_EXPIRY_HOURS: '1'
+  PASSWORD_RESET_MAX_ATTEMPTS: '5'
+  MAX_LOGIN_ATTEMPTS: '5'
+  ACCOUNT_LOCK_DURATION_MINUTES: '15'
+  SESSION_TIMEOUT_HOURS: '168'
+  MAX_SESSIONS_PER_USER: '5'
+
+  # ── Password Validation ──
+  PASSWORD_MIN_LENGTH: '8'
+  PASSWORD_MAX_LENGTH: '128'
+  PASSWORD_REQUIRE_UPPERCASE: 'true'
+  PASSWORD_REQUIRE_LOWERCASE: 'true'
+  PASSWORD_REQUIRE_NUMBER: 'true'
+  PASSWORD_REQUIRE_SPECIAL: 'true'
+
+  # ── Backup ──
+  BACKUP_DIR: './backups'
+  BACKUP_RETENTION_DAYS: '30'
+  OPENSEARCH_SNAPSHOT_REPO: 'hire_adda_repo'
+
+  # ── Super Admin Seeding ──
+  SUPER_ADMIN_EMAIL: 'admin@hireadda.in'
+
+  # ── OpenTelemetry ──
+  OTEL_ENABLED: 'true'
+  OTEL_SERVICE_NAME: 'hire-adda-api'
+  OTEL_EXPORTER_OTLP_ENDPOINT: 'http://otel-collector.monitoring.svc.cluster.local:4318/v1/traces'
+
+  # ── Logging ──
+  LOG_LEVEL: 'info'
+  LOG_AGGREGATION_URL: 'http://loki.logging.svc.cluster.local:3100/loki/api/v1/push'

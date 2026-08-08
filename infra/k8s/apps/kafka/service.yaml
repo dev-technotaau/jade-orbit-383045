@@ -1,0 +1,31 @@
+# ============================================================
+# Kafka — Service (Headless for StatefulSet DNS)
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  namespace: hire-adda
+  labels:
+    app: kafka
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/part-of: hire-adda
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: tcp-kafka
+      port: 9092
+      targetPort: 9092
+      protocol: TCP
+    - name: tcp-controller
+      port: 9093
+      targetPort: 9093
+      protocol: TCP
+    - name: metrics
+      port: 9308
+      targetPort: 9308
+      protocol: TCP
+  selector:
+    app: kafka

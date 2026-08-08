@@ -1,0 +1,129 @@
+# ============================================================
+# CronJob — Sync mail-tls Secret to host filesystem
+# ============================================================
+# docker-mailserver runs on the host (not in K8s) and reads its
+# TLS material from /etc/letsencrypt/live/mail.hireadda.in/.
+# After cert-manager renews the cert into the K8s `mail-tls`
+# Secret, this CronJob copies it back to the host so the mail
+# server's `changedetector` picks up the change and reloads
+# postfix/dovecot automatically.
+#
+# Runs every 6 hours — ample given Let's Encrypt cert lifetime
+# is 90 days and cert-manager renews 30 days before expiry, so
+# the sync has a 30-day window in which to land any renewal.
+#
+# Manual trigger:
+#   kubectl -n mail-tls create job --from=cronjob/mail-cert-sync \
+#     mail-cert-sync-manual-$(date +%s)
+# ============================================================
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mail-cert-sync
+  namespace: mail-tls
+  labels:
+    app.kubernetes.io/name: mail-cert-sync
+    app.kubernetes.io/component: cert-sync
+    app.kubernetes.io/part-of: hire-adda
+spec:
+  schedule: '0 */6 * * *'
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 300
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: mail-cert-sync
+            app.kubernetes.io/part-of: hire-adda
+        spec:
+          restartPolicy: OnFailure
+          # Root needed to write into /etc/letsencrypt (host) which
+          # is owned by root:root with 0700. Namespace is labelled
+          # pod-security.kubernetes.io/enforce: privileged so root +
+          # hostPath are allowed.
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            runAsNonRoot: false
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: sync
+              image: alpine:3.19
+              imagePullPolicy: IfNotPresent
+              command: [/bin/sh, -ceu]
+              args:
+                - |
+                  SRC=/secret
+                  DST=/host-letsencrypt/live/mail.hireadda.in
+
+                  if [ ! -s "$SRC/tls.crt" ] || [ ! -s "$SRC/tls.key" ]; then
+                    echo "[$(date -u +%FT%TZ)] Secret not populated yet — exiting cleanly"
+                    exit 0
+                  fi
+
+                  mkdir -p "$DST"
+                  changed=0
+
+                  # fullchain.pem (cert + intermediate, what most servers want)
+                  if ! cmp -s "$SRC/tls.crt" "$DST/fullchain.pem"; then
+                    install -m 0644 "$SRC/tls.crt" "$DST/fullchain.pem.new"
+                    mv -f "$DST/fullchain.pem.new" "$DST/fullchain.pem"
+                    echo "[$(date -u +%FT%TZ)] updated fullchain.pem"
+                    changed=1
+                  fi
+
+                  # privkey.pem — keep 0600 to match certbot defaults
+                  if ! cmp -s "$SRC/tls.key" "$DST/privkey.pem"; then
+                    install -m 0600 "$SRC/tls.key" "$DST/privkey.pem.new"
+                    mv -f "$DST/privkey.pem.new" "$DST/privkey.pem"
+                    echo "[$(date -u +%FT%TZ)] updated privkey.pem"
+                    changed=1
+                  fi
+
+                  # Split fullchain → cert.pem (leaf) + chain.pem (intermediate)
+                  # so anything still referencing the old certbot layout works.
+                  awk -v cert="$DST/cert.pem.new" -v chain="$DST/chain.pem.new" '
+                    /-----BEGIN CERTIFICATE-----/ { c++ }
+                    c == 1 { print > cert }
+                    c >= 2 { print > chain }
+                  ' "$SRC/tls.crt"
+                  if [ -f "$DST/cert.pem.new" ]; then
+                    chmod 0644 "$DST/cert.pem.new"; mv -f "$DST/cert.pem.new" "$DST/cert.pem"
+                  fi
+                  if [ -f "$DST/chain.pem.new" ]; then
+                    chmod 0644 "$DST/chain.pem.new"; mv -f "$DST/chain.pem.new" "$DST/chain.pem"
+                  fi
+
+                  if [ "$changed" = "1" ]; then
+                    echo "[$(date -u +%FT%TZ)] sync complete — docker-mailserver changedetector will reload"
+                  else
+                    echo "[$(date -u +%FT%TZ)] no change"
+                  fi
+              volumeMounts:
+                - name: secret
+                  mountPath: /secret
+                  readOnly: true
+                - name: host-letsencrypt
+                  mountPath: /host-letsencrypt
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 16Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi
+          volumes:
+            - name: secret
+              secret:
+                secretName: mail-tls
+                defaultMode: 0400
+            - name: host-letsencrypt
+              hostPath:
+                path: /etc/letsencrypt
+                type: Directory

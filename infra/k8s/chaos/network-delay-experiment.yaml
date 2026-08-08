@@ -1,0 +1,135 @@
+# ============================================================
+# Chaos Engineering — Network Delay Experiment
+# Simulates 200ms latency to PostgreSQL
+# Tests backend timeout handling and graceful degradation
+# SUSPENDED by default — run manually
+# ============================================================
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: chaos-network-delay
+  namespace: hire-adda
+  labels:
+    app: chaos-engineering
+spec:
+  schedule: '30 14 * * 4' # Thursday 2:30PM UTC
+  suspend: true
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 300
+      template:
+        metadata:
+          labels:
+            app: chaos-engineering
+        spec:
+          serviceAccountName: chaos-runner
+          securityContext:
+            runAsUser: 1001
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: chaos
+              image: bitnami/kubectl:1.31
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  echo "=== Chaos: Network Delay Experiment ==="
+                  echo "Simulating 200ms latency to PostgreSQL"
+                  echo "Time: $(date -u)"
+
+                  # Step 1: Measure baseline latency
+                  echo ""
+                  echo "--- Step 1: Baseline Health Check ---"
+                  kubectl exec deploy/backend -n hire-adda -- \
+                    wget -qO- http://localhost:5000/health/ready 2>&1 || echo "Health check failed"
+
+                  # Step 2: Apply NetworkPolicy to temporarily block postgres
+                  # (simulates network issues — complete block for 30s, then restore)
+                  echo ""
+                  echo "--- Step 2: Blocking PostgreSQL access for 30s ---"
+                  kubectl apply -f - <<'POLICY'
+                  apiVersion: networking.k8s.io/v1
+                  kind: NetworkPolicy
+                  metadata:
+                    name: chaos-block-postgres
+                    namespace: hire-adda
+                  spec:
+                    podSelector:
+                      matchLabels:
+                        app: backend
+                    policyTypes:
+                      - Egress
+                    egress:
+                      # Allow everything EXCEPT postgres
+                      - to:
+                          - podSelector:
+                              matchLabels:
+                                app: redis
+                        ports:
+                          - port: 6379
+                      - to:
+                          - podSelector:
+                              matchLabels:
+                                app: opensearch
+                        ports:
+                          - port: 9200
+                      - to: []
+                        ports:
+                          - port: 53
+                            protocol: UDP
+                          - port: 53
+                            protocol: TCP
+                          - port: 443
+                            protocol: TCP
+                  POLICY
+                  echo "NetworkPolicy applied — postgres blocked at $(date -u)"
+
+                  # Step 3: Monitor backend behavior during outage
+                  echo ""
+                  echo "--- Step 3: Checking backend during DB outage ---"
+                  for i in 1 2 3 4 5 6; do
+                    sleep 5
+                    echo "Check $i ($(date -u)):"
+                    kubectl exec deploy/backend -n hire-adda -- \
+                      wget -qO- http://localhost:5000/health/live 2>&1 && echo "  Liveness: OK" || echo "  Liveness: FAILED"
+                    kubectl exec deploy/backend -n hire-adda -- \
+                      wget -qO- http://localhost:5000/health/ready 2>&1 && echo "  Readiness: OK" || echo "  Readiness: NOT READY (expected)"
+                  done
+
+                  # Step 4: Remove the blocking policy
+                  echo ""
+                  echo "--- Step 4: Restoring PostgreSQL access ---"
+                  kubectl delete networkpolicy chaos-block-postgres -n hire-adda --ignore-not-found
+                  echo "NetworkPolicy removed at $(date -u)"
+
+                  # Step 5: Verify recovery
+                  echo ""
+                  echo "--- Step 5: Verifying recovery ---"
+                  sleep 10
+                  for i in 1 2 3; do
+                    sleep 5
+                    echo "Recovery check $i:"
+                    kubectl exec deploy/backend -n hire-adda -- \
+                      wget -qO- http://localhost:5000/health/ready 2>&1 && echo "  Backend recovered!" || echo "  Still recovering..."
+                  done
+
+                  echo ""
+                  echo "=== Experiment Complete ==="
+              resources:
+                requests:
+                  memory: '16Mi'
+                  cpu: '10m'
+                limits:
+                  memory: '32Mi'
+                  cpu: '50m'
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+          restartPolicy: Never

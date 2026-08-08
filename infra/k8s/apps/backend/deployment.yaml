@@ -1,0 +1,131 @@
+# ============================================================
+# Backend API — Argo Rollout (Canary with Prometheus analysis)
+# Express 5 + Node 20 + BullMQ workers + Socket.IO
+# ============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: backend
+  namespace: hire-adda
+  labels:
+    app: backend
+    tier: app
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: hire-adda
+spec:
+  replicas: 2
+  revisionHistoryLimit: 2
+  progressDeadlineSeconds: 600
+  selector:
+    matchLabels:
+      app: backend
+  strategy:
+    canary:
+      canaryService: backend-canary
+      stableService: backend
+      maxSurge: 1
+      maxUnavailable: 1
+      scaleDownDelaySeconds: 30
+      trafficRouting:
+        nginx:
+          stableIngress: api-ingress
+      steps:
+        - setWeight: 20
+        - pause: { duration: 60s }
+        - analysis:
+            templates:
+              - templateName: backend-success-rate
+        - setWeight: 50
+        - pause: { duration: 120s }
+        - analysis:
+            templates:
+              - templateName: backend-success-rate
+        - setWeight: 100
+  template:
+    metadata:
+      labels:
+        app: backend
+        tier: app
+      annotations:
+        # `tmp` is an EmptyDir scratch — no point capturing it in
+        # Velero's file-system backup. Excluding it cuts a handful
+        # of PodVolumeBackups per backup run plus the noise of an
+        # always-empty volume showing up in Kopia.
+        backup.velero.io/backup-volumes-excludes: tmp
+    spec:
+      serviceAccountName: backend-sa
+      securityContext:
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: backend
+          image: ghcr.io/dev-technotaau/hire-adda-backend:94d854d3fc2e97a8647e36cf4cc9a57f242b139a
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 5000
+              protocol: TCP
+          envFrom:
+            - secretRef:
+                name: backend-secrets
+            - configMapRef:
+                name: backend-config
+          resources:
+            requests:
+              memory: '768Mi'
+              cpu: '250m'
+            limits:
+              memory: '1536Mi'
+              cpu: '1500m'
+          # Liveness: is the process alive? (always 200 if server running)
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          # Readiness: can it serve traffic? (requires DB + Redis)
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 5000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Startup: allow up to 150s for initial startup (ES reindex, service init)
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: 5000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 30
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: uploads
+              mountPath: /app/uploads
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: uploads-pvc
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+      imagePullSecrets:
+        - name: ghcr-credentials
+      terminationGracePeriodSeconds: 30

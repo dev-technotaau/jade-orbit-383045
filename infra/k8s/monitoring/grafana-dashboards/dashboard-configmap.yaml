@@ -1,0 +1,29 @@
+# ============================================================
+# Grafana Dashboard ConfigMaps — Provisioning Reference
+# ============================================================
+# Dashboard ConfigMaps are created by Ansible (03-post-install.yml)
+# from the JSON files in this directory. The Grafana sidecar watches
+# for ConfigMaps with label grafana_dashboard: "1" and imports them.
+#
+# ArgoCD excludes *.json files (not K8s resources) and this file
+# is just a reference — not applied as a K8s resource.
+#
+# Dashboard JSON source files (6 total):
+#   1. hire-adda-overview.json — HTTP rates, latency, errors, queues
+#   2. node-resources.json — CPU, memory, disk, network
+#   3. redis-dashboard.json — Memory, hit rate, ops/s, evictions
+#   4. opensearch-dashboard.json — Cluster health, index sizes, query latency
+#   5. nginx-ingress.json — Request rates, upstream latency, SSL, 4xx/5xx
+#   6. kafka-dashboard.json — Messages/s, consumer lag, DLQ, partitions
+#
+# Manual provisioning (if not using Ansible):
+#   for f in *.json; do
+#     name="tb-dashboard-$(basename "$f" .json)"
+#     kubectl create configmap "$name" \
+#       --namespace monitoring \
+#       --from-file="$f" \
+#       --dry-run=client -o yaml | kubectl apply -f -
+#     kubectl label configmap "$name" -n monitoring \
+#       grafana_dashboard="1" grafana_folder="Hire Adda" --overwrite
+#   done
+# ============================================================

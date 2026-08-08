@@ -1,0 +1,25 @@
+# ============================================================
+# OpenSearch — ServiceMonitor
+# Scrapes /_prometheus/metrics from OpenSearch
+# Requires prometheus-exporter-plugin-for-opensearch
+# ============================================================
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: opensearch-monitor
+  namespace: monitoring
+  labels:
+    app: opensearch
+    release: kube-prometheus
+spec:
+  namespaceSelector:
+    matchNames:
+      - hire-adda
+  selector:
+    matchLabels:
+      app: opensearch
+  endpoints:
+    - port: http
+      path: /_prometheus/metrics
+      interval: 30s
+      scrapeTimeout: 10s

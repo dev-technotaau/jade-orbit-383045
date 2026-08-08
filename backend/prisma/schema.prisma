@@ -1,0 +1,5343 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  CANDIDATE
+  EMPLOYER
+  ADMIN
+  SUPER_ADMIN
+}
+
+model User {
+  id        String  @id @default(uuid())
+  email     String  @unique
+  password  String?
+  role      Role    @default(CANDIDATE)
+  firstName String?
+  lastName  String?
+  avatar    String?
+
+  // Client-managed UI preferences (sidebar pins / section expansion /
+  // collapsed rail, etc.) — an opaque JSON blob whose shape is owned by the
+  // frontend.
+  uiPreferences Json?
+
+  // Social Auth
+  googleId   String? @unique
+  linkedinId String? @unique
+
+  // Mobile Auth
+  mobileNumber              String?   @unique
+  isMobileVerified          Boolean   @default(false)
+  mobileVerificationToken   String?
+  mobileVerificationExpires DateTime?
+
+  // WhatsApp
+  isWhatsappVerified          Boolean   @default(false)
+  whatsappNumber              String? // Separate WhatsApp number (null = use mobileNumber)
+  whatsappVerificationToken   String?
+  whatsappVerificationExpires DateTime?
+
+  // OTP resend tracking
+  emailOtpResendCount    Int       @default(0)
+  emailOtpLastSentAt     DateTime?
+  mobileOtpResendCount   Int       @default(0)
+  mobileOtpLastSentAt    DateTime?
+  whatsappOtpResendCount Int       @default(0)
+  whatsappOtpLastSentAt  DateTime?
+
+  // Pending change fields (2-step email/mobile change)
+  pendingEmail        String?
+  pendingMobileNumber String?
+
+  // Account Status
+  isActive    Boolean   @default(true)
+  isSuspended Boolean   @default(false)
+  suspendedAt DateTime?
+  suspendedBy String?
+
+  // Email Verification
+  isEmailVerified          Boolean   @default(false)
+  emailVerificationToken   String?
+  emailVerificationExpires DateTime?
+
+  // Password Reset
+  passwordResetToken   String?
+  passwordResetExpires DateTime?
+
+  // MFA (TOTP)
+  mfaSecret      String?
+  mfaEnabled     Boolean  @default(false)
+  mfaBackupCodes String[] @default([])
+
+  // MFA Recovery
+  mfaRecoveryToken   String?
+  mfaRecoveryExpires DateTime?
+
+  // Account Security
+  loginAttempts Int       @default(0)
+  lockUntil     DateTime?
+  lastLoginAt   DateTime?
+  lastLoginIp   String?
+
+  // Activity Tracking
+  lastActiveAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  auditLogs     AuditLog[]
+  refreshTokens RefreshToken[]
+  sessions      Session[]
+
+  // Profiles
+  candidateProfile CandidateProfile?
+  companyProfile   CompanyProfile?
+  savedJobs        SavedJob[]
+
+  // Verifications
+  verificationRequests  VerificationRequest[] @relation("UserVerifications")
+  reviewedVerifications VerificationRequest[] @relation("AdminReviews")
+
+  // Notifications, Drafts, Devices
+  notifications     Notification[]
+  formDrafts        FormDraft[]
+  pushSubscriptions PushSubscription[]
+  deviceTokens      DeviceToken[]
+  smsMessages       SmsMessage[]
+
+  // Saved Candidates & Searches
+  savedCandidates      SavedCandidate[]      @relation("EmployerSavedCandidates")
+  savedByEmployers     SavedCandidate[]      @relation("CandidateSavedBy")
+  savedSearches        SavedSearch[]
+  searchHistory        SearchHistory[]
+  followedCompanies    CompanyFollow[]
+  candidateLists       CandidateList[]       @relation("EmployerCandidateLists")
+  candidateListMembers CandidateListMember[] @relation("CandidateInLists")
+  addedListMembers     CandidateListMember[] @relation("ListMembersAddedBy")
+  jobMatches           JobCandidateMatch[]   @relation("CandidateMatches")
+
+  // Employer multi-seat team
+  employerTeamSeats   EmployerTeamMember[] @relation("EmployerTeamUser")
+  employerTeamInvites EmployerTeamMember[] @relation("EmployerTeamInvitedBy")
+
+  // Vendor Connect
+  vendorProfile         VendorProfile?   @relation("VendorOwner")
+  vendorLeadsAsEmployer VendorLead[]     @relation("VendorLeadEmployer")
+  vendorReviewsLeft     VendorReview[]   @relation("VendorReviewer")
+  savedVendorJobs       SavedVendorJob[] @relation("VendorJobSaver")
+
+  // Assisted Hiring
+  assistedHiringRequests           AssistedHiringRequest[]        @relation("AssistedHiringEmployer")
+  assistedHiringAssigned           AssistedHiringRequest[]        @relation("AssistedHiringAssignee")
+  assistedHiringMatchedAsCandidate AssistedHiringMatchedProfile[] @relation("AssistedHiringCandidate")
+
+  // WebAuthn & Webhooks
+  webauthnCredentials WebAuthnCredential[]
+  webhookEndpoints    WebhookEndpoint[]
+
+  // Support Tickets
+  tickets         SupportTicket[] @relation("UserTickets")
+  assignedTickets SupportTicket[] @relation("AssignedTickets")
+
+  // Profile Views
+  profileViews    ProfileView[] @relation("ProfileViewer")
+  profileViewedBy ProfileView[] @relation("ProfileViewed")
+
+  // Company Reviews (auth-user authored + helpful-vote dedup)
+  companyReviews     CompanyReview[]
+  companyReviewVotes CompanyReviewVote[]
+
+  // Job Alerts & Recommendations
+  jobAlerts                JobAlert[]
+  dismissedRecommendations DismissedRecommendation[]
+
+  // Security & Privacy
+  deletionRequestedAt DateTime?
+  knownDevices        KnownDevice[]
+  loginLocations      LoginLocation[]
+  consents            UserConsent[]
+  mfaTrustedDevices   MfaTrustedDevice[]
+
+  // Billing / Payments / Subscriptions
+  orders               Order[]
+  payments             Payment[]
+  subscriptions        Subscription[]
+  entitlements         Entitlement[]
+  invoices             Invoice[]
+  couponRedemptions    CouponRedemption[]
+  mandates             Mandate[]
+  paymentMethods       PaymentMethodToken[]
+  quoteRequests        QuoteRequest[]
+  billingAddresses     BillingAddress[]
+  billingLedger        BillingLedger[]
+  resourceLedger       ResourceLedger[]
+  fraudFlags           FraudSignalEvent[]
+  upgradeChanges       UpgradeChange[]
+  billingNotifications BillingNotification[]
+  refundsInitiated     Refund[]               @relation("RefundsInitiatedBy")
+  refundRequests       RefundRequest[]        @relation("RefundRequestsByUser")
+  refundRequestReviews RefundRequest[]        @relation("RefundRequestsReviewedBy")
+  customPlanOffers     CustomPlanOffer[]      @relation("CustomPlanOffersCreatedBy")
+  plansCreated         Plan[]                 @relation("PlansCreatedBy")
+  couponsCreated       Coupon[]               @relation("CouponsCreatedBy")
+  fraudReviews         FraudSignalEvent[]     @relation("FraudReviewedBy")
+  fraudRulesUpdated    FraudRule[]            @relation("FraudRulesUpdatedBy")
+  webhookReplays       RazorpayWebhookEvent[] @relation("WebhookReplayedBy")
+  assignedQuotes       QuoteRequest[]         @relation("QuoteAssignedTo")
+  priceAdjustments     PriceAdjustment[]      @relation("PriceAdjustmentsCreatedBy")
+  planVersions         PlanVersion[]          @relation("PlanVersionsPublishedBy")
+
+  // WhatsApp system (super-admin operated)
+  waContact               WaContact?
+  waAssignedConversations WaConversation[] @relation("WaAssignee")
+  waCampaigns             WaCampaign[]     @relation("WaCampaignCreator")
+
+  // Email system (super-admin operated)
+  emailContact         EmailContact?
+  emailAssignedThreads EmailThread[]   @relation("EmailAssignee")
+  emailCampaigns       EmailCampaign[] @relation("EmailCampaignCreator")
+  emailAccounts        EmailAccount[]  @relation("EmailAccountOwner")
+
+  // Admin PBAC (only populated for Role.ADMIN — SUPER_ADMIN is authorised by
+  // role and deliberately holds no grant rows)
+  adminPermissionGrants AdminPermissionGrant[] @relation("AdminPermissionGrants")
+  permissionGrantsMade  AdminPermissionGrant[] @relation("AdminPermissionGrantedBy")
+  adminRoleAssignments  AdminRoleAssignment[]  @relation("AdminRoleAssignments")
+  adminActivityLogs     AdminActivityLog[]     @relation("AdminActivityLogs")
+  resourceLocks         ResourceLock[]         @relation("ResourceLocks")
+
+  @@index([email])
+  @@index([role])
+  @@index([emailVerificationToken])
+  @@index([passwordResetToken])
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  isRevoked Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  // Device info
+  userAgent String?
+  ipAddress String?
+
+  // Link to session
+  sessionId String?
+  session   Session? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token])
+  @@index([expiresAt])
+  @@index([sessionId])
+}
+
+model Session {
+  id         String   @id @default(uuid())
+  userId     String
+  userAgent  String?
+  ipAddress  String?
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @default(now()) @updatedAt
+  lastSeenAt DateTime @default(now())
+
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshTokens RefreshToken[]
+
+  @@index([userId])
+  @@index([isActive])
+  @@index([userId, isActive])
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  action      String // e.g., "CREATE_JOB", "DELETE_USER"
+  entity      String // e.g., "Job", "User"
+  entityId    String? // ID of the affected entity
+  performedBy String? // User ID of who performed the action
+  details     Json? // Additional context (e.g., diff of changes)
+  ipAddress   String?
+  userAgent   String?
+  checksum    String? // SHA-256 integrity checksum
+  isArchived  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  // Relations
+  user User? @relation(fields: [performedBy], references: [id], onDelete: SetNull)
+
+  @@index([performedBy])
+  @@index([action])
+  @@index([entity])
+  @@index([createdAt])
+}
+
+// --- Enums ---
+
+enum JobType {
+  FULL_TIME
+  PART_TIME
+  CONTRACT
+  INTERNSHIP
+  FREELANCE
+}
+
+enum JobStatus {
+  OPEN
+  CLOSED
+  DRAFT
+  EXPIRED
+}
+
+enum ApplicationStatus {
+  APPLIED
+  VIEWED
+  SHORTLISTED
+  SELECTED
+  INTERVIEW_SCHEDULED
+  REJECTED
+  OFFERED
+  HIRED
+  WITHDRAWN
+}
+
+enum VerificationType {
+  GST
+  EMPLOYMENT
+  IDENTITY
+}
+
+enum VerificationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  REQUESTED_CHANGES
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  NON_BINARY
+  PREFER_NOT_TO_SAY
+  OTHER
+}
+
+enum WorkStatus {
+  EMPLOYED
+  UNEMPLOYED
+  STUDENT
+  FREELANCER
+  ACTIVELY_LOOKING
+}
+
+enum NoticePeriod {
+  IMMEDIATE
+  FIFTEEN_DAYS
+  THIRTY_DAYS
+  SIXTY_DAYS
+  NINETY_DAYS
+  MORE_THAN_NINETY_DAYS
+}
+
+enum WorkMode {
+  ON_SITE
+  REMOTE
+  HYBRID
+}
+
+enum ShiftType {
+  DAY
+  NIGHT
+  ROTATIONAL
+  FLEXIBLE
+}
+
+enum ExperienceLevel {
+  FRESHER
+  ENTRY
+  MID
+  SENIOR
+  LEAD
+  EXECUTIVE
+}
+
+enum SalaryType {
+  ANNUAL
+  MONTHLY
+  HOURLY
+}
+
+enum AccountType {
+  COMPANY
+  INDIVIDUAL
+}
+
+enum HiringType {
+  DIRECT
+  CONSULTANCY
+}
+
+enum CompanyType {
+  PRIVATE
+  PUBLIC
+  PROPRIETARY
+  STARTUP
+  MNC
+  GOVERNMENT
+  NGO
+  SEMI_GOVERNMENT
+}
+
+enum MaritalStatus {
+  SINGLE
+  MARRIED
+  DIVORCED
+  WIDOWED
+  PREFER_NOT_TO_SAY
+}
+
+enum EducationLevel {
+  TENTH
+  TWELFTH
+  DIPLOMA
+  BACHELORS
+  MASTERS
+  PHD
+  POST_DOCTORAL
+}
+
+enum EducationType {
+  FULL_TIME
+  PART_TIME
+  DISTANCE
+  CORRESPONDENCE
+}
+
+enum UrgencyLevel {
+  NORMAL
+  URGENT
+  IMMEDIATE
+}
+
+enum DisabilityType {
+  NONE
+  VISUAL
+  HEARING
+  LOCOMOTOR
+  INTELLECTUAL
+  MULTIPLE
+  OTHER
+}
+
+enum CareerBreakType {
+  HEALTH
+  FAMILY
+  HIGHER_EDUCATION
+  TRAVEL
+  LAYOFF
+  PERSONAL
+  CAREGIVING
+  CAREER_TRANSITION
+  OTHER
+}
+
+enum ReservationCategory {
+  GENERAL
+  SC
+  ST
+  OBC
+  EWS
+  PREFER_NOT_TO_SAY
+}
+
+enum NoticePeriodPreference {
+  IMMEDIATE
+  FIFTEEN_DAYS
+  ONE_MONTH
+  TWO_MONTHS
+  THREE_MONTHS
+  NEGOTIABLE
+}
+
+enum FunctionalArea {
+  IT_SOFTWARE
+  IT_HARDWARE
+  SALES
+  MARKETING
+  HR
+  FINANCE
+  ITES_BPO
+  ENGINEERING
+  PRODUCTION
+  PHARMA
+  BANKING
+  LEGAL
+  MEDIA
+  HOSPITALITY
+  RETAIL
+  LOGISTICS
+  EDUCATION
+  HEALTHCARE
+  REAL_ESTATE
+  OTHER
+}
+
+enum SpecificDegree {
+  BTECH_BE
+  BCA
+  BSC
+  BCOM
+  BA
+  BBA
+  MBBS
+  LLB
+  BARCH
+  BDES
+  BPHARM
+  DIPLOMA_ENGINEERING
+  MCA
+  MSC
+  MCOM
+  MA
+  MBA_PGDM
+  MTECH_ME
+  MS
+  LLM
+  MD
+  CA
+  CS
+  ICWA
+  PHD
+  ANY_GRADUATE
+  ANY_POSTGRADUATE
+}
+
+enum GenderPreference {
+  ANY
+  MALE
+  FEMALE
+  OTHER
+}
+
+enum DrivingLicenseType {
+  NONE
+  TWO_WHEELER
+  FOUR_WHEELER
+  BOTH
+  HEAVY_VEHICLE
+}
+
+enum VehicleType {
+  BIKE
+  CAR
+  SCOOTER
+}
+
+enum PostingVisibility {
+  PUBLIC
+  INTERNAL
+  BOTH
+}
+
+enum ApplyMethod {
+  IN_PLATFORM
+  EXTERNAL_URL
+  EMAIL
+  WALK_IN
+}
+
+enum ScreeningQuestionType {
+  TEXT
+  YES_NO
+  MULTIPLE_CHOICE
+  NUMERIC
+}
+
+enum OpenToWorkStatus {
+  ACTIVELY_LOOKING
+  OPEN_TO_OFFERS
+  NOT_LOOKING
+}
+
+enum PatentStatus {
+  FILED
+  PUBLISHED
+  GRANTED
+}
+
+enum FundingStage {
+  BOOTSTRAPPED
+  SEED
+  SERIES_A
+  SERIES_B
+  SERIES_C
+  SERIES_D_PLUS
+  PRE_IPO
+  PUBLIC
+  ACQUIRED
+  NOT_APPLICABLE
+}
+
+enum LanguageProficiency {
+  BASIC
+  INTERMEDIATE
+  FLUENT
+  NATIVE
+}
+
+// --- Models ---
+
+model CandidateProfile {
+  id     String @id @default(uuid())
+  userId String @unique
+
+  // Personal Details
+  headline           String? // Professional headline ("Senior Java Dev | 8 yrs exp")
+  pronouns           String? // e.g., "he/him", "she/her", "they/them"
+  gender             Gender?
+  dob                DateTime?
+  maritalStatus      MaritalStatus?
+  nationality        String?              @default("Indian")
+  hometown           String?
+  category           ReservationCategory? // Indian reservation: GENERAL, SC, ST, OBC, EWS
+  bio                String?
+  resume             String? // URL to file (Cloudinary/R2)
+  resumeOriginalName String?
+  resumeSize         Int? // File size in bytes
+  resumeMimeType     String? // MIME type (application/pdf, etc.)
+  resumeUploadedAt   DateTime? // Exact timestamp of resume upload
+  additionalResumes  Json? // Array of { name, url, originalName?, isDefault?, uploadedAt? }
+  generatedResumeUrl String? // URL to last generated resume (R2)
+  generatedResumeAt  DateTime? // When the resume was last generated
+  videoResumeUrl     String? // URL to video resume
+  profileImage       String? // Cloudinary URL
+  imageVariants      Json? // { thumbnail, small, medium, original } URLs
+
+  // Structured Address
+  addressLine1 String?
+  addressLine2 String?
+  city         String?
+  state        String?
+  pincode      String?
+  country      String? @default("India")
+
+  // Contact & Location
+  currentLocation    String?
+  preferredLocations String[]
+  phone              String?
+  alternatePhone     String?
+  alternateEmail     String?
+
+  // Geo Coordinates (auto-populated by geocoding worker)
+  latitude  Float?
+  longitude Float?
+
+  // Professional
+  experienceYears       Float             @default(0)
+  totalExperienceMonths Int? // More precise than Float years
+  experienceLevel       ExperienceLevel? // FRESHER through EXECUTIVE (matches JobPost.experienceLevel)
+  currentCompany        String?
+  currentRole           String?
+  currentIndustry       String?
+  currentDepartment     String?
+  functionalArea        String?
+  currSalary            Decimal?          @db.Decimal(12, 2)
+  expectedSalaryMin     Decimal?          @db.Decimal(12, 2)
+  expectedSalaryMax     Decimal?          @db.Decimal(12, 2)
+  salaryCurrency        String            @default("INR")
+  noticePeriod          NoticePeriod?
+  servingNoticePeriod   Boolean           @default(false)
+  workStatus            WorkStatus?       @default(ACTIVELY_LOOKING)
+  hasCareerBreak        Boolean           @default(false)
+  careerBreakType       CareerBreakType?
+  careerBreakReason     String?
+  openToWork            OpenToWorkStatus?
+
+  // Career Preferences
+  preferredJobType         JobType[]  @default([])
+  preferredWorkMode        WorkMode[] @default([])
+  preferredShift           ShiftType?
+  preferredIndustries      String[]   @default([])
+  preferredRoleCategories  String[]   @default([])
+  dateOfAvailability       DateTime?
+  willingToRelocate        Boolean?   @default(false)
+  travelWillingnessPercent Int?       @default(0)
+
+  // Education Summary (matches JobPost education filters)
+  highestEducationLevel EducationLevel? // Matches JobPost.educationRequired
+  highestDegree         SpecificDegree? // Matches JobPost.specificDegrees
+
+  // Visa, Work Authorization & Documents
+  visaStatus         String?
+  workPermitStatus   String?
+  passportNumber     String?
+  passportExpiryDate DateTime?
+  hasDrivingLicense  Boolean             @default(false)
+  drivingLicenseType DrivingLicenseType? @default(NONE) // Matches JobPost.drivingLicenseRequired
+  ownVehicle         Boolean             @default(false)
+  vehicleTypes       VehicleType[]       @default([])
+  isVeteran          Boolean             @default(false)
+  blockedCompanies   String[]            @default([])
+
+  // Skills & Education (JSON for flexibility)
+  skills                  String[]
+  languages               String[]
+  itSkills                Json? // Array of { technology, version?, lastUsed?, experienceYears?, proficiency? }
+  education               Json? // Array of { institution, degree, field, startDate, endDate?, grade?, gradeType?, courseType?, specialization?, description?, activities? }
+  experience              Json? // Array of { company, role, location?, industry?, department?, employmentType?, startDate, endDate?, isCurrent?, description?, keyAchievements[]?, teamSize?, reportingTo?, annualCtc? }
+  certifications          Json? // Array of { name, issuer, issueDate?, expiryDate?, credentialId?, url?, doesNotExpire? }
+  projects                Json? // Array of { name, description?, url?, startDate?, endDate?, technologies[]?, role?, teamSize?, client?, isCurrent? }
+  publications            Json? // Array of { title, publisher?, publicationDate?, url?, description?, authors? }
+  patents                 Json? // Array of { title, patentOffice?, patentNumber?, status?, filingDate?, issueDate?, url?, description?, inventors? }
+  awards                  Json? // Array of { title, issuer?, date?, description? }
+  volunteerExperience     Json? // Array of { organization, role, cause?, startDate?, endDate?, isCurrent?, description? }
+  professionalMemberships Json? // Array of { organization, role?, startDate?, endDate?, membershipId?, description? }
+  courses                 Json? // Array of { name, provider?, completionDate?, url?, associatedWith? }
+  testScores              Json? // Array of { testName, score, dateOfExam?, associatedWith?, description? }
+  references              Json? // Array of { name, designation?, organization?, email?, phone?, relationship? }
+  languageProficiency     Json? // Array of { language, proficiency: BASIC|INTERMEDIATE|FLUENT|NATIVE, readWrite? }
+  skillsWithProficiency   Json? // Array of { skill, proficiency: BEGINNER|INTERMEDIATE|ADVANCED|EXPERT, yearsOfExperience? }
+
+  // Interests
+  interests String[] @default([])
+  hobbies   String[] @default([])
+
+  // Disability Details
+  isPhysicallyChallenged Boolean         @default(false)
+  disabilityType         DisabilityType? @default(NONE)
+  disabilityPercentage   Int?
+
+  // Social & Online Profiles
+  githubProfile        String?
+  linkedinProfile      String?
+  portfolioUrl         String?
+  stackOverflowProfile String?
+  twitterProfile       String?
+  personalBlogUrl      String?
+  dribbbleProfile      String?
+  behanceProfile       String?
+  mediumProfile        String?
+  youtubeChannel       String?
+
+  // AI-parsed resume data (from Document AI)
+  parsedResumeData Json?
+
+  // Notification Preferences
+  notificationPreferences Json? // { emailNotifications, smsNotifications, whatsappNotifications, inAppNotifications, fcmNotifications, webPushNotifications }
+
+  // Cached scores
+  profileCompleteness Int @default(0) // 0-100 percentage
+
+  // Discretionary profile-boost activation (Candidate Premium plan).
+  // The plan grants a 7-day BOOST_DAYS pool the candidate spends ONE
+  // day at a time via POST /candidates/me/boost/activate. Each
+  // activation consumes 1 BOOST_DAYS resource and sets this column
+  // to now+24h (or extends it if already in the future). Search
+  // ranking checks BOTH the boost feature flag AND this timestamp
+  // before applying the rank weight.
+  profileBoostActiveUntil DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  applications JobApplication[]
+
+  @@index([userId])
+  @@index([currentLocation])
+  @@index([experienceYears])
+  @@index([workStatus])
+  @@index([noticePeriod])
+  @@index([currentIndustry])
+  @@index([willingToRelocate])
+  @@index([openToWork])
+  @@index([city, state])
+  @@index([latitude, longitude])
+  @@index([workStatus, noticePeriod, experienceYears])
+  @@index([experienceLevel])
+  @@index([highestEducationLevel])
+  @@index([functionalArea])
+  @@index([profileCompleteness])
+  @@index([highestDegree])
+  @@index([drivingLicenseType])
+  @@index([profileBoostActiveUntil])
+}
+
+model CompanyProfile {
+  id     String @id @default(uuid())
+  userId String @unique
+
+  // SEO + public-search slug. Generated from companyName via
+  // buildCompanySlug() with collision suffixing (-2, -3, ...). Used in
+  // the canonical /companies/{slug} URL.
+  slug             String? @unique
+  // Employer can opt out of the public CV-database / company-directory
+  // surfaces per row. Defaults to true so existing public-by-default
+  // semantics are preserved.
+  publicSearchable Boolean @default(true)
+
+  // Account Classification
+  accountType AccountType? // COMPANY or INDIVIDUAL
+  hiringType  HiringType? // DIRECT (own company) or CONSULTANCY (staffing agency)
+
+  // Company Details
+  companyName     String
+  companyType     CompanyType? // PRIVATE, PUBLIC, STARTUP, MNC, GOVERNMENT, etc.
+  tagline         String?
+  logo            String? // Cloudinary URL
+  logoVariants    Json? // { thumbnail, small, medium, original } URLs
+  coverImage      String? // Banner image (Cloudinary URL)
+  coverVariants   Json? // { thumbnail, small, medium, original } URLs
+  companyVideoUrl String? // Company intro/culture video URL
+  industry        String?
+  subIndustry     String? // e.g., "SaaS", "Payments", "Cloud Infrastructure"
+  specialties     String[]     @default([])
+  companySize     String? // e.g., "1-10", "11-50"
+  employeeCount   Int? // Approximate exact count
+  numberOfOffices Int? // Total number of office locations
+  description     String?
+  whyWorkForUs    String? // Employer pitch / "Why Work For Us" section
+  website         String?
+  careersPageUrl  String? // Company careers page
+  blogUrl         String? // Company blog
+  foundedYear     Int?
+  parentCompany   String? // Parent/holding company
+  stockTicker     String? // Stock exchange ticker symbol
+
+  // Registration & Verification
+  gstNumber   String? @unique
+  cinNumber   String? @unique // Corporate Identity Number (India)
+  panNumber   String?
+  llpinNumber String? // LLP Identification Number (MCA, format AAA-9999)
+  tanNumber   String? // Tax Deduction Account Number (format AAAA99999A)
+  isVerified  Boolean @default(false)
+
+  // Financial & Funding
+  annualRevenueRange       String? // e.g., "1-5 Cr", "100-500 Cr"
+  fundingStage             FundingStage?
+  totalFundingRaised       String? // Display string, e.g. "$50M", "₹200 Cr" — kept for legacy rows + read sites
+  // Structured funding (new entry path writes both: these for queries,
+  // totalFundingRaised as the formatted display string)
+  totalFundingRaisedAmount Decimal?      @db.Decimal(18, 2)
+  fundingCurrency          String?       @default("INR")
+  investors                String[]      @default([])
+
+  // Products & Tech
+  productsServices String[] @default([])
+  techStack        String[] @default([])
+
+  // Culture & Benefits
+  companyCulture         String?
+  missionStatement       String?
+  visionStatement        String?
+  coreValues             String[] @default([])
+  diversityStatement     String?
+  employeeResourceGroups String[] @default([])
+  csrInitiatives         String? // CSR / social impact description
+  benefits               String[] @default([])
+  structuredPerks        Json? // Array of { category, perks[] }
+  workplacePolicies      Json? // Array of { title, description }
+  interviewProcess       String? // Description of interview/hiring process
+  awardsRecognitions     Json? // Array of { title, year?, issuingOrg?, description? }
+  leadershipTeam         Json? // Array of { name, designation, linkedinUrl?, imageUrl?, bio? }
+  employeeTestimonials   Json? // Array of { name, designation?, department?, quote, imageUrl? }
+  officePhotos           Json? // Array of { url, caption?, location? }
+  socialLinks            Json? // { linkedin, twitter, facebook, instagram, youtube, glassdoor }
+
+  // Contact
+  contactEmail             String?
+  contactPhone             String?
+  contactPersonName        String?
+  contactPersonDesignation String?
+
+  // Notification Preferences
+  notificationPreferences Json? // { emailApplications, emailMessages, emailMarketing, smsAlerts, whatsappNotifications, inAppNotifications, fcmNotifications, webPushNotifications, weeklyDigest }
+
+  // Structured Address
+  addressLine1 String?
+  addressLine2 String?
+  city         String?
+  state        String?
+  pincode      String?
+  country      String? @default("India")
+
+  // Location
+  headquarters String?
+  locations    String[]
+
+  // Geo Coordinates (auto-populated by geocoding worker)
+  latitude  Float?
+  longitude Float?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Default billing address — pointer into BillingAddress (per plan §2.3).
+  // Used by checkout to pre-fill the buyer's GST/legal name + place-of-supply.
+  // Optional: many companies start without a billing address until first paid order.
+  defaultBillingAddressId String?
+
+  user                  User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobs                  JobPost[]
+  jobTemplates          JobTemplate[]
+  defaultBillingAddress BillingAddress?         @relation("CompanyDefaultBillingAddress", fields: [defaultBillingAddressId], references: [id], onDelete: SetNull)
+  teamMembers           EmployerTeamMember[]    @relation("CompanyTeamMembers")
+  followers             CompanyFollow[]
+  reviews               CompanyReview[]
+  reviewAggregate       CompanyReviewAggregate?
+
+  @@index([userId])
+  @@index([companyName])
+  @@index([companyType])
+  @@index([industry])
+  @@index([fundingStage])
+  @@index([city, state])
+  @@index([latitude, longitude])
+  @@index([defaultBillingAddressId])
+  @@index([slug])
+  @@index([publicSearchable, isVerified])
+}
+
+model JobPost {
+  id        String @id @default(uuid())
+  companyId String
+
+  // SEO + public-search slug. Generated from
+  // {title-kebab}-{company-or-city-kebab}-{shortid8} via buildJobSlug().
+  // Used in the canonical /jobs/{slug} URL.
+  slug             String? @unique
+  // Employer can opt out of the public job-board surface per job
+  // (e.g. confidential search). When false, the job is still visible
+  // to invited candidates but excluded from /jobs and search engines.
+  publicSearchable Boolean @default(true)
+
+  // Consultancy / Staffing — the actual client company this job is for
+  clientCompanyName String?
+
+  // Job Details
+  title               String
+  description         String
+  keyResponsibilities String? // Separate from description (Naukri-style)
+  requirements        String? // Rich text or raw text
+  benefits            String?
+
+  // Metadata
+  type      JobType    @default(FULL_TIME)
+  status    JobStatus  @default(OPEN)
+  workMode  WorkMode?  @default(ON_SITE) // ON_SITE, REMOTE, HYBRID
+  shiftType ShiftType? // DAY, NIGHT, ROTATIONAL, FLEXIBLE
+
+  // Classification
+  industry       String?
+  department     String?
+  roleCategory   String?
+  functionalArea FunctionalArea?
+
+  // Experience & Education
+  experienceMin           Int              @default(0)
+  experienceMax           Int?
+  experienceLevel         ExperienceLevel? // FRESHER through EXECUTIVE
+  educationRequired       EducationLevel? // Minimum education level
+  preferredEducationField String?
+  ugRequired              EducationLevel?
+  pgRequired              EducationLevel?
+  specificDegrees         SpecificDegree[] @default([])
+  degreeSpecializations   String[]         @default([])
+
+  // Compensation & Location
+  location         String
+  latitude         Float?
+  longitude        Float?
+  isRemote         Boolean     @default(false) // Kept for backward compat
+  salaryMin        Decimal?    @db.Decimal(12, 2)
+  salaryMax        Decimal?    @db.Decimal(12, 2)
+  currency         String      @default("INR")
+  salaryType       SalaryType? @default(ANNUAL) // ANNUAL, MONTHLY, HOURLY
+  salaryDisclosed  Boolean     @default(true)
+  salaryNegotiable Boolean     @default(false)
+
+  // Skills
+  skillsRequired         String[]
+  niceToHaveSkills       String[]                 @default([])
+  certificationsRequired String[]                 @default([])
+  languagesRequired      Json? // Array of { language, proficiency }
+  noticePeriodPreference NoticePeriodPreference[] @default([])
+
+  // Vacancy & Urgency
+  numberOfOpenings  Int?          @default(1)
+  /**
+   * Hires made OFF the platform for this posting (walk-ins, referrals, agency
+   * placements). Vacancy fill = HIRED applications + this. Without it a job
+   * filled offline could never reflect reality: there is no application row to
+   * mark HIRED, so the listing would stay open forever advertising seats that
+   * are gone. Employer-maintained; never auto-derived.
+   */
+  offlineHiresCount Int           @default(0)
+  urgencyLevel      UrgencyLevel? @default(NORMAL)
+  isFeatured        Boolean       @default(false)
+  isPremium         Boolean       @default(false)
+  isConfidential    Boolean       @default(false)
+  referenceCode     String?
+
+  // Content & SEO
+  tags     String[] @default([])
+  jobPerks String[] @default([])
+
+  // Travel & Relocation
+  // Was `travelRequirementPercent Int?` — employers could not meaningfully
+  // estimate a percentage, so it is now a plain yes/no. The migration carries
+  // the old data across as `percent > 0`.
+  travelRequired        Boolean  @default(false)
+  relocationAssistance  Boolean  @default(false)
+  additionalLocations   String[] @default([])
+  accommodationProvided Boolean  @default(false)
+
+  // Application & Interview
+  applicationDeadline DateTime?
+  interviewProcess    String?
+  isWalkIn            Boolean   @default(false)
+  walkInDetails       Json? // { date, time, venue, contactPerson, contactPhone }
+  contactPerson       String?
+  contactEmail        String?
+  // Recruiter mobile for this posting. Like contactPerson/contactEmail this is
+  // INTERNAL — `sanitiseJobForPublic` already strips `contactPhone`, so it
+  // never reaches a public payload.
+  contactPhone        String?
+
+  // Walk-in structured fields
+  walkInStartDate     DateTime?
+  walkInEndDate       DateTime?
+  walkInTime          String?
+  walkInVenue         String?
+  walkInContactPerson String?
+  walkInContactPhone  String?
+  walkInInstructions  String?
+
+  // Diversity & Inclusion
+  diversityTags String[] @default([])
+
+  // Compliance & Requirements
+  visaSponsorshipAvailable Boolean             @default(false)
+  backgroundCheckRequired  Boolean             @default(false)
+  isPwdFriendly            Boolean             @default(false)
+  passportRequired         Boolean             @default(false)
+  bondDetails              String?
+  drivingLicenseRequired   DrivingLicenseType?
+
+  // Age & Gender (India-specific)
+  ageMin           Int?
+  ageMax           Int?
+  genderPreference GenderPreference? @default(ANY)
+
+  // Posting Control
+  postingVisibility  PostingVisibility @default(PUBLIC)
+  applyMethod        ApplyMethod       @default(IN_PLATFORM)
+  externalApplyUrl   String?
+  scheduledPublishAt DateTime?
+
+  // Relations for screening
+  screeningQuestions ScreeningQuestion[]
+
+  // Stats
+  views Int @default(0)
+
+  // Lifecycle
+  closedReason          String? // "EXPIRED", "FILLED", "CANCELLED"
+  closedAt              DateTime?
+  expiresAt             DateTime?
+  lastExpirationWarning DateTime? // Last time an expiration warning was sent
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  company                CompanyProfile            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  applications           JobApplication[]
+  savedBy                SavedJob[]
+  dismissedBy            DismissedRecommendation[]
+  candidateMatches       JobCandidateMatch[]
+  vendorLeads            VendorLead[]
+  savedByVendors         SavedVendorJob[]
+  assistedHiringRequests AssistedHiringRequest[]   @relation("AssistedHiringJob")
+
+  @@index([companyId])
+  @@index([status])
+  @@index([title])
+  @@index([location])
+  @@index([companyId, status])
+  @@index([companyId, createdAt])
+  @@index([status, createdAt])
+  @@index([industry])
+  @@index([expiresAt])
+  @@index([workMode])
+  @@index([shiftType])
+  @@index([experienceLevel])
+  @@index([educationRequired])
+  @@index([urgencyLevel])
+  @@index([isFeatured])
+  @@index([applicationDeadline])
+  @@index([status, workMode])
+  @@index([status, experienceLevel])
+  @@index([status, expiresAt])
+  @@index([latitude, longitude])
+  @@index([functionalArea])
+  @@index([postingVisibility])
+  @@index([scheduledPublishAt])
+  @@index([isConfidential])
+  @@index([referenceCode])
+  @@index([type])
+  @@index([status, type])
+  @@index([slug])
+  @@index([publicSearchable, status])
+}
+
+model JobApplication {
+  id          String @id @default(uuid())
+  jobId       String
+  candidateId String
+
+  status         ApplicationStatus @default(APPLIED)
+  coverLetter    String?
+  resumeSnapshot String? // Link to resume at time of application
+
+  // Match & Source
+  matchScore     Float? // Pre-computed match score at apply time
+  source         String? // "SEARCH", "RECOMMENDATION", "DIRECT", "WALK_IN", "REFERRAL"
+  candidateNotes String? // Candidate's own notes about the application
+
+  // Interview & Decision
+  interviewDate     DateTime?
+  interviewNotes    String?
+  interviewFeedback Json? // Array of { stage, interviewer?, rating?, feedback?, date? }
+  rejectionReason   String?
+  viewedAt          DateTime? // When employer first viewed
+  selectedAt        DateTime? // When employer selected candidate
+
+  // Offer & Hiring
+  offerDetails Json? // { salary, joiningDate, designation, location }
+  offeredAt    DateTime?
+  hiredAt      DateTime?
+
+  appliedAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  reviewReminderSentAt DateTime? // Prevents duplicate review reminders
+
+  job              JobPost           @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  candidate        CandidateProfile  @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  screeningAnswers ScreeningAnswer[]
+
+  @@unique([jobId, candidateId]) // Prevent duplicate applications
+  @@index([jobId])
+  @@index([candidateId])
+  @@index([status])
+  @@index([jobId, status])
+  @@index([candidateId, status])
+  @@index([source])
+  @@index([offeredAt])
+  @@index([hiredAt])
+}
+
+model ScreeningQuestion {
+  id            String                @id @default(uuid())
+  jobId         String
+  question      String
+  questionType  ScreeningQuestionType @default(TEXT)
+  isRequired    Boolean               @default(false)
+  isDealBreaker Boolean               @default(false)
+  options       Json?
+  idealAnswer   String?
+  displayOrder  Int                   @default(0)
+  createdAt     DateTime              @default(now())
+
+  job     JobPost           @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  answers ScreeningAnswer[]
+
+  @@index([jobId])
+  @@index([jobId, displayOrder])
+}
+
+model ScreeningAnswer {
+  id            String   @id @default(uuid())
+  applicationId String
+  questionId    String
+  answer        String
+  createdAt     DateTime @default(now())
+
+  application JobApplication    @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  question    ScreeningQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([applicationId, questionId])
+  @@index([applicationId])
+  @@index([questionId])
+}
+
+model JobTemplate {
+  id           String   @id @default(uuid())
+  companyId    String
+  name         String
+  description  String?
+  templateData Json
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  company CompanyProfile @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@index([companyId, name])
+}
+
+model VerificationRequest {
+  id     String @id @default(uuid())
+  userId String
+
+  type   VerificationType
+  status VerificationStatus @default(PENDING)
+
+  // Data
+  documentUrl String? // R2/Cloudinary URL
+  data        Json? // Extra data (e.g., entered GST number)
+
+  // Admin logic
+  reviewedBy    String?
+  adminComments String?
+  reviewedAt    DateTime?
+
+  // Escalation
+  escalatedAt      DateTime?
+  escalatedBy      String?
+  escalationReason String?
+  priority         String?   @default("NORMAL") // NORMAL, HIGH, URGENT
+
+  // SLA & Approval Chain
+  slaDeadline          DateTime?
+  approvalChain        Json? // Array of { level, approverId, approvedAt?, comments? }
+  currentApprovalLevel Int?      @default(1)
+  autoEscalated        Boolean   @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user     User  @relation("UserVerifications", fields: [userId], references: [id], onDelete: Cascade)
+  reviewer User? @relation("AdminReviews", fields: [reviewedBy], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([status])
+  @@index([type])
+  @@index([type, status])
+  @@index([priority])
+}
+
+model SavedJob {
+  id     String @id @default(uuid())
+  userId String
+  jobId  String
+
+  createdAt DateTime @default(now())
+
+  user User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  job  JobPost @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, jobId])
+  @@index([userId])
+}
+
+// --- Saved Candidates (Employer bookmarks candidates) ---
+
+model SavedCandidate {
+  id          String   @id @default(uuid())
+  employerId  String
+  candidateId String
+  notes       String?
+  savedAt     DateTime @default(now())
+
+  employer  User @relation("EmployerSavedCandidates", fields: [employerId], references: [id], onDelete: Cascade)
+  candidate User @relation("CandidateSavedBy", fields: [candidateId], references: [id], onDelete: Cascade)
+
+  @@unique([employerId, candidateId])
+  @@index([employerId])
+  @@index([candidateId])
+}
+
+// --- Vendor job board bookmarks ---
+// An employer with the VENDOR_CONNECT capability bookmarks ANOTHER
+// employer's open posting to pitch later. Distinct from a contact reveal
+// (which consumes a VENDOR_LEAD unit and is tracked in ResourceLedger);
+// saving is free and grants no contact access.
+model SavedVendorJob {
+  id           String   @id @default(uuid())
+  vendorUserId String
+  jobPostId    String
+  createdAt    DateTime @default(now())
+
+  vendorUser User    @relation("VendorJobSaver", fields: [vendorUserId], references: [id], onDelete: Cascade)
+  jobPost    JobPost @relation(fields: [jobPostId], references: [id], onDelete: Cascade)
+
+  @@unique([vendorUserId, jobPostId])
+  @@index([vendorUserId])
+  @@index([jobPostId])
+}
+
+// --- Employer team / multi-seat (CV Enterprise feature.multi_seat) ---
+
+enum TeamRole {
+  OWNER
+  ADMIN
+  RECRUITER
+}
+
+enum TeamMemberStatus {
+  PENDING
+  ACTIVE
+  REVOKED
+  EXPIRED
+}
+
+model EmployerTeamMember {
+  id              String           @id @default(uuid())
+  companyId       String
+  userId          String? // null until invite is accepted
+  invitedEmail    String
+  role            TeamRole         @default(RECRUITER)
+  status          TeamMemberStatus @default(PENDING)
+  invitedById     String
+  inviteToken     String?          @unique
+  inviteExpiresAt DateTime?
+  invitedAt       DateTime         @default(now())
+  joinedAt        DateTime?
+  revokedAt       DateTime?
+
+  company   CompanyProfile @relation("CompanyTeamMembers", fields: [companyId], references: [id], onDelete: Cascade)
+  user      User?          @relation("EmployerTeamUser", fields: [userId], references: [id], onDelete: SetNull)
+  invitedBy User           @relation("EmployerTeamInvitedBy", fields: [invitedById], references: [id])
+
+  @@unique([companyId, invitedEmail])
+  @@index([companyId])
+  @@index([userId])
+  @@index([inviteToken])
+}
+
+// --- Assisted Hiring fulfilment workflow (₹1499 plan) ---
+
+enum AssistedHiringStatus {
+  PENDING
+  CALL_SCHEDULED
+  IN_PROGRESS
+  DELIVERED
+  COMPLETED
+  CANCELLED
+}
+
+model AssistedHiringRequest {
+  id                String               @id @default(uuid())
+  employerId        String
+  orderId           String?              @unique
+  jobPostId         String?
+  roleTitle         String
+  requirementText   String
+  preferredSkills   String[]             @default([])
+  preferredLocation String?
+  budgetRange       String?
+  noticePeriod      String?
+  contactEmail      String
+  contactPhone      String?
+  status            AssistedHiringStatus @default(PENDING)
+  internalNotes     String?
+  callScheduledAt   DateTime?
+  deliveredAt       DateTime?
+  startedAt         DateTime             @default(now())
+  expiresAt         DateTime?
+  assignedAdminId   String?
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+
+  employer        User                           @relation("AssistedHiringEmployer", fields: [employerId], references: [id], onDelete: Cascade)
+  order           Order?                         @relation("AssistedHiringOrder", fields: [orderId], references: [id], onDelete: SetNull)
+  jobPost         JobPost?                       @relation("AssistedHiringJob", fields: [jobPostId], references: [id], onDelete: SetNull)
+  assignedAdmin   User?                          @relation("AssistedHiringAssignee", fields: [assignedAdminId], references: [id], onDelete: SetNull)
+  matchedProfiles AssistedHiringMatchedProfile[]
+
+  @@index([employerId, status])
+  @@index([status, startedAt])
+  @@index([assignedAdminId])
+  @@index([orderId])
+}
+
+/**
+ * One row per CV the admin team selects for a request — typically 4-5.
+ */
+model AssistedHiringMatchedProfile {
+  id                  String   @id @default(uuid())
+  requestId           String
+  candidateUserId     String?
+  candidateName       String
+  candidateHeadline   String?
+  candidateExperience String?
+  candidateLocation   String?
+  resumeUrl           String?
+  notes               String?
+  createdAt           DateTime @default(now())
+
+  request   AssistedHiringRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  candidate User?                 @relation("AssistedHiringCandidate", fields: [candidateUserId], references: [id], onDelete: SetNull)
+
+  @@index([requestId])
+}
+
+// --- Vendor Connect (recruitment-partner role) ---
+
+enum VendorLeadStatus {
+  PENDING
+  RESPONDED
+  ACCEPTED
+  DECLINED
+  EXPIRED
+}
+
+model VendorProfile {
+  id              String   @id @default(uuid())
+  userId          String   @unique
+  businessName    String
+  slug            String   @unique
+  description     String?
+  logo            String?
+  website         String?
+  contactEmail    String
+  contactPhone    String
+  services        String[] @default([]) // e.g. ["IT staffing","Permanent","Contract"]
+  industries      String[] @default([])
+  locations       String[] @default([])
+  yearsInBusiness Int?
+  teamSize        Int?
+  isPublic        Boolean  @default(true)
+  isVerified      Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user    User           @relation("VendorOwner", fields: [userId], references: [id], onDelete: Cascade)
+  leads   VendorLead[]
+  reviews VendorReview[]
+
+  @@index([userId])
+  @@index([slug])
+  @@index([isPublic])
+}
+
+model VendorReview {
+  id              String   @id @default(uuid())
+  vendorProfileId String
+  reviewerId      String // employer userId who left the review
+  rating          Int // 1-5
+  text            String?
+  /**
+   * True when the reviewer had a RESPONDED/ACCEPTED VendorLead with this vendor.
+   */
+  verified        Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  vendorProfile VendorProfile @relation(fields: [vendorProfileId], references: [id], onDelete: Cascade)
+  reviewer      User          @relation("VendorReviewer", fields: [reviewerId], references: [id], onDelete: Cascade)
+
+  @@unique([vendorProfileId, reviewerId])
+  @@index([vendorProfileId, rating])
+  @@index([reviewerId])
+}
+
+model VendorLead {
+  id              String           @id @default(uuid())
+  vendorProfileId String
+  jobPostId       String? // populated when lead routed from a JobPost
+  employerId      String // who is asking
+  requirementText String // free-text describing the role / hiring need
+  contactEmail    String
+  contactPhone    String?
+  status          VendorLeadStatus @default(PENDING)
+  responseText    String?
+  respondedAt     DateTime?
+  expiresAt       DateTime?
+  createdAt       DateTime         @default(now())
+
+  vendorProfile VendorProfile @relation(fields: [vendorProfileId], references: [id], onDelete: Cascade)
+  jobPost       JobPost?      @relation(fields: [jobPostId], references: [id], onDelete: SetNull)
+  employer      User          @relation("VendorLeadEmployer", fields: [employerId], references: [id], onDelete: Cascade)
+
+  @@index([vendorProfileId, status])
+  @@index([employerId])
+  @@index([jobPostId])
+}
+
+// --- Candidate Lists/Folders (Employer organization) ---
+
+model CandidateList {
+  id          String   @id @default(uuid())
+  employerId  String
+  name        String
+  description String?
+  color       String?  @default("#6366F1")
+  icon        String?
+  isDefault   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  employer User                  @relation("EmployerCandidateLists", fields: [employerId], references: [id], onDelete: Cascade)
+  members  CandidateListMember[]
+
+  @@index([employerId])
+}
+
+model CandidateListMember {
+  id            String   @id @default(uuid())
+  listId        String
+  candidateId   String
+  addedAt       DateTime @default(now())
+  notes         String?
+  addedByUserId String
+
+  list      CandidateList @relation(fields: [listId], references: [id], onDelete: Cascade)
+  candidate User          @relation("CandidateInLists", fields: [candidateId], references: [id], onDelete: Cascade)
+  addedBy   User          @relation("ListMembersAddedBy", fields: [addedByUserId], references: [id], onDelete: Cascade)
+
+  @@unique([listId, candidateId])
+  @@index([listId])
+  @@index([candidateId])
+}
+
+// --- Saved Searches ---
+
+model SavedSearch {
+  id         String   @id @default(uuid())
+  userId     String
+  name       String
+  searchType String // "CANDIDATE_SEARCH" or "JOB_SEARCH"
+  filters    Json
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, searchType])
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Search history — distinct from SavedSearch in that it auto-records
+// every search the user (or guest) runs, supports a "new jobs since
+// last seen" delta count for chip badges, and dedups by deterministic
+// `filtersHash`.
+//
+// Powers the homepage hero chips, the listing-page chip strip, and
+// the candidate dashboard "recent searches" widget.
+// ─────────────────────────────────────────────────────────────────────
+enum SearchHistoryType {
+  JOB
+  CANDIDATE
+  COMPANY
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Curated listings — drive the public-search header mega-menu, footer
+// mega-section, and SEO landing pages (`/jobs/category/it-software`,
+// `/jobs/in/delhi`, etc.). Editable via super-admin (out-of-scope for
+// this delivery — model is ready). Seeded with ~150 entries on first
+// deploy via `scripts/seed-curated-listings.ts`.
+// ─────────────────────────────────────────────────────────────────────
+enum CuratedType {
+  JOB_CATEGORY // "IT Jobs", "Sales Jobs"
+  JOB_DEMAND // "Fresher Jobs", "Remote Jobs"
+  JOB_LOCATION // "Jobs in Delhi"
+  JOB_QUALIFICATION // "10th Pass Jobs", "BTech Jobs"
+  JOB_DEPARTMENT // "Engineering Jobs", "Operations Jobs"
+  JOB_COLLECTION // "Top Companies Hiring", "Trending Now"
+  COMPANY_CATEGORY // "Unicorn", "MNC", "Startup"
+  COMPANY_COLLECTION // "Top Companies", "IT Companies"
+}
+
+model CuratedListing {
+  id              String      @id @default(uuid())
+  slug            String      @unique
+  type            CuratedType
+  label           String
+  // Filter preset applied to the search backend when this slug is
+  // visited. Shape mirrors the search-API filter blob for drop-in
+  // application.
+  filterPreset    Json
+  iconKey         String?
+  displayOrder    Int         @default(0)
+  isFeatured      Boolean     @default(false)
+  metaTitle       String?
+  metaDescription String?
+  heroH1          String?
+  heroSubtitle    String?
+  isPublic        Boolean     @default(true)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  @@index([type, isPublic, displayOrder])
+  @@index([slug])
+}
+
+// --- Company Follow (candidates following companies) ---
+//
+// One row per (candidate, company) pair. Candidates browse the public
+// company directory and click "Follow"; employers see follower counts
+// + a list of their followers in the dashboard.
+//
+// Fan-out notifications (new job from a followed company) read this
+// table via the BullMQ follower-notify worker.
+model CompanyFollow {
+  id        String   @id @default(uuid())
+  /**
+   * The candidate who's following.
+   */
+  userId    String
+  /**
+   * The CompanyProfile being followed (NOT the employer userId — the
+   * profile id, so we can join cleanly to JobPost.companyId).
+   */
+  companyId String
+  createdAt DateTime @default(now())
+
+  user    User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company CompanyProfile @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, companyId])
+  @@index([userId, createdAt])
+  @@index([companyId, createdAt])
+}
+
+model SearchHistory {
+  id           String            @id @default(uuid())
+  // Either userId (auth) or sessionId (guest) is set; never both null.
+  userId       String?
+  sessionId    String?
+  searchType   SearchHistoryType
+  // Canonical filter blob, sorted + normalised so equivalent searches
+  // share the same hash regardless of input ordering.
+  filters      Json
+  // SHA-256 of the canonical JSON; used for the (user/session, type, hash)
+  // unique tuple so re-running the same search increments `hits` instead
+  // of inserting a duplicate row.
+  filtersHash  String
+  query        String?
+  location     String?
+  resultsCount Int               @default(0)
+  // When the user last actually ran or viewed this search. Used to
+  // compute "new jobs since" deltas — counts JobPost.createdAt > lastSeenAt.
+  lastSeenAt   DateTime          @default(now())
+  hits         Int               @default(1)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, searchType, filtersHash], name: "user_unique_search")
+  @@unique([sessionId, searchType, filtersHash], name: "session_unique_search")
+  @@index([userId, lastSeenAt])
+  @@index([sessionId, lastSeenAt])
+  @@index([searchType, lastSeenAt])
+}
+
+// --- Profile Views ---
+
+model ProfileView {
+  id            String   @id @default(uuid())
+  viewerId      String
+  profileUserId String
+  viewType      String // "CANDIDATE_PROFILE" or "COMPANY_PROFILE"
+  createdAt     DateTime @default(now())
+
+  viewer      User @relation("ProfileViewer", fields: [viewerId], references: [id], onDelete: Cascade)
+  profileUser User @relation("ProfileViewed", fields: [profileUserId], references: [id], onDelete: Cascade)
+
+  @@index([profileUserId, createdAt])
+  @@index([viewerId])
+}
+
+// --- Notification System ---
+
+enum NotificationType {
+  INFO
+  SUCCESS
+  WARNING
+  ERROR
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  title     String
+  message   String
+  type      NotificationType @default(INFO)
+  category  String? // e.g., "job_match", "application_update", "security"
+  link      String? // Deep link to relevant page
+  isRead    Boolean          @default(false)
+  readAt    DateTime?
+  metadata  Json? // Extra structured data
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @default(now()) @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@index([userId, isRead, createdAt])
+  @@index([userId, createdAt])
+  @@index([createdAt])
+}
+
+// --- Form Drafts ---
+
+enum FormDraftType {
+  CANDIDATE_PROFILE
+  JOB_SEARCH_PREFERENCES
+  CANDIDATE_SEARCH
+  JOB_POSTING
+  EMPLOYER_PROFILE
+}
+
+model FormDraft {
+  id        String        @id @default(uuid())
+  userId    String
+  formType  FormDraftType
+  data      Json // The draft form data
+  name      String? // Optional user-given name for the draft
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, formType, name])
+  @@index([userId, formType])
+}
+
+// --- Push Subscriptions (Web Push VAPID) ---
+
+model PushSubscription {
+  id        String   @id @default(uuid())
+  userId    String
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// --- Device Tokens (FCM) ---
+
+model DeviceToken {
+  id         String   @id @default(uuid())
+  userId     String
+  token      String   @unique
+  platform   String? // "android", "ios", "web"
+  deviceName String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// --- Job-Candidate Match Notifications (Tracking multi-channel notifications) ---
+
+model JobCandidateMatch {
+  id                String    @id @default(uuid())
+  jobId             String
+  candidateId       String
+  matchScore        Float?
+  notificationsSent Boolean   @default(false)
+  emailSent         Boolean   @default(false)
+  smsSent           Boolean   @default(false)
+  pushSent          Boolean   @default(false)
+  whatsappSent      Boolean   @default(false)
+  createdAt         DateTime  @default(now())
+  notifiedAt        DateTime?
+
+  job       JobPost @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  candidate User    @relation("CandidateMatches", fields: [candidateId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, candidateId])
+  @@index([jobId])
+  @@index([candidateId])
+  @@index([notificationsSent])
+  @@index([createdAt])
+}
+
+// --- System Configuration ---
+
+model SystemConfig {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     Json
+  updatedBy String?
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+}
+
+// --- WebAuthn Credentials (Passkeys) ---
+
+model WebAuthnCredential {
+  id           String   @id @default(cuid())
+  userId       String
+  credentialId String   @unique
+  publicKey    Bytes
+  counter      BigInt   @default(0)
+  transports   String[]
+  deviceType   String?
+  backedUp     Boolean  @default(false)
+  friendlyName String?
+  createdAt    DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// --- Webhook Endpoints ---
+
+model WebhookEndpoint {
+  id              String    @id @default(cuid())
+  userId          String
+  url             String
+  secret          String
+  events          String[]
+  isActive        Boolean   @default(true)
+  description     String?
+  failureCount    Int       @default(0)
+  lastTriggeredAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  user       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries WebhookDelivery[]
+
+  @@index([userId])
+  @@index([isActive])
+}
+
+// --- Webhook Deliveries ---
+
+model WebhookDelivery {
+  id         String   @id @default(cuid())
+  webhookId  String
+  event      String
+  payload    Json
+  statusCode Int?
+  response   String?
+  success    Boolean  @default(false)
+  attempt    Int      @default(1)
+  error      String?
+  createdAt  DateTime @default(now())
+
+  webhook WebhookEndpoint @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+
+  @@index([webhookId])
+  @@index([createdAt])
+}
+
+model ContactMessage {
+  id        String    @id @default(cuid())
+  name      String
+  email     String
+  subject   String
+  message   String
+  isRead    Boolean   @default(false)
+  repliedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([isRead])
+  @@index([createdAt])
+}
+
+// --- Support Ticket System ---
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  AWAITING_REPLY
+  RESOLVED
+  CLOSED
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum TicketCategory {
+  GENERAL
+  ACCOUNT
+  BILLING
+  TECHNICAL
+  BUG_REPORT
+  FEATURE_REQUEST
+  JOB_POSTING
+  APPLICATION
+  VERIFICATION
+  OTHER
+}
+
+enum TicketSatisfaction {
+  SATISFIED
+  NEUTRAL
+  NOT_SATISFIED
+}
+
+model SupportTicket {
+  id           String         @id @default(cuid())
+  ticketNumber String         @unique
+  subject      String
+  description  String
+  status       TicketStatus   @default(OPEN)
+  priority     TicketPriority @default(MEDIUM)
+  category     TicketCategory @default(GENERAL)
+
+  // Submitter — either a registered user OR a guest
+  userId     String?
+  guestName  String?
+  guestEmail String?
+
+  // Assignment
+  assignedToId String?
+
+  // Resolution
+  satisfaction        TicketSatisfaction?
+  satisfactionComment String?
+  resolvedAt          DateTime?
+  closedAt            DateTime?
+  firstResponseAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  user       User?           @relation("UserTickets", fields: [userId], references: [id], onDelete: SetNull)
+  assignedTo User?           @relation("AssignedTickets", fields: [assignedToId], references: [id], onDelete: SetNull)
+  messages   TicketMessage[]
+
+  @@index([userId])
+  @@index([assignedToId])
+  @@index([status])
+  @@index([ticketNumber])
+  @@index([createdAt])
+  @@index([category])
+}
+
+model TicketMessage {
+  id         String   @id @default(cuid())
+  ticketId   String
+  senderId   String?
+  senderType String // USER, ADMIN, SYSTEM, GUEST
+  senderName String
+  subject    String?
+  body       String   @db.Text
+  isInternal Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  ticket SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId, createdAt])
+}
+
+// --- Security & Privacy ---
+
+model KnownDevice {
+  id          String   @id @default(cuid())
+  userId      String
+  fingerprint String
+  name        String?
+  ipAddress   String?
+  location    String?
+  lastUsedAt  DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, fingerprint])
+  @@index([userId])
+}
+
+model LoginLocation {
+  id        String   @id @default(cuid())
+  userId    String
+  ipAddress String
+  country   String?
+  city      String?
+  latitude  Float?
+  longitude Float?
+  isTrusted Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([createdAt])
+}
+
+model UserConsent {
+  id        String    @id @default(cuid())
+  userId    String
+  type      String
+  version   String
+  givenAt   DateTime  @default(now())
+  revokedAt DateTime?
+  ipAddress String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([type])
+}
+
+// --- MFA Trusted Devices (skip MFA for 30 days) ---
+
+model MfaTrustedDevice {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  userAgent String?
+  ipAddress String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// --- Job Alerts ---
+
+enum AlertFrequency {
+  INSTANT
+  DAILY
+  WEEKLY
+  OFF
+}
+
+model JobAlert {
+  id             String         @id @default(uuid())
+  userId         String
+  name           String
+  filters        Json
+  frequency      AlertFrequency @default(DAILY)
+  isActive       Boolean        @default(true)
+  lastNotifiedAt DateTime?
+  newMatchCount  Int            @default(0)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isActive])
+  @@index([isActive, frequency])
+}
+
+// --- Dismissed Recommendations ---
+
+model DismissedRecommendation {
+  id        String   @id @default(uuid())
+  userId    String
+  jobId     String
+  createdAt DateTime @default(now())
+
+  user User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  job  JobPost @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, jobId])
+  @@index([userId])
+}
+
+// --- Kafka DLQ Messages ---
+
+model KafkaDlqMessage {
+  id            String    @id @default(uuid())
+  originalTopic String
+  partition     Int
+  offset        String
+  originalValue String?   @db.Text
+  error         String?   @db.Text
+  stack         String?   @db.Text
+  timestamp     DateTime
+  replayed      Boolean   @default(false)
+  replayedAt    DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@index([originalTopic])
+  @@index([replayed])
+}
+
+// --- Kafka Event Store (for replay) ---
+
+model KafkaEvent {
+  id          String   @id @default(uuid())
+  eventType   String
+  key         String
+  data        String   @db.Text
+  publishedAt DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([eventType])
+  @@index([publishedAt])
+}
+
+// =====================================================================
+// Billing / Payments / Subscriptions / Coupons / Invoices / Entitlements
+// =====================================================================
+// Razorpay-backed payment system. Webhook is source of truth.
+// All amounts stored as integer paise (1 INR = 100 paise) unless noted.
+// Migration: edit schema -> hand-roll SQL into prisma/migrations.
+// =====================================================================
+
+enum PlanCategory {
+  CANDIDATE_PREMIUM
+  EMPLOYER_JOB_POST
+  EMPLOYER_CV_DATABASE
+  EMPLOYER_ASSISTED_HIRING
+  VENDOR_CONNECT
+  EMPLOYER_CV_ENTERPRISE_CUSTOM
+}
+
+enum PlanBillingCycle {
+  ONE_TIME
+  MONTHLY
+  QUARTERLY
+  HALF_YEARLY
+  YEARLY
+  CUSTOM
+}
+
+enum PlanStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+  HIDDEN
+}
+
+enum ResourceUnit {
+  JOB_POST
+  JOB_DAYS_LIVE
+  APPLICATIONS
+  CV_UNLOCK
+  SEARCH_RESULT
+  MATCHED_PROFILE_EMAIL
+  FEATURE_FLAG
+  SEAT
+  BOOST_DAYS
+  VENDOR_LEAD
+  CUSTOM
+}
+
+enum PlanFeatureKind {
+  COUNTABLE
+  BOOLEAN
+  ENUM
+  TEXT
+}
+
+enum OrderStatus {
+  CREATED
+  ATTEMPTED
+  PAID
+  FAILED
+  CANCELLED
+  EXPIRED
+  REFUND_PENDING
+  REFUNDED
+  PARTIALLY_REFUNDED
+  DISPUTED
+  FRAUD_FLAGGED
+}
+
+enum PaymentStatus {
+  CREATED
+  AUTHORIZED
+  CAPTURED
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+enum PaymentMethod {
+  CARD
+  UPI
+  NETBANKING
+  WALLET
+  EMI
+  PAYLATER
+  BANK_TRANSFER
+  INTERNATIONAL
+  UNKNOWN
+}
+
+enum PaymentChannel {
+  CHECKOUT
+  SUBSCRIPTION
+  MANDATE
+  MANUAL_MARK_PAID
+  INTERNAL
+}
+
+enum SubscriptionStatus {
+  CREATED
+  AUTHENTICATED
+  ACTIVE
+  PAUSED
+  HALTED
+  CANCELLED
+  COMPLETED
+  EXPIRED
+  PENDING_CANCEL
+}
+
+enum SubscriptionRenewalMode {
+  AUTO_RENEW
+  MANUAL
+  OFF
+}
+
+enum MandateStatus {
+  PENDING
+  CONFIRMED
+  ACTIVE
+  CANCELLED
+  FAILED
+}
+
+enum MandateMethod {
+  EMANDATE
+  UPI_AUTOPAY
+  CARD
+}
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  PAID
+  VOIDED
+  REFUNDED
+}
+
+enum InvoiceType {
+  PROFORMA
+  TAX_INVOICE
+  CREDIT_NOTE
+  RECEIPT
+}
+
+enum RefundStatus {
+  PENDING
+  PROCESSED
+  FAILED
+  CANCELLED
+}
+
+enum RefundReason {
+  USER_REQUESTED
+  ADMIN_INITIATED
+  FRAUD
+  DUPLICATE
+  CHARGEBACK
+  ERROR_CORRECTION
+  GOODWILL
+}
+
+/// Lifecycle of a CUSTOMER-raised refund request. Distinct from RefundStatus,
+/// which tracks the Razorpay money movement: a request must be APPROVED by a
+/// super-admin before any Refund row exists at all.
+enum RefundRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum CouponStatus {
+  ACTIVE
+  PAUSED
+  EXPIRED
+  ARCHIVED
+}
+
+enum CouponType {
+  PERCENT
+  FLAT
+  FIRST_MONTH_FREE
+  TRIAL_EXTEND
+  FREE_PLAN
+}
+
+enum CouponScope {
+  GLOBAL
+  ROLE_TARGETED
+  USER_TARGETED
+  PLAN_TARGETED
+  COMBO
+}
+
+enum CouponRedemptionStatus {
+  SUCCESS
+  REFUNDED
+  REVERSED
+}
+
+enum EntitlementSource {
+  PLAN
+  BONUS
+  MANUAL
+  REFUND_CREDIT
+  COUPON
+  MIGRATION
+}
+
+enum EntitlementStatus {
+  ACTIVE
+  EXHAUSTED
+  EXPIRED
+  CANCELLED
+  ON_HOLD
+}
+
+enum SettlementStatus {
+  SCHEDULED
+  PROCESSED
+  FAILED
+}
+
+enum DisputeStatus {
+  OPEN
+  UNDER_REVIEW
+  WON
+  LOST
+  ACCEPTED
+}
+
+enum RazorpayWebhookStatus {
+  RECEIVED
+  PROCESSING
+  PROCESSED
+  SKIPPED
+  FAILED
+  REPLAYED
+}
+
+enum QuoteRequestStatus {
+  NEW
+  IN_REVIEW
+  CONTACTED
+  NEGOTIATING
+  ACCEPTED
+  REJECTED
+  CONVERTED
+  WITHDRAWN
+}
+
+enum CustomPlanOfferStatus {
+  DRAFT
+  SENT
+  ACCEPTED
+  EXPIRED
+  REJECTED
+}
+
+enum PriceAdjustmentReason {
+  PRORATION
+  COUPON
+  GOODWILL_CREDIT
+  MANUAL
+  TAX
+  ROUNDING
+  REFUND_CREDIT
+}
+
+enum LedgerEntryType {
+  ORDER_CHARGE
+  REFUND
+  COUPON_DISCOUNT
+  CARRY_FORWARD
+  MANUAL_CREDIT
+  MANUAL_DEBIT
+  TAX
+  ADJUSTMENT
+}
+
+enum FraudSignal {
+  MULTI_ACCOUNT_SAME_CARD
+  VELOCITY_BURST
+  GEO_MISMATCH
+  EMAIL_DOMAIN_DISPOSABLE
+  IP_BLACKLIST
+  BIN_BLACKLIST
+  CHARGEBACK_RATE
+  MANUAL
+}
+
+enum FraudSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum FraudAction {
+  NONE
+  REVIEW
+  BLOCK
+  REFUND_AND_BLOCK
+}
+
+enum TaxRegion {
+  IN_INTRA_STATE
+  IN_INTER_STATE
+  INTERNATIONAL
+  EXEMPT
+}
+
+enum BillingNotificationKind {
+  ORDER_PLACED
+  PAYMENT_CAPTURED
+  PAYMENT_FAILED
+  SUBSCRIPTION_ACTIVATED
+  SUBSCRIPTION_RENEWED
+  SUBSCRIPTION_FAILED
+  SUBSCRIPTION_CANCELLED
+  REMINDER_7
+  REMINDER_3
+  REMINDER_1
+  PLAN_EXPIRED
+  REFUND_REQUESTED
+  REFUND_REJECTED
+  REFUND_PROCESSED
+  CUSTOM_PLAN_OFFER
+  FRAUD_ALERT
+  QUOTE_RECEIVED
+  UPGRADED
+  DOWNGRADED
+}
+
+enum ResourceLedgerReason {
+  GRANT
+  CONSUME
+  ROLLBACK
+  ADJUSTMENT
+  CARRY_FORWARD
+  EXPIRY
+  REFUND_RESTORE
+  ADMIN_ADJUST
+}
+
+// --- Plans ---
+
+model Plan {
+  id               String           @id @default(uuid())
+  code             String           @unique // e.g. EMP_PREMIUM
+  name             String
+  slug             String           @unique
+  category         PlanCategory
+  billingCycle     PlanBillingCycle
+  status           PlanStatus       @default(DRAFT)
+  basePricePaise   Int
+  currency         String           @default("INR")
+  gstRatePercent   Int              @default(18)
+  gstInclusive     Boolean          @default(true)
+  hsnCode          String?          @default("998314")
+  validityDays     Int? // null only for true subscriptions
+  trialDays        Int              @default(0)
+  displayOrder     Int              @default(100)
+  highlight        Boolean          @default(false)
+  badgeText        String?
+  shortDescription String?
+  descriptionHtml  String?
+  isCustom         Boolean          @default(false)
+  requiresQuote    Boolean          @default(false)
+  isPublic         Boolean          @default(true)
+  razorpayPlanId   String? // Razorpay Plan id (only for true subscriptions)
+  metadata         Json?
+  createdById      String?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  features         PlanFeature[]
+  resources        PlanResource[]
+  versions         PlanVersion[]
+  orders           Order[]
+  subscriptions    Subscription[]
+  entitlements     Entitlement[]
+  fromUpgrades     UpgradeChange[]   @relation("UpgradeFromPlan")
+  toUpgrades       UpgradeChange[]   @relation("UpgradeToPlan")
+  customPlanOffers CustomPlanOffer[]
+
+  createdBy User? @relation("PlansCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([category, status])
+  @@index([status, displayOrder])
+  @@index([isPublic, status])
+}
+
+model PlanFeature {
+  id             String          @id @default(uuid())
+  planId         String
+  key            String // e.g. "feature.cv_unlock", "feature.bulk_download"
+  label          String
+  kind           PlanFeatureKind @default(BOOLEAN)
+  countableLimit Int? // when kind=COUNTABLE
+  enumValue      String? // when kind=ENUM
+  textValue      String? // when kind=TEXT
+  included       Boolean         @default(true)
+  displayOrder   Int             @default(100)
+  description    String?
+
+  plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, key])
+  @@index([planId])
+}
+
+model PlanResource {
+  id              String       @id @default(uuid())
+  planId          String
+  unit            ResourceUnit
+  quantity        Int
+  perPeriodReset  Boolean      @default(true)
+  carryForwardCap Int? // optional cap on carry-forward
+  notes           String?
+
+  plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, unit])
+  @@index([planId])
+}
+
+model PlanVersion {
+  id            String   @id @default(uuid())
+  planId        String
+  version       Int
+  diff          Json
+  publishedAt   DateTime @default(now())
+  publishedById String?
+
+  plan        Plan  @relation(fields: [planId], references: [id], onDelete: Cascade)
+  publishedBy User? @relation("PlanVersionsPublishedBy", fields: [publishedById], references: [id], onDelete: SetNull)
+
+  @@unique([planId, version])
+  @@index([planId])
+}
+
+// --- Billing Address ---
+
+model BillingAddress {
+  id          String   @id @default(uuid())
+  userId      String
+  label       String? // e.g. "Office", "Home"
+  line1       String
+  line2       String?
+  city        String
+  stateName   String
+  stateCode   String // 2-digit GST state code (e.g. "27" for MH)
+  pincode     String
+  country     String   @default("India")
+  countryCode String   @default("IN") // ISO-3166 alpha-2
+  gstNumber   String?
+  legalName   String?
+  isDefault   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user                 User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orders               Order[]
+  invoices             Invoice[]
+  defaultedByCompanies CompanyProfile[] @relation("CompanyDefaultBillingAddress")
+
+  @@index([userId, isDefault])
+  @@index([userId])
+}
+
+// --- Orders ---
+
+model Order {
+  id               String  @id @default(uuid())
+  userId           String
+  planId           String
+  planSnapshot     Json // freezes plan attributes at order time
+  couponId         String?
+  billingAddressId String?
+
+  // Units of the plan purchased in this order (1-3). Multi-quantity is
+  // allowed only for selected stackable plans; pricing fields below are
+  // ALWAYS the full order totals (unit price × quantity), and the grant
+  // multiplies countable plan resources by this.
+  quantity Int @default(1)
+
+  // Pricing breakdown — all integer paise
+  originalAmountPaise Int
+  discountPaise       Int @default(0)
+  prorationPaise      Int @default(0) // negative-credit applied (already deducted)
+  taxableAmountPaise  Int
+  cgstPaise           Int @default(0)
+  sgstPaise           Int @default(0)
+  igstPaise           Int @default(0)
+  cessPaise           Int @default(0)
+  taxPaise            Int @default(0)
+  totalPaise          Int
+
+  currency  String         @default("INR")
+  taxRegion TaxRegion      @default(IN_INTRA_STATE)
+  status    OrderStatus    @default(CREATED)
+  channel   PaymentChannel @default(CHECKOUT)
+
+  // Identifiers
+  idempotencyKey  String  @unique
+  receiptNumber   String  @unique
+  razorpayOrderId String? @unique
+
+  // Buyer GST / billing details (snapshot)
+  gstNumber          String?
+  legalName          String?
+  placeOfSupplyState String? // 2-digit GST code
+  buyerEmail         String?
+  buyerPhone         String?
+  buyerCountry       String? @default("IN")
+
+  // Optional refs
+  upgradeFromOrderId   String? @unique // self-reference: this order replaces this one
+  parentSubscriptionId String?
+
+  notes    Json?
+  metadata Json?
+
+  // Risk / device fingerprint
+  ipAddress         String?
+  userAgent         String?
+  deviceFingerprint String?
+  fraudScore        Int         @default(0)
+  fraudAction       FraudAction @default(NONE)
+
+  expiresAt  DateTime?
+  paidAt     DateTime?
+  refundedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  user               User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan               Plan            @relation(fields: [planId], references: [id])
+  coupon             Coupon?         @relation(fields: [couponId], references: [id])
+  billingAddress     BillingAddress? @relation(fields: [billingAddressId], references: [id])
+  upgradeFromOrder   Order?          @relation("OrderUpgradeChain", fields: [upgradeFromOrderId], references: [id])
+  upgradeToOrder     Order?          @relation("OrderUpgradeChain")
+  parentSubscription Subscription?   @relation(fields: [parentSubscriptionId], references: [id])
+
+  payments              Payment[]
+  paymentAttempts       PaymentAttempt[]
+  invoices              Invoice[]
+  refunds               Refund[]
+  refundRequests        RefundRequest[]
+  couponRedemption      CouponRedemption?
+  priceAdjustments      PriceAdjustment[]
+  fraudFlags            FraudSignalEvent[]
+  entitlements          Entitlement[]          @relation("EntitlementSourceOrder")
+  ledgerEntries         BillingLedger[]
+  upgradeChanges        UpgradeChange[]        @relation("UpgradeFromOrder")
+  upgradeChangesTo      UpgradeChange[]        @relation("UpgradeToOrder")
+  assistedHiringRequest AssistedHiringRequest? @relation("AssistedHiringOrder")
+
+  @@index([userId, status])
+  @@index([planId, createdAt])
+  @@index([status, createdAt])
+  @@index([razorpayOrderId])
+  @@index([createdAt])
+}
+
+// --- Payments ---
+
+model Payment {
+  id                String        @id @default(uuid())
+  orderId           String
+  userId            String
+  razorpayPaymentId String        @unique
+  status            PaymentStatus @default(CREATED)
+  method            PaymentMethod @default(UNKNOWN)
+  amountPaise       Int
+  feePaise          Int           @default(0)
+  taxPaise          Int           @default(0)
+  capturedPaise     Int           @default(0)
+  capturedAt        DateTime?
+  authorizedAt      DateTime?
+
+  // Failure details
+  errorCode        String?
+  errorDescription String?
+  errorSource      String?
+  errorStep        String?
+  errorReason      String?
+
+  // Method-specific snapshot
+  vpa               String?
+  bank              String?
+  wallet            String?
+  cardLast4         String?
+  cardNetwork       String? // VISA, MASTERCARD, RUPAY, AMEX, DINERS, MAESTRO
+  cardIssuer        String?
+  cardType          String? // CREDIT, DEBIT, PREPAID
+  cardInternational Boolean @default(false)
+  cardFingerprint   String? // SHA-256 of network+last4+issuer for fraud detection
+  emiTenure         Int? // months
+  international     Boolean @default(false)
+  currency          String  @default("INR")
+
+  // Subscription link
+  subscriptionId String?
+  invoiceId      String?
+
+  raw       Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user           User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  order          Order                   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  subscription   Subscription?           @relation(fields: [subscriptionId], references: [id])
+  invoice        Invoice?                @relation(fields: [invoiceId], references: [id])
+  refunds        Refund[]
+  disputes       Dispute[]
+  fraudFlags     FraudSignalEvent[]
+  settlementTxns SettlementTransaction[]
+
+  @@index([orderId])
+  @@index([userId])
+  @@index([status, createdAt])
+  @@index([cardFingerprint])
+  @@index([subscriptionId])
+}
+
+model PaymentAttempt {
+  id                String   @id @default(uuid())
+  orderId           String
+  userId            String?
+  status            String // pending, success, failure, dropped, abandoned
+  errorCode         String?
+  errorDescription  String?
+  ipAddress         String?
+  userAgent         String?
+  deviceFingerprint String?
+  attemptedAt       DateTime @default(now())
+  raw               Json?
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([attemptedAt])
+}
+
+// --- Subscriptions ---
+
+model Subscription {
+  id                     String                  @id @default(uuid())
+  userId                 String
+  planId                 String
+  planSnapshot           Json
+  razorpaySubscriptionId String?                 @unique
+  status                 SubscriptionStatus      @default(CREATED)
+  renewalMode            SubscriptionRenewalMode @default(AUTO_RENEW)
+  autoRenew              Boolean                 @default(true)
+  cancelAtCycleEnd       Boolean                 @default(false)
+  mandateId              String?
+  currentStart           DateTime?
+  currentEnd             DateTime?
+  nextChargeAt           DateTime?
+  totalCount             Int? // null = until cancelled
+  paidCount              Int                     @default(0)
+  remainingCount         Int?
+  failureCount           Int                     @default(0)
+  gracePeriodUntil       DateTime?
+  pausedAt               DateTime?
+  pausedBy               String?
+  pauseReason            String?
+  cancelledAt            DateTime?
+  cancelledBy            String?
+  cancelReason           String?
+  endedAt                DateTime?
+  shortUrl               String? // Razorpay hosted subscription page
+
+  // For pending plan changes (downgrade/upgrade scheduled at next cycle)
+  pendingPlanChangeId   String?
+  pendingPlanChangeData Json?
+
+  metadata  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user             User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan             Plan                   @relation(fields: [planId], references: [id])
+  mandate          Mandate?               @relation(fields: [mandateId], references: [id])
+  payments         Payment[]
+  invoices         Invoice[]
+  events           SubscriptionEvent[]
+  entitlements     Entitlement[]          @relation("EntitlementSourceSubscription")
+  retrySchedule    PaymentRetrySchedule[]
+  orders           Order[] // upgrade/downgrade orders linked to this subscription
+  priceAdjustments PriceAdjustment[]
+
+  @@index([userId, status])
+  @@index([nextChargeAt])
+  @@index([status, currentEnd])
+}
+
+model SubscriptionEvent {
+  id             String   @id @default(uuid())
+  subscriptionId String
+  kind           String // razorpay event name (subscription.activated etc.)
+  happenedAt     DateTime @default(now())
+  payloadHash    String
+  raw            Json
+
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId])
+  @@index([kind, happenedAt])
+}
+
+model Mandate {
+  id              String        @id @default(uuid())
+  userId          String
+  razorpayTokenId String        @unique
+  method          MandateMethod
+  status          MandateStatus @default(PENDING)
+  maxAmountPaise  Int
+  frequency       String? // "as_presented", "monthly", etc.
+  vpa             String?
+  bankName        String?
+  bankCode        String?
+  accountLast4    String?
+  cardLast4       String?
+  network         String?
+  mandateUrl      String?
+  startsAt        DateTime?
+  expiresAt       DateTime?
+  raw             Json?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subscriptions Subscription[]
+
+  @@index([userId])
+  @@index([status])
+}
+
+model PaymentMethodToken {
+  id              String   @id @default(uuid())
+  userId          String
+  type            String // CARD | VPA | NETBANKING | EMI
+  razorpayTokenId String   @unique
+  last4           String?
+  network         String?
+  vpaHandle       String?
+  bankCode        String?
+  expiryMonth     Int?
+  expiryYear      Int?
+  isDefault       Boolean  @default(false)
+  status          String   @default("ACTIVE") // ACTIVE | REMOVED | EXPIRED
+  raw             Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isDefault])
+  @@index([status])
+}
+
+// --- Invoices ---
+
+model Invoice {
+  id               String        @id @default(uuid())
+  invoiceNumber    String        @unique
+  userId           String
+  orderId          String?
+  subscriptionId   String?
+  billingAddressId String?
+  type             InvoiceType   @default(TAX_INVOICE)
+  status           InvoiceStatus @default(DRAFT)
+
+  // GST snapshot
+  sellerGstin     String
+  sellerLegalName String
+  sellerStateCode String
+  buyerGstin      String?
+  buyerLegalName  String?
+  buyerStateCode  String?
+  placeOfSupply   String
+  taxRegion       TaxRegion
+  hsnCode         String    @default("998314")
+
+  // Pricing snapshot — all paise
+  subtotalPaise      Int
+  discountPaise      Int    @default(0)
+  taxableAmountPaise Int
+  cgstPaise          Int    @default(0)
+  sgstPaise          Int    @default(0)
+  igstPaise          Int    @default(0)
+  cessPaise          Int    @default(0)
+  totalPaise         Int
+  paidPaise          Int    @default(0)
+  refundedPaise      Int    @default(0)
+  currency           String @default("INR")
+  gstPercent         Int    @default(18)
+
+  // Period (for subscription invoices)
+  periodStart DateTime?
+  periodEnd   DateTime?
+
+  // Files
+  pdfUrl  String?
+  jsonUrl String?
+
+  // E-invoice (IRP)
+  eInvoiceIrn     String?
+  eInvoiceQrUrl   String?
+  eInvoiceAckNo   String?
+  eInvoiceAckDate DateTime?
+
+  issuedAt   DateTime?
+  voidedAt   DateTime?
+  voidReason String?
+
+  metadata  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  order          Order?          @relation(fields: [orderId], references: [id])
+  subscription   Subscription?   @relation(fields: [subscriptionId], references: [id])
+  billingAddress BillingAddress? @relation(fields: [billingAddressId], references: [id])
+  lines          InvoiceLine[]
+  payments       Payment[]
+
+  @@index([userId, issuedAt])
+  @@index([orderId])
+  @@index([subscriptionId])
+  @@index([status])
+}
+
+model InvoiceLine {
+  id                 String  @id @default(uuid())
+  invoiceId          String
+  description        String
+  hsnCode            String?
+  sacCode            String?
+  quantity           Int     @default(1)
+  unitPricePaise     Int
+  discountPaise      Int     @default(0)
+  taxableAmountPaise Int
+  gstPercent         Int     @default(18)
+  cgstPaise          Int     @default(0)
+  sgstPaise          Int     @default(0)
+  igstPaise          Int     @default(0)
+  cessPaise          Int     @default(0)
+  totalPaise         Int
+  metadata           Json?
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+}
+
+model InvoiceSequence {
+  id            String   @id @default(uuid())
+  financialYear String // "2026-27"
+  prefix        String   @default("HA")
+  lastNumber    Int      @default(0)
+  updatedAt     DateTime @updatedAt
+
+  @@unique([financialYear, prefix])
+}
+
+// --- Coupons ---
+
+model Coupon {
+  id                    String       @id @default(uuid())
+  code                  String       @unique
+  name                  String
+  type                  CouponType
+  valuePaise            Int? // for FLAT
+  valuePercent          Int? // for PERCENT (0-100)
+  maxDiscountPaise      Int? // cap for PERCENT
+  trialExtendDays       Int? // for TRIAL_EXTEND
+  scope                 CouponScope  @default(GLOBAL)
+  status                CouponStatus @default(ACTIVE)
+  startsAt              DateTime?
+  endsAt                DateTime?
+  maxRedemptions        Int? // null = unlimited
+  maxRedemptionsPerUser Int          @default(1)
+  redemptionsCount      Int          @default(0)
+  minOrderAmountPaise   Int          @default(0)
+  allowedPlanIds        String[]     @default([])
+  excludedPlanIds       String[]     @default([])
+  allowedRoles          Role[]       @default([])
+  allowedUserIds        String[]     @default([])
+  comboAllowed          Boolean      @default(false)
+  stackable             Boolean      @default(false)
+  autoApply             Boolean      @default(false)
+  descriptionHtml       String?
+  internalNotes         String?
+  createdById           String?
+  metadata              Json?
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
+
+  createdBy   User?              @relation("CouponsCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  redemptions CouponRedemption[]
+  orders      Order[]
+
+  @@index([status, endsAt])
+  @@index([scope])
+}
+
+model CouponRedemption {
+  id             String                 @id @default(uuid())
+  couponId       String
+  userId         String
+  orderId        String?                @unique
+  subscriptionId String?
+  redeemedAt     DateTime               @default(now())
+  discountPaise  Int
+  status         CouponRedemptionStatus @default(SUCCESS)
+
+  coupon Coupon @relation(fields: [couponId], references: [id])
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  order  Order? @relation(fields: [orderId], references: [id])
+
+  @@index([couponId, status])
+  @@index([userId])
+}
+
+// --- Refunds / Settlements / Disputes ---
+
+model Refund {
+  id               String       @id @default(uuid())
+  paymentId        String
+  orderId          String
+  razorpayRefundId String       @unique
+  amountPaise      Int
+  reason           RefundReason @default(USER_REQUESTED)
+  notes            String?
+  status           RefundStatus @default(PENDING)
+  initiatedById    String?
+  processedAt      DateTime?
+  errorCode        String?
+  errorDescription String?
+  raw              Json?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  payment        Payment                 @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  order          Order                   @relation(fields: [orderId], references: [id])
+  initiatedBy    User?                   @relation("RefundsInitiatedBy", fields: [initiatedById], references: [id], onDelete: SetNull)
+  settlementTxns SettlementTransaction[]
+  refundRequest  RefundRequest?
+
+  @@index([paymentId])
+  @@index([orderId])
+  @@index([status])
+}
+
+/// A refund ASKED FOR by the customer. Always queues for super-admin review —
+/// nothing is sent to Razorpay until someone approves it, which is why this is
+/// a separate model from `Refund` rather than a status on it. On approval the
+/// reviewer's action creates the Refund row and links it here via `refundId`.
+model RefundRequest {
+  id           String              @id @default(uuid())
+  userId       String
+  orderId      String
+  /// Captured Payment resolved at request time. Nullable so a request survives
+  /// a payment row being reworked; the reviewer re-resolves before refunding.
+  paymentId    String?
+  /// Amount the customer asked for, in paise. Defaults to the full order.
+  amountPaise  Int
+  /// Customer's own words. Required — the reviewer needs a reason to judge.
+  userReason   String
+  /// Whether the request landed inside BILLING_REFUND_WINDOW_DAYS. Captured at
+  /// creation so a slow review can't silently change the answer; approving an
+  /// out-of-window request is a deliberate goodwill decision.
+  withinWindow Boolean             @default(true)
+  status       RefundRequestStatus @default(PENDING)
+
+  reviewedById String?
+  reviewedAt   DateTime?
+  /// Reviewer's note — shown to the customer on both approve and reject.
+  reviewNotes  String?
+  /// Set once approved and the Razorpay refund was created.
+  refundId     String?   @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user       User    @relation("RefundRequestsByUser", fields: [userId], references: [id], onDelete: Cascade)
+  order      Order   @relation(fields: [orderId], references: [id])
+  reviewedBy User?   @relation("RefundRequestsReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
+  refund     Refund? @relation(fields: [refundId], references: [id])
+
+  @@index([userId, status])
+  @@index([orderId])
+  @@index([status, createdAt])
+}
+
+model Settlement {
+  id                   String           @id @default(uuid())
+  razorpaySettlementId String           @unique
+  settledOnDate        DateTime
+  amountPaise          Int
+  feesPaise            Int              @default(0)
+  taxPaise             Int              @default(0)
+  netPaise             Int              @default(0)
+  utr                  String?
+  status               SettlementStatus @default(PROCESSED)
+  raw                  Json?
+  createdAt            DateTime         @default(now())
+
+  transactions SettlementTransaction[]
+
+  @@index([settledOnDate])
+  @@index([status])
+}
+
+model SettlementTransaction {
+  id           String  @id @default(uuid())
+  settlementId String
+  paymentId    String?
+  refundId     String?
+  type         String // payment | refund | adjustment | tax
+  amountPaise  Int
+  feePaise     Int     @default(0)
+  taxPaise     Int     @default(0)
+  raw          Json?
+
+  settlement Settlement @relation(fields: [settlementId], references: [id], onDelete: Cascade)
+  payment    Payment?   @relation(fields: [paymentId], references: [id])
+  refund     Refund?    @relation(fields: [refundId], references: [id])
+
+  @@index([settlementId])
+  @@index([paymentId])
+  @@index([refundId])
+}
+
+model Dispute {
+  id                String        @id @default(uuid())
+  paymentId         String
+  razorpayDisputeId String        @unique
+  status            DisputeStatus @default(OPEN)
+  reasonCode        String?
+  reasonDescription String?
+  amountPaise       Int
+  dueByAt           DateTime?
+  raw               Json?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@index([paymentId])
+  @@index([status, dueByAt])
+}
+
+// --- Entitlements / Resources / Ledgers ---
+
+model Entitlement {
+  id                   String            @id @default(uuid())
+  userId               String
+  planId               String
+  source               EntitlementSource @default(PLAN)
+  sourceOrderId        String?
+  sourceSubscriptionId String?
+  sourceCouponId       String?
+  status               EntitlementStatus @default(ACTIVE)
+  validFrom            DateTime
+  validUntil           DateTime
+  autoRenew            Boolean           @default(false)
+  gracePeriodUntil     DateTime?
+  cancelledAt          DateTime?
+  metadata             Json?
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+
+  user               User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan               Plan                  @relation(fields: [planId], references: [id])
+  sourceOrder        Order?                @relation("EntitlementSourceOrder", fields: [sourceOrderId], references: [id])
+  sourceSubscription Subscription?         @relation("EntitlementSourceSubscription", fields: [sourceSubscriptionId], references: [id])
+  resources          EntitlementResource[]
+  upgradesFrom       UpgradeChange[]       @relation("UpgradeFromEntitlement")
+  upgradesTo         UpgradeChange[]       @relation("UpgradeToEntitlement")
+
+  @@index([userId, status])
+  @@index([validUntil])
+  @@index([planId])
+}
+
+model EntitlementResource {
+  id             String       @id @default(uuid())
+  entitlementId  String
+  unit           ResourceUnit
+  allocated      Int          @default(0)
+  consumed       Int          @default(0)
+  carriedForward Int          @default(0)
+  lastConsumedAt DateTime?
+
+  entitlement Entitlement      @relation(fields: [entitlementId], references: [id], onDelete: Cascade)
+  ledger      ResourceLedger[]
+
+  @@unique([entitlementId, unit])
+  @@index([entitlementId])
+}
+
+model ResourceLedger {
+  id                    String               @id @default(uuid())
+  entitlementResourceId String
+  userId                String
+  delta                 Int // positive = credit, negative = debit
+  reason                ResourceLedgerReason
+  refType               String? // "JOB_POST" | "CV_UNLOCK" | "SEARCH" | "MANUAL" | "UPGRADE_CARRY" | "REFUND" | "ADMIN"
+  refId                 String?
+  notes                 String?
+  ipAddress             String?
+  userAgent             String?
+  createdAt             DateTime             @default(now())
+
+  entitlementResource EntitlementResource @relation(fields: [entitlementResourceId], references: [id], onDelete: Cascade)
+  user                User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([entitlementResourceId])
+  @@index([userId, createdAt])
+  @@index([refType, refId])
+}
+
+model BillingLedger {
+  id          String          @id @default(uuid())
+  userId      String
+  type        LedgerEntryType
+  amountPaise Int
+  currency    String          @default("INR")
+  refType     String?
+  refId       String?
+  orderId     String?
+  narration   String?
+  metadata    Json?
+  createdAt   DateTime        @default(now())
+
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  order Order? @relation(fields: [orderId], references: [id])
+
+  @@index([userId, createdAt])
+  @@index([type, createdAt])
+  @@index([refType, refId])
+}
+
+model PriceAdjustment {
+  id             String                @id @default(uuid())
+  orderId        String?
+  subscriptionId String?
+  reason         PriceAdjustmentReason
+  amountPaise    Int
+  narration      String?
+  createdById    String?
+  metadata       Json?
+  createdAt      DateTime              @default(now())
+
+  order        Order?        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  subscription Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  createdBy    User?         @relation("PriceAdjustmentsCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([orderId])
+  @@index([subscriptionId])
+}
+
+// --- Razorpay Webhook Event Log ---
+
+model RazorpayWebhookEvent {
+  id               String                @id @default(uuid())
+  razorpayEventId  String                @unique
+  event            String // e.g. "payment.captured"
+  accountId        String?
+  signatureValid   Boolean               @default(false)
+  receivedAt       DateTime              @default(now())
+  processedAt      DateTime?
+  status           RazorpayWebhookStatus @default(RECEIVED)
+  retryCount       Int                   @default(0)
+  errorMessage     String?
+  payload          Json
+  payloadHash      String
+  replayCount      Int                   @default(0)
+  lastReplayedAt   DateTime?
+  lastReplayedById String?
+
+  lastReplayedBy User? @relation("WebhookReplayedBy", fields: [lastReplayedById], references: [id], onDelete: SetNull)
+
+  @@index([event, status])
+  @@index([receivedAt])
+  @@index([status, retryCount])
+}
+
+// --- CV Enterprise Quote Requests + Custom Plan Offers ---
+
+model QuoteRequest {
+  id               String             @id @default(uuid())
+  // Nullable so guests can submit enterprise quote requests from the
+  // public pricing page without first creating an account. Logged-in
+  // submissions still attach their userId so /billing/quote/me works.
+  userId           String?
+  companyName      String
+  contactPerson    String
+  designation      String?
+  email            String
+  phone            String
+  employeeRange    String?
+  hiringNeed       String?
+  requiredCvCount  Int?
+  validityDays     Int?
+  expectedSeats    Int?
+  currentToolStack String?
+  budgetRange      String?
+  additionalNotes  String?
+  status           QuoteRequestStatus @default(NEW)
+  assignedToId     String?
+  slaDueAt         DateTime?
+  contactedAt      DateTime?
+  ipAddress        String?
+  userAgent        String?
+  metadata         Json?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  // user is now optional — guests submit without an account; SetNull on
+  // delete is irrelevant when userId is already null, but keeps the FK
+  // consistent for the populated case.
+  user       User?             @relation(fields: [userId], references: [id], onDelete: SetNull)
+  assignedTo User?             @relation("QuoteAssignedTo", fields: [assignedToId], references: [id], onDelete: SetNull)
+  offers     CustomPlanOffer[]
+
+  @@index([userId])
+  @@index([status, slaDueAt])
+  @@index([assignedToId])
+}
+
+model CustomPlanOffer {
+  id              String                @id @default(uuid())
+  quoteRequestId  String
+  planId          String? // created plan id once accepted
+  basePricePaise  Int
+  validityDays    Int
+  cvUnlocks       Int                   @default(0)
+  seats           Int                   @default(1)
+  features        Json?
+  resources       Json?
+  status          CustomPlanOfferStatus @default(DRAFT)
+  expiresAt       DateTime?
+  createdById     String?
+  acceptedAt      DateTime?
+  acceptedOrderId String?
+  metadata        Json?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+
+  quoteRequest QuoteRequest @relation(fields: [quoteRequestId], references: [id], onDelete: Cascade)
+  plan         Plan?        @relation(fields: [planId], references: [id])
+  createdBy    User?        @relation("CustomPlanOffersCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([quoteRequestId])
+  @@index([status, expiresAt])
+}
+
+// --- Fraud Detection ---
+
+model FraudSignalEvent {
+  id           String        @id @default(uuid())
+  userId       String?
+  orderId      String?
+  paymentId    String?
+  signal       FraudSignal
+  severity     FraudSeverity @default(LOW)
+  evidence     Json?
+  action       FraudAction   @default(NONE)
+  reviewedById String?
+  reviewedAt   DateTime?
+  notes        String?
+  createdAt    DateTime      @default(now())
+
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  order      Order?   @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  payment    Payment? @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+  reviewedBy User?    @relation("FraudReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([severity, action])
+  @@index([signal])
+  @@index([createdAt])
+}
+
+model FraudRule {
+  id            String        @id @default(uuid())
+  name          String        @unique
+  signal        FraudSignal
+  threshold     Int
+  windowSeconds Int
+  action        FraudAction   @default(REVIEW)
+  severity      FraudSeverity @default(MEDIUM)
+  enabled       Boolean       @default(true)
+  notes         String?
+  updatedById   String?
+  updatedAt     DateTime      @updatedAt
+  createdAt     DateTime      @default(now())
+
+  updatedBy User? @relation("FraudRulesUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@index([enabled, signal])
+}
+
+// --- Payment Retry / Dunning Ladder ---
+
+model PaymentRetrySchedule {
+  id             String    @id @default(uuid())
+  subscriptionId String
+  attemptNumber  Int
+  scheduledAt    DateTime
+  executed       Boolean   @default(false)
+  executedAt     DateTime?
+  succeeded      Boolean   @default(false)
+  errorCode      String?
+  paymentId      String?
+  metadata       Json?
+  createdAt      DateTime  @default(now())
+
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId, attemptNumber])
+  @@index([scheduledAt, executed])
+}
+
+// --- Multi-channel Notification Dedup ---
+
+model BillingNotification {
+  id       String                  @id @default(uuid())
+  userId   String
+  channel  String // EMAIL | SMS | WHATSAPP | FCM | WEBPUSH | INAPP
+  kind     BillingNotificationKind
+  refType  String? // ORDER | SUBSCRIPTION | INVOICE | REFUND | ENTITLEMENT
+  refId    String?
+  sentAt   DateTime                @default(now())
+  ackAt    DateTime?
+  metadata Json?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, kind, refType, refId, channel])
+  @@index([userId, sentAt])
+  @@index([kind])
+}
+
+// --- Upgrade audit ---
+
+model UpgradeChange {
+  id                String   @id @default(uuid())
+  userId            String
+  fromEntitlementId String?
+  toEntitlementId   String?
+  fromPlanId        String
+  toPlanId          String
+  fromOrderId       String?
+  toOrderId         String?
+  prorationPaise    Int      @default(0)
+  carryForward      Json? // { unit: amount, ... }
+  snapshot          Json
+  executedAt        DateTime @default(now())
+  createdById       String?
+
+  user            User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fromEntitlement Entitlement? @relation("UpgradeFromEntitlement", fields: [fromEntitlementId], references: [id], onDelete: SetNull)
+  toEntitlement   Entitlement? @relation("UpgradeToEntitlement", fields: [toEntitlementId], references: [id], onDelete: SetNull)
+  fromPlan        Plan         @relation("UpgradeFromPlan", fields: [fromPlanId], references: [id])
+  toPlan          Plan         @relation("UpgradeToPlan", fields: [toPlanId], references: [id])
+  fromOrder       Order?       @relation("UpgradeFromOrder", fields: [fromOrderId], references: [id], onDelete: SetNull)
+  toOrder         Order?       @relation("UpgradeToOrder", fields: [toOrderId], references: [id], onDelete: SetNull)
+
+  @@index([userId, executedAt])
+  @@index([fromPlanId, toPlanId])
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Company Ratings + Reviews
+//
+// Anyone (auth or guest) can leave one review per company. Auth users
+// dedup on (userId, companyId); guests dedup on (fingerprintHash,
+// companyId) where fingerprintHash = SHA-256(IP + UA + day-bucket +
+// companyId). Engagement (helpful votes / reports) is denormalised on
+// the review row for cheap card render. The CompanyReviewAggregate
+// table holds derived stats refreshed by a BullMQ worker.
+// ────────────────────────────────────────────────────────────────────────
+
+enum ReviewStatus {
+  PENDING
+  APPROVED
+  FLAGGED
+  REJECTED
+  DELETED
+}
+
+enum ReviewEmploymentType {
+  PERMANENT
+  INTERNSHIP
+  CONTRACT
+  TEMPORARY
+  FREELANCE
+  PART_TIME
+  TRAINEE
+}
+
+enum ReviewWorkPolicy {
+  PERMANENT_WFH
+  WORKING_FROM_OFFICE
+  HYBRID
+}
+
+enum ReviewGender {
+  FEMALE
+  MALE
+  TRANSGENDER
+  PREFER_NOT_TO_SAY
+}
+
+model CompanyReview {
+  id              String  @id @default(uuid())
+  companyId       String
+  userId          String?
+  guestEmail      String?
+  fingerprintHash String
+
+  overallRating          Int
+  ratingWorkLifeBalance  Int
+  ratingSalary           Int
+  ratingPromotions       Int
+  ratingJobSecurity      Int
+  ratingSkillDev         Int
+  ratingWorkSatisfaction Int
+  ratingCompanyCulture   Int
+
+  gender           ReviewGender?
+  workPolicy       ReviewWorkPolicy
+  currentlyWorking Boolean
+  startedWorkingAt DateTime?
+  endedWorkingAt   DateTime?
+  designation      String
+  employmentType   ReviewEmploymentType
+  department       String
+  workLocation     String?
+
+  likes       String?
+  dislikes    String?
+  workDetails String?
+  isDetailed  Boolean @default(false)
+
+  status           ReviewStatus @default(APPROVED)
+  moderationReason String?
+  moderatedBy      String?
+  moderatedAt      DateTime?
+  reportedCount    Int          @default(0)
+
+  helpfulCount    Int @default(0)
+  notHelpfulCount Int @default(0)
+
+  ipAddress String?
+  userAgent String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user    User?                 @relation(fields: [userId], references: [id], onDelete: SetNull)
+  company CompanyProfile        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  votes   CompanyReviewVote[]
+  reports CompanyReviewReport[]
+
+  @@unique([userId, companyId], name: "uq_review_user_company")
+  @@unique([fingerprintHash, companyId], name: "uq_review_fp_company")
+  @@index([companyId, status, createdAt])
+  @@index([companyId, overallRating, status])
+  @@index([companyId, isDetailed])
+  @@index([status, reportedCount])
+  @@index([userId, createdAt])
+}
+
+model CompanyReviewVote {
+  id              String   @id @default(uuid())
+  reviewId        String
+  userId          String?
+  fingerprintHash String
+  helpful         Boolean
+  createdAt       DateTime @default(now())
+
+  review CompanyReview @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  user   User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@unique([reviewId, userId], name: "uq_vote_user_review")
+  @@unique([reviewId, fingerprintHash], name: "uq_vote_fp_review")
+  @@index([reviewId])
+}
+
+model CompanyReviewReport {
+  id             String    @id @default(uuid())
+  reviewId       String
+  reporterUserId String?
+  reporterFp     String
+  reason         String
+  details        String?
+  resolved       Boolean   @default(false)
+  resolvedBy     String?
+  resolvedAt     DateTime?
+  createdAt      DateTime  @default(now())
+
+  review CompanyReview @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+
+  @@index([reviewId])
+  @@index([resolved, createdAt])
+}
+
+model CompanyReviewAggregate {
+  companyId               String   @id
+  totalReviews            Int      @default(0)
+  averageOverall          Float    @default(0)
+  averageWorkLifeBalance  Float    @default(0)
+  averageSalary           Float    @default(0)
+  averagePromotions       Float    @default(0)
+  averageJobSecurity      Float    @default(0)
+  averageSkillDev         Float    @default(0)
+  averageWorkSatisfaction Float    @default(0)
+  averageCompanyCulture   Float    @default(0)
+  count5                  Int      @default(0)
+  count4                  Int      @default(0)
+  count3                  Int      @default(0)
+  count2                  Int      @default(0)
+  count1                  Int      @default(0)
+  averageMen              Float?
+  countMen                Int      @default(0)
+  averageWomen            Float?
+  countWomen              Int      @default(0)
+  topJobProfiles          Json?
+  industryAverage         Float?
+  industryName            String?
+  refreshedAt             DateTime @default(now())
+
+  company CompanyProfile @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([averageOverall])
+  @@index([refreshedAt])
+}
+
+// =====================================================================
+// WhatsApp system (Super-Admin inbox + templates + campaigns)
+// Platform-scoped (operated by super-admins), not per-company.
+// See whatsapp-system-implementation-plan.md for the full design.
+// =====================================================================
+
+enum WaDirection {
+  INBOUND
+  OUTBOUND
+}
+
+/// Monotonic message state machine, keyed by Meta WAMID. Status only moves forward.
+enum WaMessageStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+enum WaMessageType {
+  TEXT
+  IMAGE
+  VIDEO
+  AUDIO
+  DOCUMENT
+  STICKER
+  LOCATION
+  CONTACTS
+  INTERACTIVE
+  BUTTON
+  REACTION
+  TEMPLATE
+  SYSTEM
+  UNSUPPORTED
+}
+
+/// Agent workflow status (distinct from Meta's 24h customer-service window).
+enum WaConversationStatus {
+  OPEN
+  PENDING
+  RESOLVED
+}
+
+enum WaOptInStatus {
+  UNKNOWN
+  OPTED_IN
+  OPTED_OUT
+}
+
+enum WaTemplateCategory {
+  MARKETING
+  UTILITY
+  AUTHENTICATION
+}
+
+enum WaTemplateStatus {
+  LOCAL
+  DRAFT
+  PENDING
+  APPROVED
+  REJECTED
+  PAUSED
+  DISABLED
+  IN_APPEAL
+}
+
+enum WaTemplateQuality {
+  GREEN
+  YELLOW
+  RED
+  UNKNOWN
+}
+
+enum WaCampaignStatus {
+  DRAFT
+  SCHEDULED
+  QUEUED
+  RUNNING
+  PAUSED
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum WaCampaignRecipientStatus {
+  PENDING
+  SENT
+  DELIVERED
+  READ
+  FAILED
+  SKIPPED
+}
+
+/// A connected WhatsApp Business number (channel). Usually one; modelled as
+/// many so multiple numbers / a Chatwoot pilot number can coexist.
+model WaChannel {
+  id            String            @id @default(uuid())
+  phoneNumberId String            @unique // META_WHATSAPP_PHONE_ID
+  wabaId        String
+  displayPhone  String // E.164 for display
+  displayName   String?
+  isActive      Boolean           @default(true)
+  isDefault     Boolean           @default(false)
+  messagingTier String? // 250 | 1K | 10K | 100K | UNLIMITED (from Meta)
+  qualityRating WaTemplateQuality @default(UNKNOWN)
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  conversations WaConversation[]
+  messages      WaMessage[]
+  campaigns     WaCampaign[]
+
+  @@index([isActive])
+}
+
+/// A person we talk to. May be on-platform (userId set) or off-platform.
+model WaContact {
+  id              String        @id @default(uuid())
+  phone           String        @unique // E.164, normalized
+  waId            String? // Meta wa_id
+  name            String? // profile name from inbound, or admin-set
+  userId          String?       @unique // link to platform User (on-platform)
+  user            User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  optInStatus     WaOptInStatus @default(UNKNOWN)
+  optInAt         DateTime?
+  optInSource     String? // form | reply | import | api
+  optOutAt        DateTime?
+  tags            String[]
+  attributes      Json? // arbitrary fields for personalization
+  lastInboundAt   DateTime? // drives 24h customer-service window
+  lastOutboundAt  DateTime?
+  lastMarketingAt DateTime? // for per-contact marketing frequency cap
+  consentEvidence Json? // provenance: source channel, original opt-in timestamp, ip/ref
+  isBlocked       Boolean       @default(false)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  conversations      WaConversation[]
+  messages           WaMessage[]
+  campaignRecipients WaCampaignRecipient[]
+
+  @@index([userId])
+  @@index([optInStatus])
+  @@index([lastInboundAt])
+  @@index([tags])
+}
+
+model WaConversation {
+  id                 String               @id @default(uuid())
+  channelId          String
+  channel            WaChannel            @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  contactId          String
+  contact            WaContact            @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  status             WaConversationStatus @default(OPEN)
+  assignedTo         String? // super-admin User id
+  assignee           User?                @relation("WaAssignee", fields: [assignedTo], references: [id], onDelete: SetNull)
+  windowExpiresAt    DateTime? // lastInboundAt + 24h; null/past => template-only
+  unreadCount        Int                  @default(0)
+  lastReadAt         DateTime? // agent last-read marker (unread = inbound after this)
+  firstResponseAt    DateTime? // first agent reply (SLA)
+  resolvedAt         DateTime? // when moved to RESOLVED (SLA)
+  snoozedUntil       DateTime? // hidden from the active queue until this time
+  labels             String[]             @default([]) // triage labels
+  archivedAt         DateTime? // soft-archive (hidden from default views)
+  csatRequestedAt    DateTime? // when a CSAT survey was sent
+  csatScore          Int? // 1-5 customer satisfaction rating
+  csatComment        String?
+  csatAt             DateTime? // when the CSAT rating was received
+  lastMessageAt      DateTime?
+  lastMessagePreview String?
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+
+  messages WaMessage[]
+  notes    WaConversationNote[]
+
+  @@unique([channelId, contactId])
+  @@index([status])
+  @@index([assignedTo])
+  @@index([lastMessageAt])
+  @@index([status, lastMessageAt])
+  @@index([assignedTo, lastMessageAt])
+  @@index([snoozedUntil])
+}
+
+model WaMessage {
+  id               String          @id @default(uuid())
+  wamid            String?         @unique // Meta message id — dedup + status keying
+  channelId        String
+  channel          WaChannel       @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  conversationId   String
+  conversation     WaConversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  contactId        String
+  contact          WaContact       @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  direction        WaDirection
+  type             WaMessageType
+  status           WaMessageStatus @default(QUEUED)
+  text             String? // body / caption
+  payload          Json? // type-specific payload (interactive, location, template vars, etc.)
+  mediaId          String? // Meta media id (inbound)
+  mediaUrl         String? // R2 URL after download / for outbound
+  mediaMime        String?
+  templateName     String?
+  contextWamid     String? // reply-to (threading)
+  errorCode        String?
+  errorTitle       String?
+  pricingCategory  String? // marketing|utility|authentication|service (from status webhook)
+  costPaise        Int? // actual billable cost (from status webhook pricing)
+  billable         Boolean? // whether Meta billed this message
+  pricingModel     String? // CBP | PMP (from status webhook)
+  templateLanguage String? // language of the template used (per-language analytics)
+  referral         Json? // click-to-WhatsApp (CTWA) referral payload
+  reactions        Json? // emoji reactions applied to this message
+  sentByUserId     String? // which super-admin sent it (denormalized)
+  campaignId       String?
+  campaign         WaCampaign?     @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  sentAt           DateTime?
+  deliveredAt      DateTime?
+  readAt           DateTime?
+  deletedAt        DateTime? // soft-delete: hidden from the admin inbox ("delete for me")
+  createdAt        DateTime        @default(now())
+
+  @@index([conversationId, createdAt])
+  @@index([contactId])
+  @@index([status])
+  @@index([campaignId])
+  @@index([direction])
+  @@index([templateName])
+}
+
+/// Mirror of a Meta message template + lifecycle/quality/analytics.
+model WaTemplate {
+  id              String             @id @default(uuid())
+  metaId          String?            @unique // Meta template id
+  name            String
+  language        String // en_US
+  category        WaTemplateCategory
+  status          WaTemplateStatus   @default(LOCAL)
+  quality         WaTemplateQuality  @default(UNKNOWN)
+  components      Json // header/body/footer/buttons definition
+  variableSample  Json? // example values for preview
+  rejectionReason String?
+  lastSyncedAt    DateTime?
+  createdBy       String?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  campaigns WaCampaign[]
+
+  @@unique([name, language])
+  @@index([status])
+  @@index([category])
+}
+
+model WaCampaign {
+  id                 String           @id @default(uuid())
+  name               String
+  description        String?
+  channelId          String
+  channel            WaChannel        @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  templateId         String
+  template           WaTemplate       @relation(fields: [templateId], references: [id])
+  status             WaCampaignStatus @default(DRAFT)
+  // Audience
+  audienceType       String // segment | upload | manual
+  audienceFilter     Json? // tag/optIn/attribute filter for segment
+  variableMapping    Json? // template var -> contact attribute mapping
+  // Scheduling + throttle
+  scheduledAt        DateTime?
+  batchSize          Int              @default(100)
+  throttlePerSec     Int              @default(15)
+  // Counters (denormalized for dashboard)
+  totalRecipients    Int              @default(0)
+  sentCount          Int              @default(0)
+  deliveredCount     Int              @default(0)
+  readCount          Int              @default(0)
+  failedCount        Int              @default(0)
+  skippedCount       Int              @default(0)
+  repliedCount       Int              @default(0)
+  convertedCount     Int              @default(0)
+  estimatedCostPaise Int?
+  actualCostPaise    Int? // summed from delivered message pricing
+  type               WaCampaignType   @default(BROADCAST)
+  isAbTest           Boolean          @default(false) // pick a weighted template variant per recipient
+  recurrenceDays     Int? // re-run every N days (null = one-off)
+  nextRunAt          DateTime? // next scheduled recurrence run
+  parentCampaignId   String? // lineage when a recurring campaign spawns re-runs
+  startedAt          DateTime?
+  completedAt        DateTime?
+  createdBy          String?
+  creator            User?            @relation("WaCampaignCreator", fields: [createdBy], references: [id], onDelete: SetNull)
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  recipients WaCampaignRecipient[]
+  messages   WaMessage[]
+  steps      WaCampaignStep[]
+  variants   WaCampaignVariant[]
+
+  @@index([status])
+  @@index([scheduledAt])
+  @@index([nextRunAt])
+}
+
+/// A reusable campaign blueprint (template + audience + settings) — "save as
+/// template" so a known-good campaign can be re-launched in one click.
+model WaCampaignTemplate {
+  id              String         @id @default(uuid())
+  name            String
+  description     String?
+  templateId      String // Meta message template (WaTemplate id)
+  audienceType    String? // segment | upload | manual
+  audienceFilter  Json?
+  segmentId       String?
+  variableMapping Json?
+  type            WaCampaignType @default(BROADCAST)
+  batchSize       Int            @default(100)
+  throttlePerSec  Int            @default(15)
+  recurrenceDays  Int?
+  isAbTest        Boolean        @default(false)
+  variants        Json? // snapshot: [{label, templateId, weight}]
+  steps           Json? // snapshot: [{stepOrder, templateId, delayHours, condition}]
+  createdBy       String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@index([createdAt])
+}
+
+model WaCampaignRecipient {
+  id          String                    @id @default(uuid())
+  campaignId  String
+  campaign    WaCampaign                @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contactId   String
+  contact     WaContact                 @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  status      WaCampaignRecipientStatus @default(PENDING)
+  wamid       String? // resolved message id for status reconciliation
+  variantId   String? // A/B variant assigned to this recipient
+  variables   Json? // resolved template variables for this recipient
+  errorCode   String?
+  sentAt      DateTime?
+  repliedAt   DateTime? // for drip branch + reply funnel
+  currentStep Int                       @default(0) // drip sequence progress
+  nextStepAt  DateTime? // when the next drip step is due
+  createdAt   DateTime                  @default(now())
+
+  @@unique([campaignId, contactId])
+  @@index([campaignId, status])
+  @@index([wamid])
+  @@index([nextStepAt])
+}
+
+/// Raw webhook envelope log for replay/debug + at-least-once dedup audit.
+model WaWebhookEvent {
+  id          String    @id @default(uuid())
+  eventType   String // message | status | unknown
+  wamid       String?
+  payload     Json
+  signatureOk Boolean
+  processedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([wamid])
+  @@index([createdAt])
+}
+
+/// Reusable quick-reply snippets for the super-admin inbox composer.
+model WaCannedReply {
+  id        String   @id @default(uuid())
+  title     String
+  text      String
+  createdBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([title])
+}
+
+/// A frequently-asked question presented to customers as an interactive list
+/// row; the saved answer is auto-sent when the customer taps it. `question` is
+/// the list-row label (WhatsApp caps row titles at 24 chars — kept short).
+model WaFaq {
+  id        String   @id @default(uuid())
+  question  String
+  answer    String
+  order     Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive, order])
+}
+
+enum WaCampaignType {
+  BROADCAST
+  SEQUENCE
+}
+
+/// One step of a drip/sequence campaign.
+model WaCampaignStep {
+  id         String     @id @default(uuid())
+  campaignId String
+  campaign   WaCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  stepOrder  Int
+  templateId String
+  delayHours Int        @default(24) // delay after the previous step before this step fires
+  condition  String     @default("any") // any | no_reply | replied
+  createdAt  DateTime   @default(now())
+
+  @@unique([campaignId, stepOrder])
+}
+
+/// Internal private note on a conversation (never sent to Meta).
+model WaConversationNote {
+  id             String         @id @default(uuid())
+  conversationId String
+  conversation   WaConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  authorId       String? // super-admin User id (denormalized)
+  body           String
+  createdAt      DateTime       @default(now())
+
+  @@index([conversationId])
+}
+
+/// Keyword auto-responder rule evaluated against inbound text / button replies.
+model WaKeywordRule {
+  id              String   @id @default(uuid())
+  name            String
+  match           String // keyword/phrase to match
+  matchType       String   @default("contains") // exact | contains | starts
+  replyText       String?
+  replyTemplateId String?
+  isActive        Boolean  @default(true)
+  priority        Int      @default(0)
+  createdBy       String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([isActive])
+}
+
+/// Singleton settings row for the WhatsApp channel (editable in the UI).
+model WaSettings {
+  id                 String   @id @default("default")
+  businessHours      Json? // { tz, days: [{ day, open, close }] }
+  awayMessage        String?
+  welcomeMessage     String?
+  autoReplyEnabled   Boolean  @default(false)
+  // Manual "away" override — when true the away message is sent regardless of
+  // business hours (agent stepped out). Off = automatic (business-hours) away.
+  awayMode           Boolean  @default(false)
+  marketingCapPer24h Int      @default(1) // max marketing templates per contact / rolling 24h (0 = unlimited)
+  retentionDays      Int? // null = keep forever; else prune messages/events older than this
+  optOutKeywords     String[] @default(["STOP", "UNSUBSCRIBE", "CANCEL"])
+  // FAQ menu: when enabled, the interactive FAQ list is sent on first contact
+  // and whenever an inbound message matches one of the trigger keywords.
+  faqMenuEnabled     Boolean  @default(false)
+  faqTriggerKeywords String[] @default(["menu", "faq", "help"])
+  updatedAt          DateTime @updatedAt
+}
+
+enum WaScheduledMessageStatus {
+  PENDING
+  SENT
+  CANCELLED
+  FAILED
+}
+
+/// One A/B variant of a campaign (a template + weight); recipients are split across variants.
+model WaCampaignVariant {
+  id             String     @id @default(uuid())
+  campaignId     String
+  campaign       WaCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  label          String
+  templateId     String
+  weight         Int        @default(1)
+  sentCount      Int        @default(0)
+  deliveredCount Int        @default(0)
+  readCount      Int        @default(0)
+  repliedCount   Int        @default(0)
+  createdAt      DateTime   @default(now())
+
+  @@index([campaignId])
+}
+
+/// A trackable short link embedded in campaign/template messages.
+model WaShortLink {
+  id         String        @id @default(uuid())
+  code       String        @unique
+  targetUrl  String
+  campaignId String?
+  clickCount Int           @default(0)
+  createdBy  String?
+  createdAt  DateTime      @default(now())
+  clicks     WaLinkClick[]
+
+  @@index([campaignId])
+}
+
+/// A single click on a WaShortLink (for CTR analytics).
+model WaLinkClick {
+  id          String      @id @default(uuid())
+  shortLinkId String
+  shortLink   WaShortLink @relation(fields: [shortLinkId], references: [id], onDelete: Cascade)
+  contactId   String?
+  ip          String?
+  userAgent   String?
+  createdAt   DateTime    @default(now())
+
+  @@index([shortLinkId, createdAt])
+}
+
+/// Periodic snapshot of channel quality + messaging tier for trend charts.
+model WaChannelHealthSnapshot {
+  id        String   @id @default(uuid())
+  channelId String
+  quality   String
+  tier      String?
+  createdAt DateTime @default(now())
+
+  @@index([channelId, createdAt])
+}
+
+/// A message queued to send to a conversation at a future time (send-later).
+model WaScheduledMessage {
+  id             String                   @id @default(uuid())
+  conversationId String
+  kind           String // text | template
+  text           String?
+  templateId     String?
+  bodyParams     Json?
+  sendAt         DateTime
+  status         WaScheduledMessageStatus @default(PENDING)
+  createdBy      String?
+  sentAt         DateTime?
+  error          String?
+  createdAt      DateTime                 @default(now())
+
+  @@index([status, sendAt])
+  @@index([conversationId])
+}
+
+/// Global do-not-contact suppression list (phones never messaged by campaigns).
+model WaSuppression {
+  id        String   @id @default(uuid())
+  phone     String   @unique // E.164, normalized
+  reason    String?
+  createdBy String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+/// A saved, reusable audience segment (tag/optIn/attribute filter).
+model WaSegment {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  filter      Json // { tags?, optInStatus?, onPlatform? }
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([name])
+}
+
+/// A recorded conversion attributed to a campaign / contact (funnel + ROI).
+model WaConversion {
+  id         String   @id @default(uuid())
+  campaignId String?
+  contactId  String?
+  valuePaise Int? // optional monetary value of the conversion
+  note       String?
+  createdAt  DateTime @default(now())
+
+  @@index([campaignId])
+  @@index([contactId])
+}
+
+// ============================================================================
+// EMAIL SYSTEM (super-admin operated bulk/marketing email — mirrors WhatsApp)
+// ============================================================================
+
+enum EmailSubscribeStatus {
+  SUBSCRIBED
+  UNSUBSCRIBED
+  PENDING
+  CLEANED // hard-bounced / removed
+  UNKNOWN
+}
+
+enum EmailTemplateCategory {
+  MARKETING
+  TRANSACTIONAL
+  NOTIFICATION
+  NEWSLETTER
+  ANNOUNCEMENT
+  OTHER
+}
+
+enum EmailTemplateStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+enum EmailCampaignStatus {
+  DRAFT
+  SCHEDULED
+  QUEUED
+  RUNNING
+  PAUSED
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+/// Monotonic per-recipient state machine (only moves forward).
+enum EmailCampaignRecipientStatus {
+  PENDING
+  SENT
+  DELIVERED
+  OPENED
+  CLICKED
+  BOUNCED
+  COMPLAINED
+  FAILED
+  SKIPPED
+}
+
+enum EmailCampaignType {
+  BROADCAST
+  SEQUENCE // drip
+}
+
+enum EmailDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum EmailMessageStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  OPENED
+  CLICKED
+  BOUNCED
+  COMPLAINED
+  FAILED
+  RECEIVED // inbound
+}
+
+enum EmailThreadStatus {
+  OPEN
+  PENDING
+  RESOLVED
+}
+
+enum EmailEventType {
+  SENT
+  DELIVERED
+  OPEN
+  CLICK
+  BOUNCE
+  COMPLAINT
+  UNSUBSCRIBE
+  FAILED
+  DEFERRED
+}
+
+enum EmailScheduledMessageStatus {
+  PENDING
+  SENT
+  CANCELLED
+  FAILED
+}
+
+/// A from-address / sending identity + deliverability posture (DKIM/SPF/DMARC)
+/// and per-sender send caps. Analog of WaChannel.
+model EmailSender {
+  id              String    @id @default(uuid())
+  fromEmail       String    @unique // e.g. noreply@hireadda.in
+  fromName        String
+  replyTo         String?
+  domain          String // hireadda.in
+  dkimVerified    Boolean   @default(false)
+  spfVerified     Boolean   @default(false)
+  dmarcVerified   Boolean   @default(false)
+  mtaStsVerified  Boolean   @default(false) // _mta-sts TXT (v=STSv1)
+  tlsRptVerified  Boolean   @default(false) // _smtp._tls TXT (v=TLSRPTv1)
+  dkimSelector    String?
+  reputationScore Int? // 0-100, from the deliverability verify job
+  hourlyCap       Int? // null = use global EMAIL_MAX_SEND_PER_HOUR
+  dailyCap        Int?
+  warmupDay       Int       @default(0) // current warm-up day index
+  isDefault       Boolean   @default(false)
+  isActive        Boolean   @default(true)
+  lastVerifiedAt  DateTime?
+  createdBy       String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  campaigns EmailCampaign[]
+  threads   EmailThread[]
+  messages  EmailMessage[]
+
+  @@index([isDefault])
+  @@index([domain])
+}
+
+/// An email recipient, keyed by normalized (lowercase) address. Analog of WaContact.
+model EmailContact {
+  id              String               @id @default(uuid())
+  email           String               @unique // normalized lowercase
+  name            String?
+  userId          String?              @unique // link to platform User (on-platform)
+  user            User?                @relation(fields: [userId], references: [id], onDelete: SetNull)
+  subscribeStatus EmailSubscribeStatus @default(SUBSCRIBED)
+  subscribedAt    DateTime?
+  subscribeSource String? // form | reply | import | api | platform
+  unsubscribedAt  DateTime?
+  tags            String[]             @default([])
+  attributes      Json? // arbitrary fields for personalization / merge
+  lastOpenedAt    DateTime?
+  lastClickedAt   DateTime?
+  lastEmailedAt   DateTime?
+  lastMarketingAt DateTime? // per-contact marketing frequency cap
+  bounceCount     Int                  @default(0)
+  complaintCount  Int                  @default(0)
+  consentEvidence Json? // provenance: source channel, opt-in timestamp, ip/ref
+  isBlocked       Boolean              @default(false)
+  welcomedAt      DateTime? // first-contact welcome auto-reply sent (once per contact)
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+
+  threads            EmailThread[]
+  messages           EmailMessage[]
+  campaignRecipients EmailCampaignRecipient[]
+  setMemberships     EmailContactSetMember[]
+
+  @@index([userId])
+  @@index([subscribeStatus])
+  @@index([tags])
+  @@index([lastEmailedAt])
+}
+
+/// A saved, reusable audience segment (tag/subscribe/attribute/role filter).
+model EmailSegment {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  filter      Json // { tags?, subscribeStatus?, onPlatform?, roles? }
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([name])
+}
+
+/// A static, named list of contacts (explicit membership) — targetable by campaigns.
+model EmailContactSet {
+  id          String                  @id @default(uuid())
+  name        String
+  description String?
+  createdBy   String?
+  createdAt   DateTime                @default(now())
+  updatedAt   DateTime                @updatedAt
+  members     EmailContactSetMember[]
+
+  @@index([name])
+}
+
+model EmailContactSetMember {
+  id        String          @id @default(uuid())
+  setId     String
+  set       EmailContactSet @relation(fields: [setId], references: [id], onDelete: Cascade)
+  contactId String
+  contact   EmailContact    @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  addedAt   DateTime        @default(now())
+
+  @@unique([setId, contactId])
+  @@index([contactId])
+}
+
+/// Global do-not-contact suppression list (emails never messaged by campaigns).
+model EmailSuppression {
+  id        String   @id @default(uuid())
+  email     String   @unique // normalized lowercase
+  reason    String? // hard_bounce | complaint | unsubscribe | manual
+  source    String?
+  createdBy String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([reason])
+}
+
+/// DB-backed email template (subject + html/text body + merge variables).
+/// Simpler than WaTemplate — no external approval lifecycle.
+model EmailTemplate {
+  id              String                @id @default(uuid())
+  name            String
+  subject         String
+  preheader       String?
+  htmlBody        String
+  textBody        String?
+  category        EmailTemplateCategory @default(MARKETING)
+  status          EmailTemplateStatus   @default(DRAFT)
+  variables       Json? // schema: [{ key, label, required, sample }]
+  variableSample  Json?
+  version         Int                   @default(1) // bumped on each save; snapshots in EmailTemplateVersion
+  // Reusable footer attached to this template — rendered at the bottom of every
+  // send (above the compliance footer). A footer-category EmailSnippet.
+  footerSnippetId String?
+  footerSnippet   EmailSnippet?         @relation("TemplateFooter", fields: [footerSnippetId], references: [id], onDelete: SetNull)
+  createdBy       String?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+
+  campaigns EmailCampaign[]
+  versions  EmailTemplateVersion[]
+
+  @@index([status])
+  @@index([category])
+}
+
+/// Immutable snapshot of an EmailTemplate at a point in time (revision history + restore).
+model EmailTemplateVersion {
+  id         String        @id @default(uuid())
+  templateId String
+  template   EmailTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  version    Int
+  subject    String
+  preheader  String?
+  htmlBody   String
+  textBody   String?
+  createdBy  String?
+  createdAt  DateTime      @default(now())
+
+  @@unique([templateId, version])
+  @@index([templateId, version])
+}
+
+/// A reusable content block/snippet (header/footer/CTA) insertable into any template.
+model EmailSnippet {
+  id        String   @id @default(uuid())
+  name      String
+  category  String? // header | footer | cta | hero | other
+  html      String
+  createdBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  footerOfTemplates EmailTemplate[] @relation("TemplateFooter")
+
+  @@index([category])
+}
+
+model EmailCampaign {
+  id               String              @id @default(uuid())
+  name             String
+  description      String?
+  senderId         String
+  sender           EmailSender         @relation(fields: [senderId], references: [id])
+  templateId       String?
+  template         EmailTemplate?      @relation(fields: [templateId], references: [id])
+  subjectOverride  String?
+  fromNameOverride String? // overrides the sender's fromName for this campaign
+  replyToOverride  String? // overrides the sender's replyTo for this campaign
+  status           EmailCampaignStatus @default(DRAFT)
+  // UTM auto-tagging (appended to outbound links before click-wrapping)
+  utmSource        String?
+  utmMedium        String?
+  utmCampaign      String?
+  utmTerm          String?
+  utmContent       String?
+  // Audience
+  audienceType     String // segment | upload | manual | platform
+  audienceFilter   Json?
+  segmentId        String?
+  variableMapping  Json? // template var -> contact attribute mapping
+  attachments      Json? // [{ key, filename, mime, size }] staged in R2, attached to every send
+  // Scheduling + throttle
+  scheduledAt      DateTime?
+  sendTimezone     String? // IANA tz — scheduledAt is interpreted as local time in this zone
+  batchSize        Int                 @default(200)
+  sendRate         Int                 @default(20) // per second
+
+  // Counters (denormalized for the dashboard)
+  totalRecipients   Int @default(0)
+  sentCount         Int @default(0)
+  deliveredCount    Int @default(0)
+  openedCount       Int @default(0)
+  clickedCount      Int @default(0)
+  bouncedCount      Int @default(0)
+  complainedCount   Int @default(0)
+  unsubscribedCount Int @default(0)
+  failedCount       Int @default(0)
+  skippedCount      Int @default(0)
+  repliedCount      Int @default(0)
+  convertedCount    Int @default(0)
+
+  type             EmailCampaignType @default(BROADCAST)
+  isAbTest         Boolean           @default(false)
+  recurrenceDays   Int? // re-run every N days (null = one-off)
+  nextRunAt        DateTime?
+  parentCampaignId String? // lineage when a recurring campaign spawns re-runs
+  autoPausedReason String? // bounce_rate | complaint_rate (circuit-breaker)
+  startedAt        DateTime?
+  completedAt      DateTime?
+  archivedAt       DateTime? // soft-archive: hidden from the default list, preserves real status
+  createdBy        String?
+  creator          User?             @relation("EmailCampaignCreator", fields: [createdBy], references: [id], onDelete: SetNull)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  recipients EmailCampaignRecipient[]
+  steps      EmailCampaignStep[]
+  variants   EmailCampaignVariant[]
+  messages   EmailMessage[]
+
+  @@index([status])
+  @@index([scheduledAt])
+  @@index([nextRunAt])
+  @@index([senderId])
+  @@index([archivedAt])
+}
+
+/// A reusable campaign blueprint (sender + template + audience + settings) —
+/// "save as template" so a known-good campaign can be re-launched in one click.
+model EmailCampaignBlueprint {
+  id              String            @id @default(uuid())
+  name            String
+  description     String?
+  senderId        String?
+  templateId      String?
+  subjectOverride String?
+  audienceType    String?
+  audienceFilter  Json?
+  segmentId       String?
+  variableMapping Json?
+  type            EmailCampaignType @default(BROADCAST)
+  batchSize       Int               @default(200)
+  sendRate        Int               @default(20)
+  recurrenceDays  Int?
+  isAbTest        Boolean           @default(false)
+  variants        Json? // snapshot: [{ label, templateId, subjectOverride, weight }]
+  steps           Json? // snapshot: [{ stepOrder, templateId, delayHours, condition }]
+  createdBy       String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@index([createdAt])
+}
+
+model EmailCampaignRecipient {
+  id                String                       @id @default(uuid())
+  campaignId        String
+  campaign          EmailCampaign                @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contactId         String
+  contact           EmailContact                 @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  email             String // denormalized target (survives contact edits)
+  status            EmailCampaignRecipientStatus @default(PENDING)
+  variantId         String? // A/B variant assigned
+  variables         Json? // resolved merge variables for this recipient
+  isSeed            Boolean                      @default(false) // seed/monitoring inbox — excluded from audience metrics
+  trackingToken     String                       @unique // HMAC-signed open/click/unsub key
+  providerMessageId String? // RFC Message-ID we stamped on the send
+  errorMessage      String?
+  bounceType        String? // hard | soft
+  // Drip sequence progress
+  currentStep       Int                          @default(0)
+  nextStepAt        DateTime?
+  sentAt            DateTime?
+  deliveredAt       DateTime?
+  openedAt          DateTime?
+  clickedAt         DateTime?
+  bouncedAt         DateTime?
+  complainedAt      DateTime?
+  unsubscribedAt    DateTime?
+  repliedAt         DateTime?
+  openCount         Int                          @default(0)
+  clickCount        Int                          @default(0)
+  createdAt         DateTime                     @default(now())
+  updatedAt         DateTime                     @updatedAt
+
+  @@unique([campaignId, contactId])
+  @@index([campaignId, status])
+  @@index([contactId])
+  @@index([status])
+  @@index([nextStepAt])
+  @@index([variantId])
+}
+
+/// One drip step in a SEQUENCE campaign (delay + optional condition branch).
+model EmailCampaignStep {
+  id         String        @id @default(uuid())
+  campaignId String
+  campaign   EmailCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  stepOrder  Int
+  templateId String?
+  subject    String?
+  delayHours Int           @default(24)
+  condition  String        @default("any") // any | no_open | opened | no_click | clicked
+  sentCount  Int           @default(0)
+  createdAt  DateTime      @default(now())
+
+  @@index([campaignId, stepOrder])
+}
+
+/// One A/B variant of a campaign (template + subject + weight); recipients split across variants.
+model EmailCampaignVariant {
+  id              String        @id @default(uuid())
+  campaignId      String
+  campaign        EmailCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  label           String
+  templateId      String?
+  subjectOverride String?
+  weight          Int           @default(1)
+  sentCount       Int           @default(0)
+  deliveredCount  Int           @default(0)
+  openedCount     Int           @default(0)
+  clickedCount    Int           @default(0)
+  bouncedCount    Int           @default(0)
+  createdAt       DateTime      @default(now())
+
+  @@index([campaignId])
+}
+
+/// A raw open/click/bounce/complaint/unsubscribe event (analytics source of truth).
+model EmailEvent {
+  id                String         @id @default(uuid())
+  eventType         EmailEventType
+  campaignId        String?
+  recipientId       String?
+  contactId         String?
+  providerMessageId String?
+  url               String? // for CLICK
+  bounceType        String? // for BOUNCE: hard | soft
+  reason            String?
+  ip                String?
+  userAgent         String?
+  machineOpen       Boolean        @default(false) // OPEN from a prefetch/proxy (Apple MPP, Google image proxy)
+  payload           Json?
+  createdAt         DateTime       @default(now())
+
+  @@index([eventType, createdAt])
+  @@index([campaignId])
+  @@index([recipientId])
+  @@index([contactId])
+}
+
+/// A trackable rewritten link embedded in campaign emails.
+model EmailLink {
+  id         String           @id @default(uuid())
+  code       String           @unique
+  targetUrl  String
+  campaignId String?
+  label      String?
+  clickCount Int              @default(0)
+  createdAt  DateTime         @default(now())
+  clicks     EmailLinkClick[]
+
+  @@index([campaignId])
+}
+
+/// A single click on an EmailLink (for CTR analytics).
+model EmailLinkClick {
+  id          String    @id @default(uuid())
+  linkId      String
+  link        EmailLink @relation(fields: [linkId], references: [id], onDelete: Cascade)
+  contactId   String?
+  recipientId String?
+  ip          String?
+  userAgent   String?
+  createdAt   DateTime  @default(now())
+
+  @@index([linkId, createdAt])
+}
+
+/// Audit trail of every unsubscribe (one-click, link, reply STOP, manual).
+model EmailUnsubscribe {
+  id          String   @id @default(uuid())
+  email       String
+  contactId   String?
+  campaignId  String?
+  recipientId String?
+  method      String   @default("link") // one_click | link | reply_stop | manual
+  ip          String?
+  userAgent   String?
+  createdAt   DateTime @default(now())
+
+  @@index([email])
+  @@index([campaignId])
+  @@index([createdAt])
+}
+
+/// Async bulk-action job — large select-all-across-filter mutations are offloaded
+/// here (chunked in the worker) so the request returns immediately and the UI can
+/// poll live progress. Small ops run synchronously and never create a row.
+model EmailBulkJob {
+  id        String   @id @default(uuid())
+  kind      String // contact.delete | contact.tag | contact.update | thread.action | suppression.delete | unsubscribe.resubscribe | unsubscribe.delete
+  status    String   @default("PENDING") // PENDING | RUNNING | COMPLETED | FAILED
+  total     Int      @default(0)
+  processed Int      @default(0)
+  succeeded Int      @default(0)
+  failed    Int      @default(0)
+  error     String?
+  input     Json? // { scope: {ids|filter}, action?, payload? }
+  result    Json? // { summary, undoToken? }
+  createdBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+/// Undo snapshot for a destructive bulk op — the affected rows are serialized
+/// BEFORE deletion so an admin can restore them within the TTL. Swept after
+/// `expiresAt`.
+model EmailBulkUndo {
+  id         String    @id @default(uuid())
+  entity     String // contact | suppression | unsubscribe | set | template | campaign | setMember
+  action     String // delete | remove
+  label      String? // human summary for the undo toast
+  snapshot   Json // serialized rows (+ children where relevant)
+  count      Int       @default(0)
+  restoredAt DateTime?
+  expiresAt  DateTime
+  createdBy  String?
+  createdAt  DateTime  @default(now())
+
+  @@index([expiresAt])
+  @@index([createdAt])
+}
+
+/// Per-send SMTP transaction log (accepted/rejected/error + latency).
+model EmailSendLog {
+  id                String   @id @default(uuid())
+  toEmail           String
+  campaignId        String?
+  recipientId       String?
+  providerMessageId String?
+  status            String // ACCEPTED | REJECTED | ERROR
+  smtpResponse      String?
+  acceptedRcpts     String[] @default([])
+  rejectedRcpts     String[] @default([])
+  latencyMs         Int?
+  errorMessage      String?
+  createdAt         DateTime @default(now())
+
+  @@index([campaignId])
+  @@index([status, createdAt])
+  @@index([toEmail])
+}
+
+/// A read-only replies inbox thread (IMAP-ingested). Analog of WaConversation.
+model EmailThread {
+  id                 String            @id @default(uuid())
+  senderId           String
+  sender             EmailSender       @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  contactId          String
+  contact            EmailContact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  threadSubject      String?
+  rootMessageId      String? // RFC Message-ID of the first message in the thread
+  status             EmailThreadStatus @default(OPEN)
+  assignedTo         String? // super-admin User id
+  assignee           User?             @relation("EmailAssignee", fields: [assignedTo], references: [id], onDelete: SetNull)
+  campaignId         String? // attribution when a reply threads to a campaign send
+  unreadCount        Int               @default(0)
+  lastReadAt         DateTime?
+  firstResponseAt    DateTime?
+  resolvedAt         DateTime?
+  snoozedUntil       DateTime?
+  labels             String[]          @default([])
+  archivedAt         DateTime?
+  csatScore          Int?
+  csatComment        String?
+  csatAt             DateTime?
+  lastMessageAt      DateTime?
+  lastMessagePreview String?
+  lastAutoReplyAt    DateTime? // debounce for the away/business-hours auto-responder
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  messages EmailMessage[]
+  notes    EmailThreadNote[]
+
+  @@index([status])
+  @@index([assignedTo])
+  @@index([contactId])
+  @@index([lastMessageAt])
+  @@index([status, lastMessageAt])
+  @@index([snoozedUntil])
+}
+
+/// A single inbox email (inbound reply or an agent's outbound reply). Analog of WaMessage.
+model EmailMessage {
+  id                  String             @id @default(uuid())
+  providerMessageId   String?            @unique // RFC 5322 Message-ID — dedup + threading
+  senderId            String?
+  sender              EmailSender?       @relation(fields: [senderId], references: [id], onDelete: SetNull)
+  threadId            String?
+  thread              EmailThread?       @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  contactId           String
+  contact             EmailContact       @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  campaignId          String?
+  campaign            EmailCampaign?     @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  recipientId         String?
+  direction           EmailDirection
+  status              EmailMessageStatus @default(QUEUED)
+  fromEmail           String?
+  toEmail             String?
+  subject             String?
+  htmlBody            String?
+  textBody            String?
+  snippet             String?
+  attachments         Json? // [{ filename, mime, size, r2Url }]
+  inReplyTo           String? // In-Reply-To header (threading)
+  references          String[]           @default([]) // References header chain
+  bounceType          String?
+  complaintFeedbackId String?
+  errorMessage        String?
+  sentByUserId        String? // which super-admin sent the reply
+  sentAt              DateTime?
+  deliveredAt         DateTime?
+  openedAt            DateTime?
+  clickedAt           DateTime?
+  bouncedAt           DateTime?
+  readAt              DateTime?
+  deletedAt           DateTime? // soft-delete: hidden from the admin inbox
+  createdAt           DateTime           @default(now())
+
+  @@index([threadId, createdAt])
+  @@index([contactId])
+  @@index([campaignId])
+  @@index([status])
+  @@index([direction])
+  @@index([inReplyTo])
+}
+
+/// An internal note attached to an inbox thread (agent-only, never sent).
+model EmailThreadNote {
+  id        String      @id @default(uuid())
+  threadId  String
+  thread    EmailThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  authorId  String?
+  body      String
+  createdAt DateTime    @default(now())
+
+  @@index([threadId, createdAt])
+}
+
+/// A reusable canned reply / snippet for the inbox.
+model EmailCannedReply {
+  id        String   @id @default(uuid())
+  title     String
+  subject   String?
+  body      String
+  shortcut  String? // /shortcut expander
+  createdBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([title])
+}
+
+/// An inbound auto-responder / triage rule (keyword -> action).
+model EmailRule {
+  id           String   @id @default(uuid())
+  name         String
+  enabled      Boolean  @default(true)
+  matchType    String   @default("contains") // contains | equals | regex | starts_with
+  keywords     String[] @default([])
+  matchSubject Boolean  @default(true)
+  matchBody    Boolean  @default(false)
+  action       String   @default("auto_reply") // auto_reply | label | assign | resolve
+  replyBody    String?
+  label        String?
+  assignTo     String?
+  priority     Int      @default(0)
+  createdBy    String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([enabled, priority])
+}
+
+/// A reply queued to send to a thread at a future time (send-later).
+model EmailScheduledMessage {
+  id          String                      @id @default(uuid())
+  threadId    String
+  subject     String?
+  body        String
+  html        String?
+  attachments Json? // [{ key, filename, mime, size }] staged in R2
+  sendAt      DateTime
+  status      EmailScheduledMessageStatus @default(PENDING)
+  createdBy   String?
+  sentAt      DateTime?
+  error       String?
+  createdAt   DateTime                    @default(now())
+
+  @@index([status, sendAt])
+  @@index([threadId])
+}
+
+/// Raw IMAP-ingested message (reply / bounce DSN / complaint ARF) — replay + dedup.
+model EmailInboundMessage {
+  id           String    @id @default(uuid())
+  messageId    String    @unique // RFC Message-ID
+  imapUid      Int?
+  mailbox      String? // INBOX | bounce
+  kind         String // reply | bounce | complaint | autoreply | unknown
+  fromEmail    String?
+  toEmail      String?
+  subject      String?
+  dsnStatus    String? // e.g. 5.1.1
+  dsnRecipient String? // failed recipient extracted from the DSN
+  recipientId  String? // resolved EmailCampaignRecipient id (VERP)
+  raw          Json? // parsed headers/structure summary
+  processedAt  DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([kind, createdAt])
+  @@index([recipientId])
+}
+
+/// Singleton email-system settings (inbox behaviour, caps, CAN-SPAM footer, tracking).
+model EmailSettings {
+  id                  String   @id @default("default")
+  businessHours       Json? // { tz, days: [{ day, open, close }] }
+  awayMessage         String?
+  welcomeMessage      String?
+  autoReplyEnabled    Boolean  @default(false)
+  awayMode            Boolean  @default(false)
+  marketingCapPer24h  Int      @default(1) // max marketing emails per contact / rolling 24h (0 = unlimited)
+  retentionDays       Int? // null = keep forever; else prune events/messages older than this
+  unsubscribeKeywords String[] @default(["STOP", "UNSUBSCRIBE", "CANCEL"])
+  footerAddress       String? // CAN-SPAM / DPDP physical mailing address
+  footerHtml          String? // optional custom footer HTML
+  defaultFromName     String?
+  defaultReplyTo      String?
+  trackOpens          Boolean  @default(true)
+  trackClicks         Boolean  @default(true)
+  warmupSchedule      Json? // [{ day, cap }]
+  seedAddresses       String[] @default([]) // seed inboxes injected into every campaign
+  updatedAt           DateTime @updatedAt
+}
+
+/// A personal IMAP+SMTP mailbox connected to the one-on-one webmail client
+/// (Roundcube/Gmail-style). Credentials are AES-256-GCM encrypted at rest.
+model EmailAccount {
+  id          String    @id @default(uuid())
+  userId      String // owner (super-admin operator)
+  user        User      @relation("EmailAccountOwner", fields: [userId], references: [id], onDelete: Cascade)
+  name        String // display name shown as From
+  email       String // the mailbox address
+  // IMAP (inbound)
+  imapHost    String
+  imapPort    Int       @default(993)
+  imapSecure  Boolean   @default(true)
+  imapUser    String
+  imapPassEnc String // encryptField()
+  // SMTP (outbound)
+  smtpHost    String
+  smtpPort    Int       @default(465)
+  smtpSecure  Boolean   @default(true)
+  smtpUser    String
+  smtpPassEnc String // encryptField()
+  signature   String? // HTML signature appended in the composer
+  color       String? // UI accent for multi-account
+  isDefault   Boolean   @default(false)
+  lastError   String? // last connection error surfaced in the UI
+  lastSyncAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([userId])
+}
+
+// ── Resume Watermark Toolkit ──────────────────────────────────────────────
+// Off-platform candidates are people whose CVs a super-admin manages for the
+// watermark toolkit. They are deliberately NOT platform Users / CandidateProfiles
+// (no account, no login, never mixed with on-platform candidates). createdBy /
+// uploadedBy are plain super-admin User ids, intentionally not FK relations.
+model OffPlatformCandidate {
+  id        String   @id @default(uuid())
+  name      String
+  email     String?
+  phone     String?
+  headline  String? // current title / role, free-text
+  notes     String?
+  tags      String[] // free-form labels
+  source    String? // where the CV came from (referral, job fair, import…)
+  createdBy String // super-admin User.id who added this record
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  resumes OffPlatformResume[]
+
+  @@index([createdAt])
+  @@index([name])
+}
+
+model OffPlatformResume {
+  id           String               @id @default(uuid())
+  candidateId  String
+  candidate    OffPlatformCandidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  url          String // R2 public URL
+  r2Key        String // R2 object key (folder prefix: off-platform-resumes/)
+  originalName String
+  mimeType     String
+  size         Int
+  isPrimary    Boolean              @default(false)
+  uploadedBy   String // super-admin User.id
+  createdAt    DateTime             @default(now())
+
+  @@index([candidateId])
+  @@index([createdAt])
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Admin PBAC — Permission-Based Access Control
+// ═══════════════════════════════════════════════════════════════════════
+//
+// SUPER_ADMIN is unconditional and holds no rows here: it is authorised by
+// role, never by grant, so the permission system can never lock the owner
+// out of the platform. Everything below scopes what a plain ADMIN can do.
+//
+// Effective permissions for an admin =
+//     direct grants (AdminPermissionGrant)
+//   ∪ grants inherited from every assigned role (AdminRole → …Permission)
+//
+// resolved by LONGEST-PREFIX-WINS with DENY breaking ties at equal
+// specificity, and with direct grants outranking role grants at equal
+// specificity. See permission.service.ts#resolveEffective.
+//
+// Keys are validated against backend/src/config/permissions.ts on write, so
+// a row can never hold a string the registry doesn't define.
+
+enum PermissionEffect {
+  ALLOW
+  DENY
+}
+
+/// A permission granted directly to one admin. `permissionKey` may name a
+/// BRANCH (`email`) or a LEAF (`email.campaigns.send`) — a branch implies
+/// every descendant at check time via prefix matching, so no expansion is
+/// stored and newly-shipped sub-permissions fall under existing grants
+/// automatically.
+model AdminPermissionGrant {
+  id            String           @id @default(uuid())
+  adminId       String
+  admin         User             @relation("AdminPermissionGrants", fields: [adminId], references: [id], onDelete: Cascade)
+  permissionKey String
+  effect        PermissionEffect @default(ALLOW)
+
+  /// Optional time-boxed elevation. A grant past its expiry is ignored by
+  /// resolution and swept by the hourly expiry job — temporary access
+  /// therefore fails closed even if the sweep is behind.
+  expiresAt DateTime?
+
+  /// Why this was granted. Surfaced in the control-centre matrix and the
+  /// admin's own "why can I do this?" view.
+  reason String?
+
+  grantedBy     String
+  grantedByUser User     @relation("AdminPermissionGrantedBy", fields: [grantedBy], references: [id], onDelete: Cascade)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([adminId, permissionKey])
+  @@index([adminId])
+  @@index([permissionKey])
+  @@index([expiresAt])
+}
+
+/// A reusable named bundle of permissions ("Support Agent", "Billing Ops").
+/// Roles are LIVE-LINKED, not copied: editing a role instantly changes every
+/// admin holding it. That is the point — it is what makes a 40-admin estate
+/// maintainable — and it is why role edits are audited and diffed in the UI.
+model AdminRole {
+  id          String  @id @default(uuid())
+  name        String  @unique
+  slug        String  @unique
+  description String?
+  /// Tailwind-friendly accent token for the role chip in the UI.
+  color       String? @default("blue")
+
+  /// System roles ship with the product and cannot be deleted (they may be
+  /// cloned). Prevents an estate from losing its baseline roles by accident.
+  isSystem Boolean @default(false)
+
+  createdBy String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  permissions AdminRolePermission[]
+  assignments AdminRoleAssignment[]
+
+  @@index([slug])
+}
+
+model AdminRolePermission {
+  id            String           @id @default(uuid())
+  roleId        String
+  role          AdminRole        @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permissionKey String
+  effect        PermissionEffect @default(ALLOW)
+
+  @@unique([roleId, permissionKey])
+  @@index([roleId])
+}
+
+model AdminRoleAssignment {
+  id      String    @id @default(uuid())
+  roleId  String
+  role    AdminRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  adminId String
+  admin   User      @relation("AdminRoleAssignments", fields: [adminId], references: [id], onDelete: Cascade)
+
+  /// Time-boxed role assignment — same fail-closed semantics as a grant.
+  expiresAt DateTime?
+
+  assignedBy String
+  createdAt  DateTime @default(now())
+
+  @@unique([roleId, adminId])
+  @@index([adminId])
+  @@index([roleId])
+  @@index([expiresAt])
+}
+
+/// Every admin action, captured automatically by the activity middleware.
+///
+/// Deliberately SEPARATE from AuditLog: AuditLog is a curated, per-route
+/// compliance record with redacted bodies, whereas this is a high-volume
+/// behavioural feed ("who is doing what right now") that powers the control
+/// centre's live activity view and the conflict-detection heuristics. It
+/// stores no request bodies at all, only the shape of the call.
+model AdminActivityLog {
+  id      String @id @default(uuid())
+  adminId String
+  admin   User   @relation("AdminActivityLogs", fields: [adminId], references: [id], onDelete: Cascade)
+
+  /// Registry key the route required, when it was permission-gated.
+  permissionKey String?
+  /// Coarse bucket derived from the permission key's first segment
+  /// (`email`, `billing`, …). Indexed for the per-domain activity filter.
+  domain        String?
+
+  method     String
+  /// Route PATTERN (`/api/v1/super-admin/users/:id`), never the raw URL —
+  /// keeps ids out of the feed's group-by and makes counts meaningful.
+  route      String
+  entity     String?
+  entityId   String?
+  statusCode Int
+  durationMs Int
+
+  ipAddress String?
+  userAgent String?
+
+  createdAt DateTime @default(now())
+
+  @@index([adminId, createdAt])
+  @@index([createdAt])
+  @@index([domain, createdAt])
+  @@index([entity, entityId])
+}
+
+enum ResourceLockMode {
+  /// Soft presence — many admins may hold VIEWING on the same resource.
+  VIEWING
+  /// Exclusive intent — at most one live EDITING row per resource.
+  EDITING
+}
+
+/// UI-level soft locks and presence for concurrently-edited admin surfaces.
+///
+/// This is ADVISORY. It stops two admins from unknowingly typing over each
+/// other, but it is not the correctness boundary — that is optimistic
+/// locking on `updatedAt` (see utils/optimistic-lock.ts), which catches the
+/// stale write even when the lock expired, the browser crashed, or the edit
+/// arrived from a script. Locks make the UI civilised; version checks make
+/// it correct.
+///
+/// Rows are heartbeated (`expiresAt` pushed forward) and treated as dead
+/// once expired, so a closed laptop releases its lock without cleanup.
+model ResourceLock {
+  id           String           @id @default(uuid())
+  resourceType String
+  resourceId   String
+  adminId      String
+  admin        User             @relation("ResourceLocks", fields: [adminId], references: [id], onDelete: Cascade)
+  mode         ResourceLockMode @default(VIEWING)
+
+  acquiredAt  DateTime @default(now())
+  heartbeatAt DateTime @default(now())
+  /// Dead once passed. Refreshed by the client heartbeat.
+  expiresAt   DateTime
+
+  @@unique([resourceType, resourceId, adminId])
+  @@index([resourceType, resourceId, expiresAt])
+  @@index([adminId])
+  @@index([expiresAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// SMS delivery tracking
+//
+// `sendSMS` previously returned true the moment Twilio ACCEPTED a message,
+// which says nothing about delivery — a carrier-filtered SMS looked identical
+// to a delivered one in the logs. That mattered most for India, where
+// unregistered A2P traffic is silently filtered by carriers.
+//
+// One row per outbound message, updated in place by Twilio's status callback
+// (queued → sent → delivered / undelivered / failed) so "did the OTP arrive?"
+// is answerable. Mirrors what the WhatsApp side already tracks.
+// ─────────────────────────────────────────────────────────────────────
+
+enum SmsStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  UNDELIVERED
+  FAILED
+  // Never handed to Twilio — rejected locally (unresolvable number, opted out).
+  REJECTED
+}
+
+model SmsMessage {
+  id String @id @default(uuid())
+
+  /// Twilio Message SID (`SM…`). Null when the send was rejected before dispatch.
+  providerSid String? @unique
+
+  to     String
+  /// Body is NOT stored: these are OTPs. Length is enough for cost/debugging.
+  bodyLength Int
+  /// What produced it — `otp.password_reset`, `otp.mobile_verify`, etc.
+  purpose String?
+
+  status SmsStatus @default(QUEUED)
+
+  /// Twilio numeric error code (21211 invalid To, 21610 opted out, 30007 filtered…).
+  errorCode    Int?
+  errorMessage String?
+
+  /// Segments + price, populated from the status callback when Twilio reports them.
+  segments   Int?
+  pricePaise Int?
+
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deliveredAt DateTime?
+
+  @@index([status])
+  @@index([to])
+  @@index([userId])
+  @@index([createdAt])
+  @@index([errorCode])
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// SMS opt-out
+//
+// Twilio auto-honours STOP and then returns error 21610 on every subsequent
+// send to that number. Without a record the failure is invisible and the
+// platform keeps paying to retry an OTP that can never be delivered.
+// ─────────────────────────────────────────────────────────────────────
+
+model SmsOptOut {
+  id    String @id @default(uuid())
+  /// E.164.
+  phone String @unique
+
+  /// `twilio_21610` (inferred from a send failure) or `inbound_stop`.
+  source String  @default("twilio_21610")
+  reason String?
+
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}

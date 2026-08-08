@@ -1,0 +1,35 @@
+# ============================================================
+# Redis Backup CronJob — Network Policy
+# Init container: egress to Redis (6379)
+# Main container: egress to R2 (443) for S3 upload
+# ============================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-backup-netpol
+  namespace: hire-adda
+spec:
+  podSelector:
+    matchLabels:
+      app: redis-backup
+  policyTypes:
+    - Egress
+  egress:
+    # DNS
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+    # Redis (init container redis-cli)
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - port: 6379
+          protocol: TCP
+    # HTTPS egress for R2 upload
+    - to: []
+      ports:
+        - port: 443
+          protocol: TCP

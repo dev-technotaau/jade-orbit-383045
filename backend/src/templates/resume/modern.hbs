@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+            font-size: 11px;
+            line-height: 1.5;
+            color: #111827;
+            max-width: 760px;
+            margin: 0 auto;
+        }
+
+        a { color: #0f766e; text-decoration: none; }
+
+        .layout {
+            display: flex;
+            min-height: 100%;
+        }
+
+        /* ── Sidebar ── */
+        .sidebar {
+            width: 240px;
+            flex-shrink: 0;
+            background: #0f766e;
+            color: #ecfdf5;
+            padding: 28px 22px;
+        }
+
+        .sidebar a { color: #99f6e4; word-break: break-all; }
+
+        .sidebar .name {
+            font-size: 22px;
+            font-weight: 700;
+            letter-spacing: -0.3px;
+            line-height: 1.15;
+        }
+
+        .sidebar .headline {
+            font-size: 11.5px;
+            color: #a7f3d0;
+            margin-top: 4px;
+            font-weight: 400;
+        }
+
+        .sidebar-section {
+            margin-top: 22px;
+        }
+
+        .sidebar-title {
+            font-size: 10px;
+            font-weight: 700;
+            color: #99f6e4;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            margin-bottom: 8px;
+            padding-bottom: 4px;
+            border-bottom: 1px solid rgba(153, 246, 228, 0.3);
+        }
+
+        .sidebar-row {
+            font-size: 10.5px;
+            color: #ecfdf5;
+            margin-bottom: 5px;
+            line-height: 1.5;
+        }
+
+        .sidebar-row .label {
+            font-size: 9.5px;
+            color: #99f6e4;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            display: block;
+            margin-bottom: 1px;
+        }
+
+        .sidebar-tag-list {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .sidebar-tag {
+            background: rgba(255, 255, 255, 0.1);
+            color: #ecfdf5;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 10px;
+        }
+
+        /* ── Main column ── */
+        .main {
+            flex: 1;
+            padding: 32px 30px;
+            background: #ffffff;
+        }
+
+        .section {
+            margin-bottom: 18px;
+            page-break-inside: avoid;
+        }
+
+        .section-title {
+            font-size: 12.5px;
+            font-weight: 700;
+            color: #0f766e;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            margin-bottom: 12px;
+            padding-bottom: 4px;
+            border-bottom: 2px solid #0f766e;
+        }
+
+        .summary-text {
+            font-size: 11px;
+            color: #374151;
+            line-height: 1.7;
+        }
+
+        .entry {
+            margin-bottom: 14px;
+            page-break-inside: avoid;
+            border-left: 3px solid #99f6e4;
+            padding-left: 12px;
+        }
+
+        .entry-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin-bottom: 2px;
+        }
+
+        .entry-title {
+            font-weight: 600;
+            font-size: 12px;
+            color: #111827;
+        }
+
+        .entry-subtitle {
+            color: #4b5563;
+            font-size: 11px;
+            display: block;
+            margin-bottom: 1px;
+        }
+
+        .entry-date {
+            font-size: 10px;
+            color: #0f766e;
+            white-space: nowrap;
+            font-weight: 600;
+        }
+
+        .entry-description {
+            font-size: 10.5px;
+            color: #374151;
+            margin-top: 4px;
+        }
+
+        .entry-highlights {
+            margin: 5px 0 0 0;
+            padding-left: 16px;
+        }
+
+        .entry-highlights li {
+            font-size: 10.5px;
+            color: #374151;
+            margin-bottom: 2px;
+        }
+
+        .project-entry {
+            margin-bottom: 10px;
+            page-break-inside: avoid;
+        }
+
+        .project-name {
+            font-weight: 600;
+            font-size: 11.5px;
+            color: #111827;
+        }
+
+        .project-tech {
+            font-size: 10px;
+            color: #0f766e;
+            margin-top: 2px;
+            font-style: italic;
+        }
+
+        .project-desc {
+            font-size: 10.5px;
+            color: #374151;
+            margin-top: 2px;
+        }
+
+        .cert-entry, .award-entry {
+            margin-bottom: 7px;
+        }
+
+        .cert-name, .award-title {
+            font-weight: 600;
+            font-size: 11px;
+            color: #111827;
+        }
+
+        .cert-issuer, .award-issuer {
+            color: #4b5563;
+            font-size: 10.5px;
+        }
+
+        .cert-meta {
+            font-size: 9.5px;
+            color: #6b7280;
+        }
+    </style>
+</head>
+<body>
+    <div class="layout">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="name">{{fullName}}</div>
+            {{#if headline}}<div class="headline">{{headline}}</div>{{/if}}
+
+            <div class="sidebar-section">
+                <div class="sidebar-title">Contact</div>
+                {{#if email}}<div class="sidebar-row"><span class="label">Email</span>{{email}}</div>{{/if}}
+                {{#if phone}}<div class="sidebar-row"><span class="label">Phone</span>{{phone}}</div>{{/if}}
+                {{#if location}}<div class="sidebar-row"><span class="label">Location</span>{{location}}</div>{{/if}}
+                {{#if linkedin}}<div class="sidebar-row"><span class="label">LinkedIn</span><a href="{{linkedin}}">{{linkedin}}</a></div>{{/if}}
+                {{#if github}}<div class="sidebar-row"><span class="label">GitHub</span><a href="{{github}}">{{github}}</a></div>{{/if}}
+                {{#if portfolio}}<div class="sidebar-row"><span class="label">Portfolio</span><a href="{{portfolio}}">{{portfolio}}</a></div>{{/if}}
+            </div>
+
+            {{#if skills.length}}
+            <div class="sidebar-section">
+                <div class="sidebar-title">Skills</div>
+                <div class="sidebar-tag-list">
+                    {{#each skills}}<span class="sidebar-tag">{{this}}</span>{{/each}}
+                </div>
+            </div>
+            {{/if}}
+
+            {{#if languages.length}}
+            <div class="sidebar-section">
+                <div class="sidebar-title">Languages</div>
+                {{#each languages}}<div class="sidebar-row">{{language}} <span style="color:#a7f3d0;">({{proficiency}})</span></div>{{/each}}
+            </div>
+            {{/if}}
+        </aside>
+
+        <!-- Main content -->
+        <main class="main">
+            {{#if summary}}
+            <div class="section">
+                <div class="section-title">Profile</div>
+                <p class="summary-text">{{summary}}</p>
+            </div>
+            {{/if}}
+
+            {{#if experience.length}}
+            <div class="section">
+                <div class="section-title">Experience</div>
+                {{#each experience}}
+                <div class="entry">
+                    <div class="entry-header">
+                        <span class="entry-title">{{title}}</span>
+                        <span class="entry-date">{{startDate}} – {{endDate}}</span>
+                    </div>
+                    <span class="entry-subtitle">{{company}}{{#if location}} · {{location}}{{/if}}</span>
+                    {{#if description}}<div class="entry-description">{{description}}</div>{{/if}}
+                    {{#if highlights}}
+                    <ul class="entry-highlights">
+                        {{#each highlights}}<li>{{this}}</li>{{/each}}
+                    </ul>
+                    {{/if}}
+                </div>
+                {{/each}}
+            </div>
+            {{/if}}
+
+            {{#if education.length}}
+            <div class="section">
+                <div class="section-title">Education</div>
+                {{#each education}}
+                <div class="entry">
+                    <div class="entry-header">
+                        <span class="entry-title">{{degree}}{{#if field}}, {{field}}{{/if}}</span>
+                        {{#if year}}<span class="entry-date">{{year}}</span>{{/if}}
+                    </div>
+                    <span class="entry-subtitle">{{institution}}{{#if grade}} · Grade: {{grade}}{{/if}}</span>
+                </div>
+                {{/each}}
+            </div>
+            {{/if}}
+
+            {{#if projects.length}}
+            <div class="section">
+                <div class="section-title">Projects</div>
+                {{#each projects}}
+                <div class="project-entry">
+                    <div>
+                        <span class="project-name">{{name}}</span>
+                        {{#if role}}<span class="entry-subtitle"> – {{role}}</span>{{/if}}
+                        {{#if url}} · <a href="{{url}}">link</a>{{/if}}
+                    </div>
+                    {{#if technologies}}<div class="project-tech">{{#each technologies}}{{this}}{{#unless @last}} · {{/unless}}{{/each}}</div>{{/if}}
+                    {{#if description}}<div class="project-desc">{{description}}</div>{{/if}}
+                </div>
+                {{/each}}
+            </div>
+            {{/if}}
+
+            {{#if certifications.length}}
+            <div class="section">
+                <div class="section-title">Certifications</div>
+                {{#each certifications}}
+                <div class="cert-entry">
+                    <span class="cert-name">{{name}}</span> <span class="cert-issuer">— {{issuer}}</span>
+                    <div class="cert-meta">{{#if date}}{{date}}{{/if}}{{#if credentialId}} · ID: {{credentialId}}{{/if}}{{#if url}} · <a href="{{url}}">verify</a>{{/if}}</div>
+                </div>
+                {{/each}}
+            </div>
+            {{/if}}
+
+            {{#if awards.length}}
+            <div class="section">
+                <div class="section-title">Awards</div>
+                {{#each awards}}
+                <div class="award-entry">
+                    <span class="award-title">{{title}}</span>{{#if issuer}} <span class="award-issuer">— {{issuer}}</span>{{/if}}{{#if date}} <span class="cert-meta">({{date}})</span>{{/if}}
+                    {{#if description}}<div class="entry-description">{{description}}</div>{{/if}}
+                </div>
+                {{/each}}
+            </div>
+            {{/if}}
+        </main>
+    </div>
+</body>
+</html>

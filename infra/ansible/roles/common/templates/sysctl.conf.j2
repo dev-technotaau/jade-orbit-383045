@@ -1,0 +1,8 @@
+# ============================================================
+# Hire Adda — Kernel Tuning
+# Applied via: sysctl --system
+# ============================================================
+
+{% for key, value in sysctl_settings.items() %}
+{{ key }} = {{ value }}
+{% endfor %}

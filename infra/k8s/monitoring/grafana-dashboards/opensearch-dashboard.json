@@ -1,0 +1,182 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    {
+      "title": "Cluster Health",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "options": { "0": { "text": "GREEN" } }, "type": "value" },
+            { "options": { "1": { "text": "YELLOW" } }, "type": "value" },
+            { "options": { "2": { "text": "RED" } }, "type": "value" }
+          ],
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 2 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "opensearch_cluster_status{namespace=\"hire-adda\"}",
+          "legendFormat": "Status"
+        }
+      ]
+    },
+    {
+      "title": "Active Shards",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "targets": [
+        {
+          "expr": "opensearch_cluster_shards_active{namespace=\"hire-adda\"}",
+          "legendFormat": "Active"
+        }
+      ]
+    },
+    {
+      "title": "Documents Count",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(opensearch_indices_docs_total{namespace=\"hire-adda\"})",
+          "legendFormat": "Documents"
+        }
+      ]
+    },
+    {
+      "title": "Store Size",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "fieldConfig": {
+        "defaults": { "unit": "bytes" }
+      },
+      "targets": [
+        {
+          "expr": "sum(opensearch_indices_store_size_bytes{namespace=\"hire-adda\"})",
+          "legendFormat": "Store Size"
+        }
+      ]
+    },
+    {
+      "title": "Index Size Over Time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "fieldConfig": {
+        "defaults": { "unit": "bytes" }
+      },
+      "targets": [
+        {
+          "expr": "opensearch_indices_store_size_bytes{namespace=\"hire-adda\"}",
+          "legendFormat": "Total Store"
+        }
+      ]
+    },
+    {
+      "title": "Document Indexing Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "fieldConfig": {
+        "defaults": { "unit": "ops" }
+      },
+      "targets": [
+        {
+          "expr": "rate(opensearch_indices_indexing_index_total{namespace=\"hire-adda\"}[5m])",
+          "legendFormat": "Index Rate"
+        },
+        {
+          "expr": "rate(opensearch_indices_indexing_delete_total{namespace=\"hire-adda\"}[5m])",
+          "legendFormat": "Delete Rate"
+        }
+      ]
+    },
+    {
+      "title": "Search Query Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "fieldConfig": {
+        "defaults": { "unit": "ops" }
+      },
+      "targets": [
+        {
+          "expr": "rate(opensearch_indices_search_query_total{namespace=\"hire-adda\"}[5m])",
+          "legendFormat": "Queries/s"
+        },
+        {
+          "expr": "rate(opensearch_indices_search_fetch_total{namespace=\"hire-adda\"}[5m])",
+          "legendFormat": "Fetches/s"
+        }
+      ]
+    },
+    {
+      "title": "Search Latency",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "fieldConfig": {
+        "defaults": { "unit": "ms" }
+      },
+      "targets": [
+        {
+          "expr": "rate(opensearch_indices_search_query_time_seconds{namespace=\"hire-adda\"}[5m]) / rate(opensearch_indices_search_query_total{namespace=\"hire-adda\"}[5m]) * 1000",
+          "legendFormat": "Avg Query Time"
+        },
+        {
+          "expr": "rate(opensearch_indices_search_fetch_time_seconds{namespace=\"hire-adda\"}[5m]) / rate(opensearch_indices_search_fetch_total{namespace=\"hire-adda\"}[5m]) * 1000",
+          "legendFormat": "Avg Fetch Time"
+        }
+      ]
+    },
+    {
+      "title": "JVM Heap Usage",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "fieldConfig": {
+        "defaults": { "unit": "bytes" }
+      },
+      "targets": [
+        {
+          "expr": "opensearch_jvm_mem_heap_used_bytes{namespace=\"hire-adda\"}",
+          "legendFormat": "Heap Used"
+        },
+        {
+          "expr": "opensearch_jvm_mem_heap_max_bytes{namespace=\"hire-adda\"}",
+          "legendFormat": "Heap Max"
+        }
+      ]
+    },
+    {
+      "title": "GC Activity",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "fieldConfig": {
+        "defaults": { "unit": "s" }
+      },
+      "targets": [
+        {
+          "expr": "rate(opensearch_jvm_gc_collection_seconds_sum{namespace=\"hire-adda\"}[5m])",
+          "legendFormat": "GC Time {{gc}}"
+        },
+        {
+          "expr": "rate(opensearch_jvm_gc_collection_seconds_count{namespace=\"hire-adda\"}[5m])",
+          "legendFormat": "GC Count {{gc}}"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["opensearch", "search", "hire-adda"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "title": "OpenSearch",
+  "uid": "tb-opensearch"
+}

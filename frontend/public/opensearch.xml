@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  OpenSearch Description Document.
+
+  Lets users add Hire Adda as a browser search engine (Firefox, Edge, Brave,
+  some Chromium variants). Browsers auto-discover this via the
+  <link rel="search" type="application/opensearchdescription+xml"> tag in
+  the root layout head.
+
+  @see https://github.com/dewitt/opensearch/blob/master/opensearch-1-1-draft-6.md
+-->
+<OpenSearchDescription xmlns="http://a9.com/-/spec/opensearch/1.1/"
+                       xmlns:moz="http://www.mozilla.org/2006/browser/search/">
+  <ShortName>Hire Adda</ShortName>
+  <LongName>Hire Adda — Find Your Dream Job</LongName>
+  <Description>Search jobs, companies, and career resources on Hire Adda.</Description>
+  <InputEncoding>UTF-8</InputEncoding>
+  <OutputEncoding>UTF-8</OutputEncoding>
+  <Language>en-IN</Language>
+
+  <!-- Favicon for the browser search-bar dropdown -->
+  <Image width="16" height="16" type="image/png">https://hireadda.in/favicon-16x16.png</Image>
+  <Image width="32" height="32" type="image/png">https://hireadda.in/favicon-32x32.png</Image>
+  <Image width="48" height="48" type="image/png">https://hireadda.in/favicon-48x48.png</Image>
+
+  <!-- Search URL: user's query is substituted into {searchTerms}. -->
+  <Url type="text/html"
+       method="get"
+       template="https://hireadda.in/candidate/jobs?search={searchTerms}" />
+
+  <!-- Browser search-suggestions endpoint. Optional — implement when the
+       autocomplete API is public. Format: JSON array per OpenSearch spec.
+  <Url type="application/x-suggestions+json"
+       template="https://api.hireadda.in/api/v1/search/autocomplete?q={searchTerms}" />
+  -->
+
+  <moz:SearchForm>https://hireadda.in/candidate/jobs</moz:SearchForm>
+  <AdultContent>false</AdultContent>
+  <Developer>Hire Adda</Developer>
+  <Contact>support@hireadda.in</Contact>
+  <Attribution>© Hire Adda. All rights reserved.</Attribution>
+  <SyndicationRight>open</SyndicationRight>
+</OpenSearchDescription>

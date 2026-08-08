@@ -1,0 +1,10 @@
+# Kubernetes manifests — never reformat. SealedSecret encrypted blobs must stay
+# byte-for-byte (a reflow breaks decryption), and Prettier can mangle multi-doc
+# YAML / anchors in k8s manifests.
+infra/k8s/
+
+# Generated / vendored
+**/.next/
+**/dist/
+**/build/
+**/coverage/

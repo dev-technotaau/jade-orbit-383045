@@ -1,0 +1,88 @@
+# ============================================================
+# Nginx Reverse Proxy — Network Policy
+# Allows: ingress from ingress-nginx controller + frontend (BFF)
+# Allows: egress to backend, frontend, roundcube, Grafana, OTel collector, OpenSearch Dashboards, DNS
+# ============================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nginx-netpol
+  namespace: hire-adda
+spec:
+  podSelector:
+    matchLabels:
+      app: nginx
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # From ingress-nginx controller (external traffic)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - port: 80
+          protocol: TCP
+        - port: 8080
+          protocol: TCP
+    # From frontend (BFF calls via BACKEND_INTERNAL_URL http://nginx:80/api/v1)
+    - from:
+        - podSelector:
+            matchLabels:
+              app: frontend
+      ports:
+        - port: 80
+          protocol: TCP
+  egress:
+    # To backend
+    - to:
+        - podSelector:
+            matchLabels:
+              app: backend
+      ports:
+        - port: 5000
+          protocol: TCP
+    # To frontend
+    - to:
+        - podSelector:
+            matchLabels:
+              app: frontend
+      ports:
+        - port: 3000
+          protocol: TCP
+    # To roundcube (mail.hireadda.in)
+    - to:
+        - podSelector:
+            matchLabels:
+              app: roundcube
+      ports:
+        - port: 80
+          protocol: TCP
+    # To Grafana + OTel collector — monitoring namespace
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 80
+          protocol: TCP
+        - port: 3000
+          protocol: TCP
+        - port: 4318
+          protocol: TCP
+    # To OpenSearch Dashboards (logs.hireadda.in) — logging namespace
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: logging
+      ports:
+        - port: 5601
+          protocol: TCP
+    # DNS
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP

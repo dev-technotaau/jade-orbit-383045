@@ -1,0 +1,31 @@
+# ============================================================
+# NetworkPolicy — cert-manager ACME HTTP-01 Solver
+# ============================================================
+# cert-manager creates ephemeral solver pods (labeled
+# acme.cert-manager.io/http01-solver=true) when issuing/renewing
+# Let's Encrypt certificates. Without this NetworkPolicy, the
+# default-deny-all policy blocks ingress-nginx → solver pod
+# traffic, causing ACME HTTP-01 challenges to fail with 502.
+# ============================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: acme-solver-netpol
+  namespace: hire-adda
+  labels:
+    app.kubernetes.io/name: acme-solver
+    app.kubernetes.io/component: cert-manager
+spec:
+  podSelector:
+    matchLabels:
+      acme.cert-manager.io/http01-solver: 'true'
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8089

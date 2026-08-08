@@ -1,0 +1,53 @@
+# ============================================================
+# Roundcube Webmail — Network Policy
+# Ingress from nginx reverse proxy.
+# Egress to Docker mailserver (external) + DNS.
+# ============================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: roundcube-netpol
+  namespace: hire-adda
+spec:
+  podSelector:
+    matchLabels:
+      app: roundcube
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # From nginx reverse proxy (all traffic routes through nginx pod)
+    - from:
+        - podSelector:
+            matchLabels:
+              app: nginx
+      ports:
+        - port: 80
+          protocol: TCP
+  egress:
+    # To Docker mailserver (via mailserver-external service).
+    # IMAP + SMTP submission. The CIDR must match the host IP the
+    # `mailserver-external` Endpoints object points at — see
+    # apps/roundcube/mailserver-external.yaml. Both files need to
+    # update whenever the VPS IP changes; we cut over from
+    # 148.230.67.210 (old VPS) to 145.223.19.154 (new VPS) and the
+    # NetworkPolicy was missed during the migration, silently
+    # blocking egress to the new IP even after the Endpoints were
+    # corrected — every Roundcube login attempt timed out.
+    - to:
+        - ipBlock:
+            cidr: 145.223.19.154/32
+      ports:
+        - port: 143
+          protocol: TCP
+        - port: 587
+          protocol: TCP
+        - port: 993
+          protocol: TCP
+    # DNS
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP

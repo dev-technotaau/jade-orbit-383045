@@ -1,0 +1,146 @@
+/* TEAM */
+    Product & Engineering: TechnoTaau Technologies Team
+    Contact: send[at]technotaau.com
+    Site: https://technotaau.com
+
+/* SITE */
+    Last update: 2026-05
+    Language: English (en-IN), with public-surface FAQ corpus available
+              in Hindi (hi-IN), Tamil (ta-IN), Telugu (te-IN), Bengali
+              (bn-IN), and Marathi (mr-IN)
+    Doctype: HTML5
+    Standards: HTML5, CSS3, WCAG 2.1 AA, RFC 8615 (.well-known), IAB ads.txt,
+              llmstxt.org (llms.txt), Schema.org JSON-LD (JobPosting,
+              Organization, FAQPage, BreadcrumbList, ItemList, CollectionPage,
+              SpeakableSpecification, WebPage)
+    Security: CSP v3 (nonce-based), HSTS preload, SPF + DKIM + DMARC + MTA-STS
+              + TLS-RPT + BIMI, WebAuthn/Passkeys, Cloudflare Turnstile, CSRF
+    Public surfaces:
+              /jobs (public job board, all roles + filters), /jobs/{slug}
+              (one job per shortid-suffixed slug), /jobs/in/{city},
+              /jobs/{role}-jobs-in-{city} (gold-standard SEO format),
+              /jobs/category/{x}, /jobs/department/{x},
+              /jobs/qualification/{x}, /jobs/collection/{x},
+              /companies (public company index), /companies/{slug},
+              /companies/category/{x}, /companies/in/{city},
+              /companies/industry/{x}, /companies/collection/{x}.
+              Sitemap shards cover every public job, company, curated
+              landing, cartesian role×city×experience combo, and the
+              popular role+city aggregates from search-history.
+
+
+/* LANGUAGES & RUNTIME */
+    TypeScript 5 · Node.js 20 / 22 · JavaScript (ES2024)
+
+
+/* FRONTEND */
+    Framework:        Next.js 16 (App Router, standalone output, React Compiler)
+    UI:               React 19, Tailwind CSS 4, PostCSS, Lightning CSS
+    Icons & viz:      Lucide React, Recharts
+    Motion:           Framer Motion, Lenis (smooth scroll)
+    Editor:           TipTap (rich text)
+    Maps:             Leaflet + React Leaflet
+    Imaging:          react-image-crop, react-dropzone
+    Forms:            React Hook Form, Zod
+    Server state:     TanStack Query, TanStack Table
+    HTTP / realtime:  Axios, Socket.IO client
+    Auth:             SimpleWebAuthn (passkeys), Cloudflare Turnstile
+    Push & realtime:  Firebase (FCM, RTDB, Firestore, Remote Config)
+    Notifications:    Sonner (toasts)
+    Analytics:        Google Analytics 4, Google Tag Manager, Meta Pixel
+    Testing:          Jest, Testing Library
+    Tooling:          ESLint 9, Prettier, Husky, lint-staged
+
+
+/* BACKEND */
+    Framework:        Express 5
+    ORM / DB:         Prisma 7 · PostgreSQL 16 (pg driver)
+    Cache & queue:    Redis 7, ioredis, BullMQ (12 queues)
+    Search:           OpenSearch 2.18 (3-node cluster)
+    Event streaming:  Apache Kafka 3.8 (KRaft mode)
+    File storage:     AWS SDK v3 → Cloudflare R2 · Cloudinary · Multer
+    Image processing: Sharp
+    PDF / documents:  Puppeteer (headless Chromium), PDFKit, Handlebars, ExcelJS
+    Archives:         Archiver (ZIP)
+    Google Cloud:     Document AI (resume parsing), Cloud Talent Solution,
+                      BigQuery (analytics warehouse)
+    Auth:             Passport (Google, LinkedIn, Local, JWT), SimpleWebAuthn,
+                      bcrypt, jsonwebtoken, Speakeasy (TOTP 2FA), QRCode
+    Communication:    Socket.IO, Nodemailer, Twilio (SMS / WhatsApp),
+                      web-push (VAPID), Meta WhatsApp Cloud API
+    Validation:       Zod
+    Security:         Helmet, HPP, csrf-csrf, XSS sanitiser, mongo sanitiser,
+                      express-rate-limit (Redis-backed), compression, CORS,
+                      cookie-parser
+    Observability:    Sentry, OpenTelemetry (auto-instrumentation + custom
+                      spans), prom-client (Prometheus), Winston, Morgan
+    API docs:         Swagger UI + swagger-jsdoc (OpenAPI 3)
+    Testing:          Jest, ts-jest, Supertest, jest-mock-extended
+
+
+/* KUBERNETES & GITOPS */
+    Distribution:     K3s
+    GitOps:           ArgoCD
+    Progressive
+    delivery:         Argo Rollouts (canary + AnalysisTemplates)
+    Ingress:          ingress-nginx with ModSecurity WAF (OWASP CRS)
+    TLS:              cert-manager + Let's Encrypt (ACME HTTP-01)
+    Secrets:          Bitnami SealedSecrets
+    HPA / autoscale:  Kubernetes HPA + custom metrics
+    Network policy:   NetworkPolicy resources (zero-trust intra-cluster)
+
+
+/* EDGE & DELIVERY */
+    CDN / DNS / WAF:  Cloudflare (proxy, Bot Management, Managed Rulesets,
+                      AI-scraper controls)
+    Object storage:   Cloudflare R2 (resumes, logos, backups)
+    Reverse proxy:    nginx (origin)
+
+
+/* OBSERVABILITY STACK */
+    Metrics:          Prometheus, Prometheus Operator, kube-prometheus-stack,
+                      AlertManager, node-exporter, kafka-exporter
+    Tracing:          OpenTelemetry Collector → Tempo
+    Logs:             Fluent Bit (DaemonSet) → Loki
+    Dashboards:       Grafana
+    App errors:       Sentry (frontend + backend)
+    Uptime:           ArgoCD health + custom readiness/liveness probes
+
+
+/* BACKUP & DISASTER RECOVERY */
+    Cluster backup:   Velero
+    File-level:       Kopia (repository maintenance, deduplication)
+    Off-site target:  Cloudflare R2
+    Scheduled:        Daily (7-day TTL) + weekly archive (90-day TTL)
+
+
+/* EMAIL INFRASTRUCTURE */
+    SMTP / IMAP:      docker-mailserver (Postfix, Dovecot, Amavis,
+                      SpamAssassin, ClamAV, OpenDKIM, rspamd, Fail2ban)
+    Webmail:          Roundcube
+    Sending policy:   MTA-STS enforce, TLS-RPT, DKIM2, DMARC p=reject,
+                      BIMI (VMC-ready)
+
+
+/* CI / CD & TOOLING */
+    Pipelines:        GitHub Actions (4 jobs: backend, frontend, security audit,
+                      commitlint)
+    Registry:         GitHub Container Registry (GHCR)
+    Commit policy:    Conventional Commits + commitlint + Husky + lint-staged
+    Containers:       Multi-stage Dockerfiles, docker-compose (local dev)
+    Provisioning:     Ansible (harden → k3s install → post-install)
+    Debug:            VS Code launch configs (4 + compound)
+
+
+/* THANKS */
+    Every candidate and employer who trusted Hire Adda with their career and
+    hiring journey.
+
+    The maintainers of every open-source project that stands behind this
+    platform — Next.js, React, Tailwind, Prisma, PostgreSQL, Redis, Kafka,
+    OpenSearch, Elasticsearch, Kubernetes, K3s, ArgoCD, Argo Rollouts,
+    Prometheus, Grafana, Loki, Tempo, OpenTelemetry, Velero, Kopia,
+    cert-manager, ingress-nginx, ModSecurity, OWASP CRS, docker-mailserver,
+    Roundcube, Passport, SimpleWebAuthn, Zod, TipTap, Socket.IO, BullMQ,
+    Sharp, Puppeteer, Ansible, and countless others — the internet is your
+    gift to humanity, and this site stands on your shoulders.

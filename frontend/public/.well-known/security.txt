@@ -1,0 +1,30 @@
+# Hire Adda — Security Policy (RFC 9116)
+# https://securitytxt.org/
+#
+# NOTE ON `Policy:` — this field previously pointed at /privacy. RFC 9116
+# defines `Policy` as the VULNERABILITY DISCLOSURE POLICY: how to report,
+# what is in scope, expected response times, and safe-harbour terms.
+# /privacy describes our internal security measures and contains none of
+# that, so it actively misdirected researchers. The field is omitted rather
+# than left pointing somewhere wrong — an absent optional field is honest,
+# an incorrect one wastes a reporter's time and costs us the report.
+#
+# TODO: publish a real disclosure policy at /security and restore:
+#   Policy: https://hireadda.in/security
+# It needs scope (in/out), a response SLA and safe-harbour wording, which
+# is a legal decision rather than a config change.
+
+Contact: mailto:security@hireadda.in
+Contact: mailto:admin@hireadda.in
+
+# REQUIRED by RFC 9116 §2.5.5, and must be under one year out. Diary this:
+# an expired security.txt is treated as invalid by scanners and by
+# researchers deciding whether reporting is worth their time.
+Expires: 2027-04-11T00:00:00.000Z
+
+Preferred-Languages: en, hi
+Canonical: https://hireadda.in/.well-known/security.txt
+
+# We are a job platform, so this is more than boilerplate — security roles
+# are posted here alongside everything else.
+Hiring: https://hireadda.in/jobs

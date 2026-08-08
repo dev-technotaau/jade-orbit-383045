@@ -1,0 +1,23 @@
+# ============================================================
+# Redis — ServiceMonitor (via redis_exporter sidecar)
+# ============================================================
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: redis-monitor
+  namespace: monitoring
+  labels:
+    app: redis
+    release: kube-prometheus
+spec:
+  namespaceSelector:
+    matchNames:
+      - hire-adda
+  selector:
+    matchLabels:
+      app: redis
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s

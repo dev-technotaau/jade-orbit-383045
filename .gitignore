@@ -1,0 +1,82 @@
+# Dependencies
+node_modules
+.pnp
+.pnp.js
+
+# Testing
+coverage
+
+# Next.js
+.next/
+out/
+
+# Production
+build
+dist
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.*
+!.env.example
+
+# Sensitive files
+cookies.txt
+*.pem
+!backend/certs/aiven-ca.pem
+
+# Migration artifacts (pg_dump, redis RDB, mail volumes, sealed-secrets master keys)
+migration-artifacts/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# IDEs
+.idea
+.vscode
+*.swp
+*.swo
+
+# AI & Agent Tools
+.claude/
+.cursor/
+.cline/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+nul
+
+# Turborepo
+.turbo
+
+# Backup Files
+.env.bak
+backend/backups/
+
+# Logs
+*.log
+
+# Internal planning / brief documents (not for git history)
+/payment.md
+/payment-implementation-plan.md
+/PUBLIC_JOBS_COMPANIES_PLAN.md
+/public.md
+/RATINGS_REVIEWS_PLAN.md
+
+# WhatsApp planning/audit docs — kept local only, not tracked in the repo
+/whatsapp-system-implementation-plan.md
+/whatsapp-system-audit-findings.md
+/whatsapp-audit-remediation-status.md
+/WHATSAPP_TEMPLATES.md
+
+# Email system planning doc — kept local only
+/EMAIL_SYSTEM_PLAN.md

@@ -1,0 +1,225 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ─── Backend ───────────────────────────────────────────
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [20.x, 22.x]
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ./backend
+        run: npm ci
+
+      - name: Lint
+        working-directory: ./backend
+        run: npm run lint
+
+      - name: Type check
+        working-directory: ./backend
+        run: npm run type-check
+
+      - name: Tests
+        working-directory: ./backend
+        run: npm test
+        env:
+          NODE_ENV: test
+          DATABASE_URL: postgresql://test:test@localhost:5432/test_db
+          COOKIE_SECRET: ci-test-cookie-secret-minimum-32-chars
+          CSRF_SECRET: ci-test-csrf-secret-minimum-32-chars!!
+          JWT_SECRET: ci-test-jwt-secret-minimum-32-characters
+          JWT_REFRESH_SECRET: ci-test-jwt-refresh-secret-min-32-chars
+          JWT_ALGORITHM: HS256
+          REDIS_ENABLED: 'false'
+
+      - name: Build
+        working-directory: ./backend
+        run: npm run build
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+
+  # ─── Frontend ──────────────────────────────────────────
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [20.x, 22.x]
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ./frontend
+        run: npm ci
+
+      - name: Lint
+        working-directory: ./frontend
+        run: npm run lint
+
+      - name: Type check
+        working-directory: ./frontend
+        run: npm run type-check
+
+      - name: Tests
+        working-directory: ./frontend
+        run: npm test -- --ci --passWithNoTests
+        env:
+          NODE_ENV: test
+
+      - name: Build
+        working-directory: ./frontend
+        run: npm run build
+        env:
+          # See infra/docker/frontend.Dockerfile for the full rationale.
+          # `next build` OOM'd here (exit 134, "Reached heap limit") because
+          # removing the MaintenanceGate spinner means every route now renders
+          # its real component tree at build time instead of a stub.
+          NODE_OPTIONS: --max-old-space-size=4096
+          NEXT_PUBLIC_API_URL: http://localhost:5000/api/v1
+          NEXT_PUBLIC_SOCKET_URL: http://localhost:5000
+          NEXT_PUBLIC_APP_URL: http://localhost:3000
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+
+      # ─── SEO: structured-data validation ────────────────
+      # Boots `next start` in the background, waits until it's serving,
+      # fetches every public page, extracts all `<script type="application/ld+json">`
+      # blocks, and validates JSON syntax + @context + @type + required
+      # fields + placeholder markers. Fails the build on any error.
+      #
+      # Run only on the 20.x leg of the matrix — the output is identical
+      # across Node versions and we don't need to re-pay the server-boot cost.
+      - name: SEO — validate structured data
+        if: matrix.node-version == '20.x'
+        working-directory: ./frontend
+        run: |
+          npm run start &
+          SERVER_PID=$!
+          for i in {1..30}; do
+            if curl -sf http://localhost:3000/ > /dev/null 2>&1; then
+              echo "Server up after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          npm run seo:validate
+          STATUS=$?
+          kill $SERVER_PID 2>/dev/null || true
+          exit $STATUS
+        env:
+          NEXT_PUBLIC_APP_URL: http://localhost:3000
+          NEXT_PUBLIC_API_URL: http://localhost:5000/api/v1
+
+  # ─── Security Audit ────────────────────────────────────
+  security:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Use Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+
+      - name: Audit backend
+        working-directory: ./backend
+        # `audit-ci` is npm audit + a per-advisory allowlist (npm audit
+        # itself has no allowlist primitive). Same `--critical` gate as
+        # before — only "critical" severity blocks CI.
+        #
+        # GHSA-298w-vvm4-ww55 ("Malware in @opensearch-project/opensearch")
+        # is allowlisted because its affected-range catch-all `>=0` is
+        # broader than reality. The upstream advisory from the OpenSearch
+        # maintainers (GHSA-27f5-xjrr-q9ff) explicitly scopes the
+        # compromise to versions 3.5.3, 3.6.2, 3.7.0, 3.8.0 — published
+        # 2026-05-12 from a hijacked maintainer account. We pin
+        # `^2.12.0` (latest 2.x line), which predates the compromise and
+        # is not in the affected set. Re-evaluate this allowlist if we
+        # ever bump to 3.x.
+        run: npx --yes audit-ci@^7 --critical --allowlist GHSA-298w-vvm4-ww55
+
+      - name: Audit frontend
+        working-directory: ./frontend
+        run: npm audit --audit-level=critical --production
+
+  # ─── Container Security ────────────────────────────────
+  container-security:
+    name: Container Security Scan
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build backend image
+        run: docker build -f ./infra/docker/backend.Dockerfile -t hire-adda-backend:scan ./backend
+
+      - name: Scan backend image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: hire-adda-backend:scan
+          format: table
+          exit-code: 0
+          severity: CRITICAL,HIGH
+
+      - name: Build frontend image
+        run: docker build -f ./infra/docker/frontend.Dockerfile -t hire-adda-frontend:scan ./frontend
+
+      - name: Scan frontend image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: hire-adda-frontend:scan
+          format: table
+          exit-code: 0
+          severity: CRITICAL,HIGH
+
+  # ─── Commitlint ────────────────────────────────────────
+  commitlint:
+    name: Commit Lint
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Use Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: npm
+
+      - name: Install commitlint
+        run: npm ci
+
+      - name: Validate PR commits
+        run: npx commitlint --from ${{ github.event.pull_request.base.sha }} --to ${{ github.event.pull_request.head.sha }}

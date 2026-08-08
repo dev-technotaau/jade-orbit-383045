@@ -1,0 +1,346 @@
+# ============================================================
+# K8s Deployment (Progressive / Blue-Green / Canary / Rolling)
+# Reusable workflow (called from cd.yml) + manual trigger
+# SSHes into K3s node, syncs configs, runs deploy-k8s.sh
+# ============================================================
+name: Deploy to K8s
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Deploy action'
+        required: false
+        default: 'deploy'
+        type: choice
+        options:
+          - deploy
+          - promote
+          - rollback
+          - status
+      strategy:
+        description: 'Deploy strategy (only for deploy action)'
+        required: false
+        default: 'progressive'
+        type: choice
+        options:
+          - progressive
+          - blue-green
+          - canary
+          - rolling
+      service:
+        description: 'Service to deploy'
+        required: false
+        default: 'both'
+        type: choice
+        options:
+          - both
+          - backend
+          - frontend
+      backend_tag:
+        description: 'Backend image tag (default: latest)'
+        required: false
+        default: 'latest'
+        type: string
+      frontend_tag:
+        description: 'Frontend image tag (default: latest)'
+        required: false
+        default: 'latest'
+        type: string
+      canary_weight:
+        description: 'Canary traffic weight % (only for canary strategy)'
+        required: false
+        default: '20'
+        type: string
+      skip_migrations:
+        description: 'Skip Prisma migrations'
+        required: false
+        default: false
+        type: boolean
+      dry_run:
+        description: 'Dry run (show what would happen)'
+        required: false
+        default: false
+        type: boolean
+
+  workflow_call:
+    inputs:
+      backend_tag:
+        required: false
+        type: string
+        default: 'latest'
+      frontend_tag:
+        required: false
+        type: string
+        default: 'latest'
+      deploy_backend:
+        required: false
+        type: boolean
+        default: false
+      deploy_frontend:
+        required: false
+        type: boolean
+        default: false
+      strategy:
+        required: false
+        type: string
+        default: 'progressive'
+    secrets:
+      K8S_SSH_KEY:
+        required: true
+      K8S_HOST:
+        required: true
+      K8S_USER:
+        required: true
+      K8S_DEPLOY_PATH:
+        required: true
+      GHCR_TOKEN:
+        required: true
+
+concurrency:
+  group: deploy-k8s
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to K8s
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Determine deploy parameters
+        id: plan
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # Manual trigger
+            ACTION="${{ inputs.action }}"
+            STRATEGY="${{ inputs.strategy }}"
+            SERVICE="${{ inputs.service }}"
+            BACKEND_TAG="${{ inputs.backend_tag }}"
+            FRONTEND_TAG="${{ inputs.frontend_tag }}"
+            CANARY_WEIGHT="${{ inputs.canary_weight }}"
+            SKIP_MIGRATIONS="${{ inputs.skip_migrations }}"
+            DRY_RUN="${{ inputs.dry_run }}"
+
+            echo "action=${ACTION}" >> "$GITHUB_OUTPUT"
+            echo "strategy=${STRATEGY}" >> "$GITHUB_OUTPUT"
+            echo "canary_weight=${CANARY_WEIGHT}" >> "$GITHUB_OUTPUT"
+            echo "skip_migrations=${SKIP_MIGRATIONS}" >> "$GITHUB_OUTPUT"
+            echo "dry_run=${DRY_RUN}" >> "$GITHUB_OUTPUT"
+
+            if [[ "$ACTION" == "deploy" ]]; then
+              if [[ "$SERVICE" == "backend" || "$SERVICE" == "both" ]]; then
+                echo "deploy_backend=true" >> "$GITHUB_OUTPUT"
+              fi
+              if [[ "$SERVICE" == "frontend" || "$SERVICE" == "both" ]]; then
+                echo "deploy_frontend=true" >> "$GITHUB_OUTPUT"
+              fi
+            fi
+
+            echo "backend_tag=${BACKEND_TAG}" >> "$GITHUB_OUTPUT"
+            echo "frontend_tag=${FRONTEND_TAG}" >> "$GITHUB_OUTPUT"
+          else
+            # Called from cd.yml
+            echo "action=deploy" >> "$GITHUB_OUTPUT"
+            echo "strategy=${{ inputs.strategy || 'progressive' }}" >> "$GITHUB_OUTPUT"
+            echo "canary_weight=20" >> "$GITHUB_OUTPUT"
+            echo "skip_migrations=false" >> "$GITHUB_OUTPUT"
+            echo "dry_run=false" >> "$GITHUB_OUTPUT"
+            echo "backend_tag=${{ inputs.backend_tag }}" >> "$GITHUB_OUTPUT"
+            echo "frontend_tag=${{ inputs.frontend_tag }}" >> "$GITHUB_OUTPUT"
+
+            if [[ "${{ inputs.deploy_backend }}" == "true" ]]; then
+              echo "deploy_backend=true" >> "$GITHUB_OUTPUT"
+            fi
+            if [[ "${{ inputs.deploy_frontend }}" == "true" ]]; then
+              echo "deploy_frontend=true" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Install SSH key
+        uses: shimataro/ssh-key-action@v2
+        with:
+          key: ${{ secrets.K8S_SSH_KEY }}
+          name: id_ed25519
+          known_hosts: unnecessary
+          if_key_exists: replace
+
+      - name: Add K8s node to known hosts
+        run: |
+          for i in 1 2 3; do
+            ssh-keyscan -T 10 -H ${{ secrets.K8S_HOST }} >> ~/.ssh/known_hosts 2>/dev/null && break
+            echo "ssh-keyscan attempt $i failed, retrying in 5s..."
+            sleep 5
+          done
+
+      - name: Install rsync
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y rsync
+
+      - name: Sync infra configs to K8s node
+        # `IdentitiesOnly=yes` + explicit `-i` is required because the
+        # remote sshd is hardened to MaxAuthTries=3 (Ansible 01-harden).
+        # Without it, the runner's ssh client tries every identity in
+        # ~/.ssh/ before our id_ed25519, exceeds the limit, and the
+        # server disconnects with "Too many authentication failures".
+        if: steps.plan.outputs.action == 'deploy'
+        run: |
+          rsync -avz --delete \
+            --exclude='.env' \
+            --exclude='*.example' \
+            --exclude='docker/' \
+            -e "ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=no" \
+            ./infra/ \
+            ${{ secrets.K8S_USER }}@${{ secrets.K8S_HOST }}:${{ secrets.K8S_DEPLOY_PATH }}/infra/
+
+      # ── GHCR pull secret ──────────────────────────────────────────────
+      # This step previously fell back to GITHUB_TOKEN when GHCR_TOKEN was
+      # unset. GITHUB_TOKEN is minted per workflow run and REVOKED the moment
+      # the run finishes, so the k8s secret was born valid and dead within
+      # minutes. Pods that had already pulled kept running, which hid the
+      # problem until something restarted — then ImagePullBackOff with
+      # "403 Forbidden", hours after a deploy that reported success.
+      #
+      # That is exactly the 2026-08-01 frontend outage. Worse: because the
+      # packages are public, a BROKEN credential is strictly worse than none —
+      # GHCR answers 403 to a bad token where it answers 200 anonymously.
+      #
+      # So: fail loudly if GHCR_TOKEN is missing rather than writing a
+      # credential that is guaranteed to expire.
+      - name: Verify GHCR_TOKEN is configured
+        if: steps.plan.outputs.action == 'deploy'
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        run: |
+          if [ -z "$GHCR_TOKEN" ]; then
+            echo "::error::GHCR_TOKEN is not set. Refusing to write an imagePullSecret from the"
+            echo "::error::ephemeral GITHUB_TOKEN, which GitHub revokes when this run ends and which"
+            echo "::error::caused the 2026-08-01 outage. Set a long-lived PAT with read:packages:"
+            echo "::error::  gh secret set GHCR_TOKEN --body '<PAT>'"
+            exit 1
+          fi
+          echo "GHCR_TOKEN present."
+
+      - name: Ensure GHCR pull secret is current
+        if: steps.plan.outputs.action == 'deploy'
+        run: |
+          # The token is substituted by GitHub into the heredoc BODY, which is
+          # piped over stdin — so it never appears in the remote process's
+          # argv (where `ps` on the VPS would expose it). Remote-evaluated
+          # shell variables are backslash-escaped so the runner leaves them
+          # alone and the remote shell expands them instead.
+          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
+            ${{ secrets.K8S_USER }}@${{ secrets.K8S_HOST }} bash -s << REMOTE_SCRIPT
+            set -euo pipefail
+            sudo k3s kubectl delete secret ghcr-credentials -n hire-adda --ignore-not-found
+            sudo k3s kubectl create secret docker-registry ghcr-credentials \
+              --namespace=hire-adda \
+              --docker-server=ghcr.io \
+              --docker-username='${{ github.actor }}' \
+              --docker-password='${{ secrets.GHCR_TOKEN }}' \
+              --docker-email=admin@hireadda.in
+
+            # Refreshing the secret alone does NOT make backed-off pods retry.
+            # On 2026-08-01 a fully successful CD run left the frontend in
+            # ImagePullBackOff because the image tag was unchanged, so nothing
+            # in the pod spec differed and Kubernetes had no reason to recreate
+            # anything — kubelet just sat on its ~5-minute backoff. Any pod
+            # already stuck must be deleted to force an immediate pull with the
+            # new credential. Healthy pods are untouched.
+            #
+            # NOTE: \$ escapes below are required. This heredoc is UNQUOTED so
+            # that GitHub can substitute the secret above; without the escapes
+            # the GitHub runner's shell would expand these instead of the
+            # remote one.
+            for app in frontend backend; do
+              stuck=\$(sudo k3s kubectl get pods -n hire-adda -l app=\$app \
+                -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.containerStatuses[*].state.waiting.reason}{"\n"}{end}' \
+                2>/dev/null | grep -E 'ImagePullBackOff|ErrImagePull' | awk '{print \$1}' || true)
+              if [ -n "\$stuck" ]; then
+                echo "Deleting stuck \$app pods to force a re-pull: \$stuck"
+                echo "\$stuck" | xargs -r sudo k3s kubectl delete pod -n hire-adda
+              fi
+            done
+          REMOTE_SCRIPT
+
+      - name: Run deploy
+        id: deploy
+        run: |
+          ACTION="${{ steps.plan.outputs.action }}"
+          DEPLOY_ARGS=""
+
+          case "$ACTION" in
+            deploy)
+              DEPLOY_ARGS="--strategy ${{ steps.plan.outputs.strategy }}"
+
+              if [[ "${{ steps.plan.outputs.deploy_backend }}" == "true" ]]; then
+                DEPLOY_ARGS+=" --backend-tag ${{ steps.plan.outputs.backend_tag }}"
+              fi
+              if [[ "${{ steps.plan.outputs.deploy_frontend }}" == "true" ]]; then
+                DEPLOY_ARGS+=" --frontend-tag ${{ steps.plan.outputs.frontend_tag }}"
+              fi
+              if [[ "${{ steps.plan.outputs.strategy }}" == "canary" ]]; then
+                DEPLOY_ARGS+=" --canary-weight ${{ steps.plan.outputs.canary_weight }}"
+              fi
+              if [[ "${{ steps.plan.outputs.skip_migrations }}" == "true" ]]; then
+                DEPLOY_ARGS+=" --skip-migrations"
+              fi
+              if [[ "${{ steps.plan.outputs.dry_run }}" == "true" ]]; then
+                DEPLOY_ARGS+=" --dry-run"
+              fi
+              ;;
+            promote)
+              DEPLOY_ARGS="--promote"
+              ;;
+            rollback)
+              DEPLOY_ARGS="--rollback"
+              ;;
+            status)
+              DEPLOY_ARGS="--status"
+              ;;
+          esac
+
+          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
+            ${{ secrets.K8S_USER }}@${{ secrets.K8S_HOST }} \
+            "bash ${{ secrets.K8S_DEPLOY_PATH }}/infra/scripts/deploy-k8s.sh ${DEPLOY_ARGS}"
+
+      - name: Verify deployment externally
+        if: steps.plan.outputs.dry_run != 'true' && steps.plan.outputs.action != 'status'
+        run: |
+          sleep 10
+          echo "Checking external endpoints..."
+
+          check_endpoint() {
+            local name="$1"
+            local url="$2"
+            STATUS=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 15 "$url" 2>/dev/null || echo "000")
+            if [[ "$STATUS" == "200" || "$STATUS" == "301" || "$STATUS" == "302" ]]; then
+              echo "  $name: OK ($STATUS)"
+            else
+              echo "  $name: WARNING ($STATUS)" >&2
+            fi
+          }
+
+          check_endpoint "Backend Health" "https://api.hireadda.in/health"
+          check_endpoint "Frontend" "https://hireadda.in"
+
+      - name: Deploy summary
+        if: always()
+        run: |
+          echo "## K8s Deploy Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Property | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|----------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Action | ${{ steps.plan.outputs.action }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Strategy | ${{ steps.plan.outputs.strategy || 'n/a' }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Backend Tag | ${{ steps.plan.outputs.deploy_backend == 'true' && steps.plan.outputs.backend_tag || 'skipped' }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Frontend Tag | ${{ steps.plan.outputs.deploy_frontend == 'true' && steps.plan.outputs.frontend_tag || 'skipped' }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Canary Weight | ${{ steps.plan.outputs.strategy == 'canary' && steps.plan.outputs.canary_weight || 'n/a' }}% |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Migrations | ${{ steps.plan.outputs.skip_migrations == 'true' && 'skipped' || 'ran' }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Dry Run | ${{ steps.plan.outputs.dry_run }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Status | ${{ steps.deploy.outcome }} |" >> "$GITHUB_STEP_SUMMARY"

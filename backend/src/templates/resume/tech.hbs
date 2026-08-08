@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif;
+            font-size: 11px;
+            line-height: 1.55;
+            color: #18181b;
+            max-width: 760px;
+            margin: 0 auto;
+            padding: 32px 36px;
+            background: #ffffff;
+        }
+
+        .mono { font-family: 'JetBrains Mono', 'Fira Mono', 'Courier New', monospace; }
+
+        a { color: #9333ea; text-decoration: none; }
+
+        /* ── Header ── */
+        .header {
+            border-left: 4px solid #9333ea;
+            padding-left: 18px;
+            margin-bottom: 22px;
+        }
+
+        .name {
+            font-size: 26px;
+            font-weight: 700;
+            color: #09090b;
+            letter-spacing: -0.5px;
+            line-height: 1.15;
+        }
+
+        .headline {
+            font-size: 12.5px;
+            color: #6b21a8;
+            margin-top: 3px;
+            font-family: 'JetBrains Mono', 'Fira Mono', 'Courier New', monospace;
+            font-weight: 500;
+        }
+
+        .contact-info {
+            margin-top: 10px;
+            font-size: 10.5px;
+            color: #3f3f46;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 14px;
+        }
+
+        .contact-info span { display: inline-flex; align-items: center; gap: 5px; }
+        .contact-info .key { color: #9333ea; font-family: 'JetBrains Mono', 'Fira Mono', 'Courier New', monospace; font-size: 10px; }
+
+        /* ── Sections ── */
+        .section {
+            margin-bottom: 18px;
+            page-break-inside: avoid;
+        }
+
+        .section-title {
+            font-family: 'JetBrains Mono', 'Fira Mono', 'Courier New', monospace;
+            font-size: 11px;
+            font-weight: 700;
+            color: #9333ea;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .section-title::before {
+            content: '#';
+            color: #d8b4fe;
+            font-size: 14px;
+        }
+
+        .section-title::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: #ede9fe;
+            margin-left: 8px;
+        }
+
+        .summary-text {
+            font-size: 11px;
+            color: #27272a;
+            line-height: 1.7;
+        }
+
+        /* ── Stack chips ── */
+        .stack {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+        }
+
+        .stack .chip {
+            background: #faf5ff;
+            color: #6b21a8;
+            border: 1px solid #ede9fe;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-family: 'JetBrains Mono', 'Fira Mono', 'Courier New', monospace;
+            font-size: 9.5px;
+            font-weight: 500;
+        }
+
+        /* ── Project cards (highlighted) ── */
+        .project-entry {
+            margin-bottom: 12px;
+            page-break-inside: avoid;
+            padding: 10px 12px;
+            background: #fafafa;
+            border-left: 3px solid #d8b4fe;
+            border-radius: 0 3px 3px 0;
+        }
+
+        .project-name {
+            font-weight: 700;
+            font-size: 12px;
+            color: #09090b;
+        }
+
+        .project-role {
+            color: #6b21a8;
+            font-size: 10.5px;
+            font-family: 'JetBrains Mono', 'Fira Mono', 'Courier New', monospace;
+        }
+
+        .project-tech {
+            margin-top: 4px;
+        }
+
+        .project-desc {
+            font-size: 10.5px;
+            color: #3f3f46;
+            margin-top: 4px;
+            line-height: 1.55;
+        }
+
+        /* ── Experience ── */
+        .entry {
+            margin-bottom: 13px;
+            page-break-inside: avoid;
+        }
+
+        .entry-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin-bottom: 1px;
+        }
+
+        .entry-title {
+            font-weight: 600;
+            font-size: 12px;
+            color: #09090b;
+        }
+
+        .entry-subtitle {
+            color: #52525b;
+            font-size: 11px;
+        }
+
+        .entry-date {
+            font-family: 'JetBrains Mono', 'Fira Mono', 'Courier New', monospace;
+            font-size: 9.5px;
+            color: #9333ea;
+            white-space: nowrap;
+            font-weight: 500;
+        }
+
+        .entry-description {
+            font-size: 10.5px;
+            color: #3f3f46;
+            margin-top: 3px;
+            line-height: 1.6;
+        }
+
+        .entry-highlights {
+            margin: 4px 0 0 0;
+            padding-left: 16px;
+            list-style: none;
+        }
+
+        .entry-highlights li {
+            font-size: 10.5px;
+            color: #3f3f46;
+            margin-bottom: 2px;
+            line-height: 1.55;
+            position: relative;
+        }
+
+        .entry-highlights li::before {
+            content: '▸';
+            position: absolute;
+            left: -14px;
+            color: #9333ea;
+            font-size: 10px;
+        }
+
+        /* ── Other ── */
+        .small-entry {
+            margin-bottom: 6px;
+            font-size: 10.5px;
+            color: #27272a;
+            line-height: 1.55;
+        }
+
+        .small-entry strong { color: #09090b; }
+        .small-entry .meta { color: #71717a; font-family: 'JetBrains Mono', 'Fira Mono', 'Courier New', monospace; font-size: 9.5px; }
+
+        /* ── Languages ── */
+        .lang-list { display: flex; flex-wrap: wrap; gap: 8px; }
+        .lang-list .lang {
+            background: #faf5ff;
+            border: 1px solid #ede9fe;
+            border-radius: 3px;
+            padding: 3px 8px;
+            font-size: 10px;
+            color: #27272a;
+        }
+        .lang-list .prof {
+            color: #9333ea;
+            font-family: 'JetBrains Mono', 'Fira Mono', 'Courier New', monospace;
+            font-size: 9px;
+        }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <h1 class="name">{{fullName}}</h1>
+        {{#if headline}}<div class="headline">{{headline}}</div>{{/if}}
+        <div class="contact-info">
+            {{#if email}}<span><span class="key">email:</span>{{email}}</span>{{/if}}
+            {{#if phone}}<span><span class="key">phone:</span>{{phone}}</span>{{/if}}
+            {{#if location}}<span><span class="key">loc:</span>{{location}}</span>{{/if}}
+            {{#if github}}<span><span class="key">git:</span><a href="{{github}}">{{github}}</a></span>{{/if}}
+            {{#if linkedin}}<span><span class="key">in:</span><a href="{{linkedin}}">{{linkedin}}</a></span>{{/if}}
+            {{#if portfolio}}<span><span class="key">web:</span><a href="{{portfolio}}">{{portfolio}}</a></span>{{/if}}
+        </div>
+    </header>
+
+    {{#if summary}}
+    <section class="section">
+        <div class="section-title">about</div>
+        <p class="summary-text">{{summary}}</p>
+    </section>
+    {{/if}}
+
+    {{#if skills.length}}
+    <section class="section">
+        <div class="section-title">stack</div>
+        <div class="stack">
+            {{#each skills}}<span class="chip">{{this}}</span>{{/each}}
+        </div>
+    </section>
+    {{/if}}
+
+    {{#if projects.length}}
+    <section class="section">
+        <div class="section-title">projects</div>
+        {{#each projects}}
+        <div class="project-entry">
+            <div>
+                <span class="project-name">{{name}}</span>
+                {{#if role}}<span class="project-role"> — {{role}}</span>{{/if}}
+                {{#if url}} · <a href="{{url}}">{{url}}</a>{{/if}}
+            </div>
+            {{#if technologies}}
+            <div class="project-tech">
+                <div class="stack">
+                    {{#each technologies}}<span class="chip">{{this}}</span>{{/each}}
+                </div>
+            </div>
+            {{/if}}
+            {{#if description}}<div class="project-desc">{{description}}</div>{{/if}}
+        </div>
+        {{/each}}
+    </section>
+    {{/if}}
+
+    {{#if experience.length}}
+    <section class="section">
+        <div class="section-title">experience</div>
+        {{#each experience}}
+        <div class="entry">
+            <div class="entry-header">
+                <div>
+                    <span class="entry-title">{{title}}</span>
+                    <span class="entry-subtitle"> @ {{company}}{{#if location}}, {{location}}{{/if}}</span>
+                </div>
+                <div class="entry-date">{{startDate}} → {{endDate}}</div>
+            </div>
+            {{#if description}}<div class="entry-description">{{description}}</div>{{/if}}
+            {{#if highlights}}
+            <ul class="entry-highlights">
+                {{#each highlights}}<li>{{this}}</li>{{/each}}
+            </ul>
+            {{/if}}
+        </div>
+        {{/each}}
+    </section>
+    {{/if}}
+
+    {{#if education.length}}
+    <section class="section">
+        <div class="section-title">education</div>
+        {{#each education}}
+        <div class="entry">
+            <div class="entry-header">
+                <div>
+                    <span class="entry-title">{{degree}}{{#if field}}, {{field}}{{/if}}</span>
+                    <span class="entry-subtitle"> @ {{institution}}</span>
+                </div>
+                {{#if year}}<div class="entry-date">{{year}}</div>{{/if}}
+            </div>
+            {{#if grade}}<div class="entry-subtitle" style="color:#71717a;font-size:10px;">grade: {{grade}}</div>{{/if}}
+        </div>
+        {{/each}}
+    </section>
+    {{/if}}
+
+    {{#if certifications.length}}
+    <section class="section">
+        <div class="section-title">certifications</div>
+        {{#each certifications}}
+        <div class="small-entry">
+            <strong>{{name}}</strong> — {{issuer}} <span class="meta">{{#if date}}{{date}}{{/if}}{{#if credentialId}} · id {{credentialId}}{{/if}}</span>
+            {{#if url}} <a href="{{url}}">verify</a>{{/if}}
+        </div>
+        {{/each}}
+    </section>
+    {{/if}}
+
+    {{#if awards.length}}
+    <section class="section">
+        <div class="section-title">awards</div>
+        {{#each awards}}
+        <div class="small-entry">
+            <strong>{{title}}</strong>{{#if issuer}} — {{issuer}}{{/if}}{{#if date}} <span class="meta">({{date}})</span>{{/if}}
+            {{#if description}}<div>{{description}}</div>{{/if}}
+        </div>
+        {{/each}}
+    </section>
+    {{/if}}
+
+    {{#if languages.length}}
+    <section class="section">
+        <div class="section-title">languages</div>
+        <div class="lang-list">
+            {{#each languages}}<span class="lang">{{language}} <span class="prof">{{proficiency}}</span></span>{{/each}}
+        </div>
+    </section>
+    {{/if}}
+</body>
+</html>

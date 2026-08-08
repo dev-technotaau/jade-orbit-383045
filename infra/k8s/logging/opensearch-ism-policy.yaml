@@ -1,0 +1,189 @@
+# ============================================================
+# OpenSearch Index State Management (ISM) policy for log indices
+# ============================================================
+# Lifecycle:
+#   hot     0–7d   : actively written/searched
+#   warm    7–30d  : read-only, kept for historical search
+#   delete  >30d   : reclaimed
+#
+# Without this, daily logs-hire-adda-* indices accumulate
+# indefinitely and eventually exhaust the OpenSearch PVCs (50Gi each).
+# At ~210MB/day the cluster fills in ~8 months without rotation.
+#
+# The bootstrap Job below:
+#   1. PUTs the ISM policy
+#   2. Adds the policy to all existing logs-hire-adda-* indices
+#   3. Creates a template so future indices auto-attach the policy
+# ============================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opensearch-ism-policy
+  namespace: hire-adda
+  labels:
+    app: opensearch
+    app.kubernetes.io/part-of: hire-adda
+data:
+  policy.json: |
+    {
+      "policy": {
+        "description": "Lifecycle for hire-adda log indices: hot 7d → warm 23d → delete at 30d",
+        "default_state": "hot",
+        "states": [
+          {
+            "name": "hot",
+            "actions": [
+              { "read_write": {} }
+            ],
+            "transitions": [
+              { "state_name": "warm", "conditions": { "min_index_age": "7d" } }
+            ]
+          },
+          {
+            "name": "warm",
+            "actions": [
+              { "read_only": {} }
+            ],
+            "transitions": [
+              { "state_name": "delete", "conditions": { "min_index_age": "30d" } }
+            ]
+          },
+          {
+            "name": "delete",
+            "actions": [
+              { "delete": {} }
+            ],
+            "transitions": []
+          }
+        ],
+        "ism_template": [
+          {
+            "index_patterns": ["logs-hire-adda-*"],
+            "priority": 100
+          }
+        ]
+      }
+    }
+---
+# Allow the bootstrap pod through default-deny-all: egress to OpenSearch
+# (TCP 9200) and DNS (UDP 53).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: opensearch-ism-bootstrap-netpol
+  namespace: hire-adda
+  labels:
+    app: opensearch-ism-bootstrap
+    app.kubernetes.io/part-of: hire-adda
+spec:
+  podSelector:
+    matchLabels:
+      app: opensearch-ism-bootstrap
+  policyTypes: ['Egress']
+  egress:
+    # DNS — open destination on 53/UDP, mirrors opensearch-snapshot-netpol
+    # which is the proven pattern in this cluster. Restricting to the
+    # kube-dns podSelector breaks resolution under k3s + flannel
+    # (kube-proxy DNAT to ClusterIP doesn't always satisfy podSelector
+    # match in the netpol's egress rule).
+    - ports:
+        - port: 53
+          protocol: UDP
+    - to:
+        - podSelector:
+            matchLabels:
+              app: opensearch
+      ports:
+        - port: 9200
+          protocol: TCP
+---
+# One-shot Job: PUT the policy, attach to all existing indices.
+# Idempotent — re-running just refreshes the policy.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: opensearch-ism-bootstrap
+  namespace: hire-adda
+  labels:
+    app: opensearch-ism-bootstrap
+    app.kubernetes.io/part-of: hire-adda
+  annotations:
+    # Forces ArgoCD to re-run the Job whenever this manifest changes.
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 2
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        app: opensearch-ism-bootstrap
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: bootstrap
+          image: curlimages/curl:8.11.0
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ['ALL']
+          resources:
+            requests: { cpu: '25m', memory: '32Mi' }
+            limits: { cpu: '100m', memory: '64Mi' }
+          volumeMounts:
+            - name: policy
+              mountPath: /policy
+              readOnly: true
+          command: ['/bin/sh', '-c']
+          args:
+            - |
+              set -eu
+              OS=http://opensearch.hire-adda.svc.cluster.local:9200
+              POLICY=logs-hire-adda-lifecycle
+
+              for i in 1 2 3 4 5 6; do
+                if curl -sf --connect-timeout 5 "$OS/_cluster/health" >/dev/null 2>&1; then break; fi
+                [ "$i" -eq 6 ] && { echo "ERROR: OpenSearch unreachable"; exit 1; }
+                sleep 5
+              done
+
+              echo "→ Upsert ISM policy '$POLICY' (idempotent)"
+              # Read current seq_no + primary_term if the policy already
+              # exists; OpenSearch requires those on PUT for updates.
+              EXISTING=$(curl -s -w '\n%{http_code}' "$OS/_plugins/_ism/policies/$POLICY")
+              CODE=$(echo "$EXISTING" | tail -n1)
+              BODY=$(echo "$EXISTING" | sed '$d')
+
+              if [ "$CODE" = "200" ]; then
+                SEQ=$(echo "$BODY" | grep -o '"_seq_no":[0-9]*' | head -1 | cut -d: -f2)
+                TERM=$(echo "$BODY" | grep -o '"_primary_term":[0-9]*' | head -1 | cut -d: -f2)
+                URL="$OS/_plugins/_ism/policies/$POLICY?if_seq_no=$SEQ&if_primary_term=$TERM"
+                echo "  policy exists (seq=$SEQ term=$TERM) — updating"
+              else
+                URL="$OS/_plugins/_ism/policies/$POLICY"
+                echo "  policy not present — creating"
+              fi
+
+              curl -sf -X PUT "$URL" \
+                -H 'Content-Type: application/json' \
+                -d @/policy/policy.json >/dev/null
+              echo "  ✓ policy upserted"
+
+              echo "→ Attach policy to existing logs-hire-adda-* indices"
+              curl -sf -X POST "$OS/_plugins/_ism/add/logs-hire-adda-*" \
+                -H 'Content-Type: application/json' \
+                -d "{\"policy_id\":\"$POLICY\"}" >/dev/null || true
+
+              echo "✓ ISM bootstrap complete"
+      volumes:
+        - name: policy
+          configMap:
+            name: opensearch-ism-policy

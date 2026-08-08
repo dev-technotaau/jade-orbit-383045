@@ -1,0 +1,73 @@
+# ============================================================
+# External Mailserver Service
+# Routes K8s traffic to the Docker mailserver on the host
+# ============================================================
+# The SMTP/IMAP mailserver runs in Docker (outside K3s) and
+# binds ports directly to the host. This headless Service +
+# Endpoints pair lets K8s pods reach it via DNS:
+#   mailserver-external.hire-adda.svc.cluster.local
+#
+# Update the IP in Endpoints if the host IP changes.
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: mailserver-external
+  namespace: hire-adda
+  labels:
+    app: mailserver-external
+    app.kubernetes.io/name: mailserver
+    app.kubernetes.io/component: mail
+    app.kubernetes.io/part-of: hire-adda
+spec:
+  # No selector — manually managed Endpoints
+  type: ClusterIP
+  ports:
+    - name: imap
+      port: 143
+      targetPort: 143
+      protocol: TCP
+    - name: smtps
+      port: 465
+      targetPort: 465
+      protocol: TCP
+    - name: smtp-submission
+      port: 587
+      targetPort: 587
+      protocol: TCP
+    - name: imaps
+      port: 993
+      targetPort: 993
+      protocol: TCP
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: mailserver-external
+  namespace: hire-adda
+  labels:
+    app: mailserver-external
+subsets:
+  - addresses:
+      # Host IP where Docker mailserver runs (NEW VPS, post-cutover).
+      # The old IP `148.230.67.210` was migrated in via Velero during the
+      # 2026-04-29 cluster restore but never updated to the new VPS IP,
+      # which broke Roundcube → mailserver IMAP/SMTP for ~30 days
+      # (login UI loaded but every credential attempt timed out trying
+      # to reach the dead old IP). Update this whenever the VPS IP
+      # changes; the mailserver container binds 0.0.0.0 on the host so
+      # the public IP works from inside k3s pods on the same node.
+      - ip: '145.223.19.154'
+    ports:
+      - name: imap
+        port: 143
+        protocol: TCP
+      - name: smtps
+        port: 465
+        protocol: TCP
+      - name: smtp-submission
+        port: 587
+        protocol: TCP
+      - name: imaps
+        port: 993
+        protocol: TCP

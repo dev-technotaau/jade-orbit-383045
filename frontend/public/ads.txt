@@ -1,0 +1,19 @@
+# ads.txt — Authorized Digital Sellers (IAB Tech Lab)
+# https://iabtechlab.com/ads-txt/
+#
+# This file declares which advertising systems are authorized to sell
+# inventory on hireadda.in. Required by Google AdSense, programmatic
+# ad exchanges, and IAB-compliant buyers.
+#
+# Format per entry (one per line):
+#   <exchange_domain>, <publisher_id>, <relationship>, <certification_id>
+#
+# Relationship: DIRECT  = publisher owns the account at that exchange
+#               RESELLER = publisher authorises a third party to sell
+#
+# Certification ID is optional (TAG ID).
+#
+# Leave this file intentionally empty until ad monetisation is enabled.
+# When integrating Google AdSense, add a line like:
+#   google.com, pub-XXXXXXXXXXXXXXXX, DIRECT, f08c47fec0942fa0
+# (replace pub-XXX with your AdSense publisher ID).

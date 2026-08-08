@@ -1,0 +1,99 @@
+# ============================================================
+# Velero Backup Schedules
+# ============================================================
+
+# ── Daily Full Backup (3AM UTC, after DB backup at 2AM) ──
+# Short retention for granular recent restores. Kopia dedupes blocks across
+# backups, so daily snapshots share storage with the weekly archive below.
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: daily-full-backup
+  namespace: velero
+spec:
+  schedule: '0 3 * * *'
+  template:
+    includedNamespaces:
+      - hire-adda
+    ttl: 168h # 7 days retention (short-term recovery)
+    storageLocation: default
+    defaultVolumesToFsBackup: true
+    snapshotVolumes: false
+    includedResources:
+      - '*'
+    labelSelector:
+      matchExpressions:
+        - key: app
+          operator: Exists
+---
+# ── Weekly Full Archive Backup (Sunday 5AM UTC) ──
+# Medium-term retention bridge between the daily backups (7d) and the
+# config-only backups (90d). Kopia deduplicates so storage overhead is
+# usually minimal — but each retained weekly snapshot KEEPS REFERENCES
+# to every blob it captured, so Kopia can't GC them until ALL retaining
+# snapshots expire. The original 2160h (90d) TTL combined with full-fs
+# backups of OpenSearch data caused a ~20 GB bucket bloat in May 2026
+# (see git log for the audit). OpenSearch is now excluded via pod
+# annotation and other heavy databases have their own snapshot
+# mechanisms (db-backup cronjob → R2, opensearch-snapshot cronjob →
+# R2), so a 30-day weekly retention is plenty as a fallback.
+#
+# Retention model now:
+#   daily fs       — 7d  (granular recent restore)
+#   weekly fs      — 30d (medium-term fallback)  ← this schedule
+#   weekly config  — 90d (cluster rebuild only)
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: weekly-full-archive
+  namespace: velero
+spec:
+  schedule: '0 5 * * 0'
+  template:
+    includedNamespaces:
+      - hire-adda
+    ttl: 720h # 30 days retention (was 2160h/90d — see comment above)
+    storageLocation: default
+    defaultVolumesToFsBackup: true
+    snapshotVolumes: false
+    includedResources:
+      - '*'
+    labelSelector:
+      matchExpressions:
+        - key: app
+          operator: Exists
+---
+# ── Weekly Config Backup (all namespaces, Sunday 4AM) ──
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: weekly-config-backup
+  namespace: velero
+spec:
+  schedule: '0 4 * * 0'
+  template:
+    includedNamespaces:
+      - hire-adda
+      - monitoring
+      - logging
+      - argocd
+      - ingress-nginx
+      - cert-manager
+    ttl: 2160h # 90 days retention
+    storageLocation: default
+    defaultVolumesToFsBackup: false
+    snapshotVolumes: false
+    # Only backup config resources (not data volumes)
+    includedResources:
+      - configmaps
+      - secrets
+      - services
+      - deployments
+      - statefulsets
+      - ingresses
+      - cronjobs
+      - networkpolicies
+      - serviceaccounts
+      - clusterroles
+      - clusterrolebindings
+      - persistentvolumeclaims

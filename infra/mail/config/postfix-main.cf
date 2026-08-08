@@ -1,0 +1,2 @@
+# Require TLS before accepting authentication (passwords never sent in plaintext)
+smtpd_tls_auth_only = yes

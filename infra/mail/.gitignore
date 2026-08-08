@@ -1,0 +1,12 @@
+# Secrets
+.env
+
+# Generated config (contains passwords)
+config/postfix-accounts.cf
+config/postfix-virtual.cf
+config/opendkim/
+
+# Mail data (volumes, not in git)
+data/
+state/
+logs/

@@ -1,0 +1,67 @@
+Hire Adda Do-Not-Track Policy (EFF DNT Policy v1.0 compatible)
+================================================================
+
+This document is the canonical declaration of how hireadda.in honours the
+HTTP `DNT: 1` ("Do Not Track") request header.
+
+Effective date: 2026-05-09
+Policy URL:     https://hireadda.in/.well-known/dnt-policy.txt
+Policy version: 1.0
+Privacy policy: https://hireadda.in/privacy
+Compliance:     EFF DNT Policy v1.0 — https://www.eff.org/dnt-policy
+
+Summary
+-------
+
+When a browser sends `DNT: 1`, hireadda.in:
+
+  1. Does NOT load third-party advertising or analytics scripts that
+     would record the visit. (Google Analytics 4, Meta Pixel, GTM
+     containers are gated client-side on consent + DNT.)
+  2. Does NOT set or read any first-party cookie used solely for
+     tracking, advertising, audience-measurement, or behavioural
+     profiling. Cookies set under DNT:1 are limited to:
+        - Session authentication (httpOnly, sameSite=lax)
+        - CSRF token (httpOnly, sameSite=lax)
+        - Preference cookies the user explicitly set (theme, locale)
+  3. Does NOT enable third-party social-share buttons that load
+     remote tracking scripts. Share buttons fall back to plain links
+     that open the platform's share dialog.
+  4. Does NOT write the visit to any external analytics warehouse
+     (BigQuery, internal analytics tables) — the visit is logged in
+     application access logs only, with the IP truncated to /24 and
+     retained for security/abuse purposes for at most 30 days.
+
+Scope
+-----
+
+This policy covers:
+  - https://hireadda.in
+  - https://www.hireadda.in (canonical-redirected to hireadda.in)
+  - All paths under both hosts.
+
+It does NOT cover:
+  - User content explicitly submitted to the platform (job applications,
+    profile data, messages) — that is handled per the privacy policy.
+  - Aggregate traffic counts derived from server access logs.
+  - Security/abuse logs (rate limits, fraud detection, audit trails).
+
+Exceptions
+----------
+
+  - For users who explicitly grant marketing-cookie consent via the
+    cookie banner, behavioural analytics may be enabled regardless of
+    DNT — explicit consent overrides DNT.
+  - For authenticated users, the user's own profile preferences may
+    override DNT defaults (e.g. they opted-in to performance tracking
+    in their settings).
+
+Verification
+------------
+
+We honour DNT for both authenticated and anonymous visitors. The
+implementation lives in the cookie-consent banner + analytics gate
+modules of the public web app. Changes to this policy are published
+to git history and take effect on the next deployment.
+
+Contact: privacy@hireadda.in

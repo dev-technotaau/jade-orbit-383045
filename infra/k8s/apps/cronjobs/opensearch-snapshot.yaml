@@ -1,0 +1,111 @@
+# ============================================================
+# OpenSearch Snapshot — CronJob (Daily 3AM UTC)
+# S3-compatible snapshots to Cloudflare R2
+# Only application indices (excludes ephemeral log indices)
+# ============================================================
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: opensearch-snapshot
+  namespace: hire-adda
+  labels:
+    app: opensearch-snapshot
+    tier: maintenance
+spec:
+  schedule: '0 3 * * *'
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 600
+      template:
+        metadata:
+          labels:
+            app: opensearch-snapshot
+          annotations:
+            # No PVCs mounted in this CronJob, but adding the
+            # exclude annotation keeps the convention uniform
+            # across every cronjob in this directory — Velero
+            # will simply ignore the missing volume.
+            backup.velero.io/backup-volumes-excludes: backups
+        spec:
+          securityContext:
+            runAsUser: 1001
+            runAsGroup: 1001
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: snapshot
+              image: curlimages/curl:8.11.0
+              command: ['/bin/sh', '-c']
+              args:
+                - |
+                  set -e
+                  OS_URL="http://opensearch:9200"
+                  REPO="hireadda_snapshots"
+                  SNAPSHOT="snapshot_$(date +%Y%m%d_%H%M%S)"
+
+                  # Wait for network policy propagation + OpenSearch readiness
+                  echo "Waiting for OpenSearch connectivity..."
+                  for i in 1 2 3 4 5 6; do
+                    if curl -sf --connect-timeout 5 "$OS_URL/_cluster/health" >/dev/null 2>&1; then
+                      echo "OpenSearch reachable"
+                      break
+                    fi
+                    [ "$i" -eq 6 ] && { echo "ERROR: Cannot reach OpenSearch"; exit 1; }
+                    sleep 5
+                  done
+
+                  # Ensure S3 snapshot repository exists (Cloudflare R2)
+                  echo "Registering snapshot repository..."
+                  curl -sf -X PUT "$OS_URL/_snapshot/$REPO" \
+                    -H 'Content-Type: application/json' \
+                    -d '{
+                      "type": "s3",
+                      "settings": {
+                        "bucket": "hire-adda-velero-backups",
+                        "base_path": "backups/opensearch",
+                        "compress": true
+                      }
+                    }' || true
+
+                  # Create snapshot
+                  echo "Creating snapshot: $SNAPSHOT"
+                  curl -sf -X PUT "$OS_URL/_snapshot/$REPO/$SNAPSHOT?wait_for_completion=true" \
+                    -H 'Content-Type: application/json' \
+                    -d '{"indices": "candidates,employers,jobs,suggestions", "ignore_unavailable": true}'
+
+                  echo "Snapshot complete: $SNAPSHOT"
+
+                  # Cleanup: remove snapshots older than 30 days.
+                  # Use POSIX-compatible epoch arithmetic — the image is
+                  # `curlimages/curl` (Alpine/BusyBox), which supports neither
+                  # GNU `date -d "30 days ago"` nor BSD `date -v-30d`. Both
+                  # forms fail under `set -e` even though the snapshot itself
+                  # already succeeded above, killing the job.
+                  CUTOFF=$(date -d "@$(( $(date +%s) - 2592000 ))" +%Y%m%d)
+                  curl -sf "$OS_URL/_snapshot/$REPO/_all" | \
+                    grep -o '"snapshot_[0-9]*_[0-9]*"' | tr -d '"' | while read snap; do
+                      SNAP_DATE=$(echo "$snap" | grep -o '[0-9]\{8\}')
+                      if [ "$SNAP_DATE" -lt "$CUTOFF" ] 2>/dev/null; then
+                        echo "Deleting old snapshot: $snap"
+                        curl -sf -X DELETE "$OS_URL/_snapshot/$REPO/$snap" || true
+                      fi
+                    done
+              resources:
+                requests:
+                  memory: '32Mi'
+                  cpu: '25m'
+                limits:
+                  memory: '64Mi'
+                  cpu: '100m'
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+          restartPolicy: OnFailure

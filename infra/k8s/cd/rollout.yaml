@@ -1,0 +1,324 @@
+# ============================================================
+# Argo Rollouts — Canary Deployment Strategy for Backend
+# Replaces the Deployment when Argo Rollouts is installed
+# ============================================================
+# Install Argo Rollouts:
+#   helm install argo-rollouts argo/argo-rollouts \
+#     --namespace argo-rollouts --create-namespace \
+#     --set controller.resources.limits.memory=128Mi
+# ============================================================
+# NOTE: This is an ALTERNATIVE to apps/backend/deployment.yaml.
+# Use ONE or the other, not both.
+# To switch: delete the Deployment, apply this Rollout.
+# ============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: backend
+  namespace: hire-adda
+  labels:
+    app: backend
+    tier: app
+spec:
+  replicas: 2
+  revisionHistoryLimit: 2
+  progressDeadlineSeconds: 300
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+        tier: app
+    spec:
+      serviceAccountName: backend-sa
+      # Spread replicas across nodes when a multi-node cluster is
+      # available. On the current single-node cluster this is a no-op
+      # (`preferred`, not `required`) but makes future scale-out give
+      # us real DR — losing one node won't take down both replicas.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: backend
+                topologyKey: kubernetes.io/hostname
+      securityContext:
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: backend
+          image: ghcr.io/dev-technotaau/hire-adda-backend:94d854d3fc2e97a8647e36cf4cc9a57f242b139a
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 5000
+          envFrom:
+            - secretRef:
+                name: backend-secrets
+            - configMapRef:
+                name: backend-config
+          resources:
+            requests:
+              memory: '768Mi'
+              cpu: '250m'
+            limits:
+              memory: '1536Mi'
+              cpu: '1500m'
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 5000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: 5000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 30
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: uploads
+              mountPath: /app/uploads
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: uploads-pvc
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+      imagePullSecrets:
+        - name: ghcr-credentials
+      terminationGracePeriodSeconds: 30
+  strategy:
+    canary:
+      canaryService: backend-canary
+      stableService: backend
+      scaleDownDelaySeconds: 0
+      trafficRouting:
+        nginx:
+          stableIngress: api-ingress
+      steps:
+        - setWeight: 20
+        - pause: { duration: 60s }
+        - analysis:
+            templates:
+              - templateName: backend-success-rate
+              - templateName: backend-canary-comparison
+            args:
+              - name: canary-hash
+                valueFrom:
+                  podTemplateHashValue: Latest
+              - name: stable-hash
+                valueFrom:
+                  podTemplateHashValue: Stable
+        - setWeight: 50
+        - pause: { duration: 120s }
+        - analysis:
+            templates:
+              - templateName: backend-success-rate
+              - templateName: backend-canary-comparison
+            args:
+              - name: canary-hash
+                valueFrom:
+                  podTemplateHashValue: Latest
+              - name: stable-hash
+                valueFrom:
+                  podTemplateHashValue: Stable
+        - setWeight: 100
+      maxSurge: 1
+      maxUnavailable: 1
+---
+# ============================================================
+# AnalysisTemplate — Automated canary analysis (absolute thresholds)
+# Used by both canary steps AND blue-green prePromotionAnalysis
+# ============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: backend-success-rate
+  namespace: hire-adda
+spec:
+  metrics:
+    # ── Error Rate ──────────────────────────────────────────
+    # Aggregate 5xx rate across all endpoints < 5%
+    - name: error-rate
+      interval: 30s
+      count: 3
+      successCondition: result[0] < 0.05
+      failureLimit: 2
+      provider:
+        prometheus:
+          address: http://kube-prometheus-stack-prometheus.monitoring:9090
+          query: |
+            (
+              sum(rate(http_requests_total{namespace="hire-adda",app="backend",status=~"5.."}[2m]))
+              /
+              sum(rate(http_requests_total{namespace="hire-adda",app="backend"}[2m]))
+            ) >= 0
+            or vector(0)
+
+    # ── Per-Endpoint Error Rate (Business KPI proxy) ───────
+    # Worst critical endpoint must stay below 10%
+    # Catches broken /auth, /jobs, /applications even if aggregate looks fine
+    - name: critical-endpoint-error-rate
+      interval: 30s
+      count: 3
+      successCondition: result[0] < 0.10
+      failureLimit: 1
+      inconclusiveLimit: 3
+      provider:
+        prometheus:
+          address: http://kube-prometheus-stack-prometheus.monitoring:9090
+          query: |
+            max(
+              sum by (route) (rate(http_requests_total{namespace="hire-adda",app="backend",route=~"/api/v1/auth/.*|/api/v1/jobs.*|/api/v1/applications.*",status=~"5.."}[2m]))
+              /
+              sum by (route) (rate(http_requests_total{namespace="hire-adda",app="backend",route=~"/api/v1/auth/.*|/api/v1/jobs.*|/api/v1/applications.*"}[2m]))
+            ) >= 0
+            or vector(0)
+
+    # ── Latency P95 ────────────────────────────────────────
+    - name: latency-p95
+      interval: 30s
+      count: 3
+      successCondition: result[0] < 3
+      failureLimit: 1
+      provider:
+        prometheus:
+          address: http://kube-prometheus-stack-prometheus.monitoring:9090
+          query: |
+            histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{namespace="hire-adda",app="backend"}[2m])) by (le)) >= 0
+            or vector(0)
+
+    # ── Latency P99 (tail latency) ─────────────────────────
+    - name: latency-p99
+      interval: 30s
+      count: 3
+      successCondition: result[0] < 5
+      failureLimit: 1
+      provider:
+        prometheus:
+          address: http://kube-prometheus-stack-prometheus.monitoring:9090
+          query: |
+            histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{namespace="hire-adda",app="backend"}[2m])) by (le)) >= 0
+            or vector(0)
+
+    # ── CPU Saturation ─────────────────────────────────────
+    # Must stay below 90% of resource limit
+    - name: cpu-saturation
+      interval: 30s
+      count: 3
+      successCondition: result[0] < 0.90
+      failureLimit: 1
+      provider:
+        prometheus:
+          address: http://kube-prometheus-stack-prometheus.monitoring:9090
+          query: |
+            (
+              max(rate(container_cpu_usage_seconds_total{namespace="hire-adda",container="backend"}[2m]))
+              /
+              max(kube_pod_container_resource_limits{namespace="hire-adda",container="backend",resource="cpu"})
+            ) or vector(0)
+
+    # ── Memory Saturation ──────────────────────────────────
+    # Must stay below 90% of resource limit
+    - name: memory-saturation
+      interval: 30s
+      count: 3
+      successCondition: result[0] < 0.90
+      failureLimit: 1
+      provider:
+        prometheus:
+          address: http://kube-prometheus-stack-prometheus.monitoring:9090
+          query: |
+            (
+              max(container_memory_working_set_bytes{namespace="hire-adda",container="backend"})
+              /
+              max(kube_pod_container_resource_limits{namespace="hire-adda",container="backend",resource="memory"})
+            ) or vector(0)
+---
+# ============================================================
+# AnalysisTemplate — Canary vs Stable relative comparison
+# Only used in canary/progressive steps (NOT blue-green)
+# Detects degradation relative to stable, not just absolute thresholds
+# ============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: backend-canary-comparison
+  namespace: hire-adda
+spec:
+  args:
+    - name: canary-hash
+    - name: stable-hash
+  metrics:
+    # ── Error Rate Ratio ───────────────────────────────────
+    # Canary error rate must not exceed 1.5x the stable error rate
+    - name: canary-vs-stable-error-rate
+      interval: 30s
+      count: 3
+      successCondition: result[0] <= 1.5
+      failureLimit: 2
+      inconclusiveLimit: 3
+      provider:
+        prometheus:
+          address: http://kube-prometheus-stack-prometheus.monitoring:9090
+          query: |
+            (
+              (
+                sum(rate(http_requests_total{namespace="hire-adda",pod=~"backend-{{args.canary-hash}}.*",status=~"5.."}[2m]))
+                / sum(rate(http_requests_total{namespace="hire-adda",pod=~"backend-{{args.canary-hash}}.*"}[2m]))
+              ) / (
+                sum(rate(http_requests_total{namespace="hire-adda",pod=~"backend-{{args.stable-hash}}.*",status=~"5.."}[2m]))
+                / sum(rate(http_requests_total{namespace="hire-adda",pod=~"backend-{{args.stable-hash}}.*"}[2m]))
+              )
+            ) or vector(1)
+
+    # ── Latency Ratio ──────────────────────────────────────
+    # Canary P95 must not exceed 3x the stable P95
+    - name: canary-vs-stable-latency
+      interval: 30s
+      count: 3
+      successCondition: result[0] <= 3.0
+      failureLimit: 2
+      inconclusiveLimit: 3
+      provider:
+        prometheus:
+          address: http://kube-prometheus-stack-prometheus.monitoring:9090
+          query: |
+            (
+              histogram_quantile(0.95,
+                sum(rate(http_request_duration_seconds_bucket{namespace="hire-adda",pod=~"backend-{{args.canary-hash}}.*"}[2m])) by (le)
+              )
+              /
+              histogram_quantile(0.95,
+                sum(rate(http_request_duration_seconds_bucket{namespace="hire-adda",pod=~"backend-{{args.stable-hash}}.*"}[2m])) by (le)
+              )
+            ) or vector(1)

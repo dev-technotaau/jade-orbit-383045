@@ -1,0 +1,26 @@
+# ============================================================
+# OpenSearch — Service
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: opensearch
+  namespace: hire-adda
+  labels:
+    app: opensearch
+    app.kubernetes.io/name: opensearch
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: http
+      port: 9200
+      targetPort: 9200
+      protocol: TCP
+    - name: transport
+      port: 9300
+      targetPort: 9300
+      protocol: TCP
+  selector:
+    app: opensearch

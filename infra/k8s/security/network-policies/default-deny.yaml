@@ -1,0 +1,14 @@
+# ============================================================
+# Default Deny All — hire-adda namespace
+# All traffic must be explicitly allowed by subsequent policies
+# ============================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: hire-adda
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress

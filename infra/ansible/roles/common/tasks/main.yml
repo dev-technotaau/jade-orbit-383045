@@ -1,0 +1,167 @@
+# ============================================================
+# Common Role — Server hardening tasks
+# These tasks can be included via `roles: [common]` or
+# are currently executed inline in 01-harden.yml
+# ============================================================
+
+---
+- name: Update apt cache and upgrade packages
+  ansible.builtin.apt:
+    update_cache: true
+    upgrade: dist
+    cache_valid_time: 3600
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name: '{{ base_packages }}'
+    state: present
+
+# ── Deploy User ──
+- name: Create deploy group
+  ansible.builtin.group:
+    name: '{{ deploy_group }}'
+    state: present
+
+- name: Create deploy user
+  ansible.builtin.user:
+    name: '{{ deploy_user }}'
+    group: '{{ deploy_group }}'
+    groups: sudo,docker
+    shell: /bin/bash
+    create_home: true
+    state: present
+
+- name: Set up SSH key for deploy user
+  ansible.posix.authorized_key:
+    user: '{{ deploy_user }}'
+    key: "{{ lookup('file', '~/.ssh/hireadda_ed25519.pub') }}"
+    state: present
+
+- name: Allow deploy user passwordless sudo
+  ansible.builtin.lineinfile:
+    path: /etc/sudoers.d/deploy
+    line: '{{ deploy_user }} ALL=(ALL) NOPASSWD:ALL'
+    create: true
+    mode: '0440'
+    validate: 'visudo -cf %s'
+
+# ── SSH Hardening ──
+- name: Harden SSH configuration
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '{{ item.regexp }}'
+    line: '{{ item.line }}'
+  loop:
+    - { regexp: '^#?PermitRootLogin', line: 'PermitRootLogin no' }
+    - { regexp: '^#?PasswordAuthentication', line: 'PasswordAuthentication no' }
+    - { regexp: '^#?ChallengeResponseAuthentication', line: 'ChallengeResponseAuthentication no' }
+    - { regexp: '^#?Port', line: 'Port {{ ssh_port }}' }
+    - { regexp: '^#?AllowUsers', line: "AllowUsers {{ ssh_allowed_users | join(' ') }}" }
+    - { regexp: '^#?ClientAliveInterval', line: 'ClientAliveInterval 300' }
+    - { regexp: '^#?MaxAuthTries', line: 'MaxAuthTries 3' }
+  notify: restart sshd
+
+# ── Timezone ──
+- name: Set timezone
+  community.general.timezone:
+    name: '{{ timezone }}'
+
+# ── Sysctl Tuning ──
+- name: Apply sysctl settings
+  ansible.builtin.template:
+    src: sysctl.conf.j2
+    dest: /etc/sysctl.d/99-hireadda.conf
+    mode: '0644'
+  notify: reload sysctl
+
+# ── UFW Firewall ──
+- name: Deploy UFW rules
+  ansible.builtin.template:
+    src: ufw-rules.j2
+    dest: /etc/ufw/user.rules.bak
+    mode: '0640'
+
+- name: Reset UFW to defaults
+  community.general.ufw:
+    state: reset
+
+- name: Set UFW default deny incoming
+  community.general.ufw:
+    direction: incoming
+    default: deny
+
+- name: Set UFW default allow outgoing
+  community.general.ufw:
+    direction: outgoing
+    default: allow
+
+- name: Allow standard UFW rules
+  community.general.ufw:
+    rule: '{{ item.rule }}'
+    port: '{{ item.port }}'
+    proto: '{{ item.proto }}'
+    comment: '{{ item.comment }}'
+  loop: '{{ ufw_rules }}'
+
+- name: Allow K3s API from admin IPs only
+  community.general.ufw:
+    rule: allow
+    port: 6443
+    proto: tcp
+    from_ip: '{{ item }}'
+    comment: 'K3s API (admin)'
+  loop: '{{ admin_ips }}'
+
+- name: Enable UFW
+  community.general.ufw:
+    state: enabled
+    logging: 'on'
+
+- name: Allow forwarding in UFW (required for K3s pod networking)
+  ansible.builtin.lineinfile:
+    path: /etc/default/ufw
+    regexp: '^DEFAULT_FORWARD_POLICY='
+    line: 'DEFAULT_FORWARD_POLICY="ACCEPT"'
+  notify: reload ufw
+
+# ── fail2ban ──
+- name: Deploy fail2ban jail configuration
+  ansible.builtin.template:
+    src: fail2ban-jail.local.j2
+    dest: /etc/fail2ban/jail.local
+    mode: '0644'
+  notify: restart fail2ban
+
+- name: Enable and start fail2ban
+  ansible.builtin.systemd:
+    name: fail2ban
+    enabled: true
+    state: started
+
+# ── Unattended Upgrades ──
+- name: Configure unattended-upgrades for security patches
+  ansible.builtin.copy:
+    content: |
+      Unattended-Upgrade::Allowed-Origins {
+          "${distro_id}:${distro_codename}-security";
+          "${distro_id}ESMApps:${distro_codename}-apps-security";
+          "${distro_id}ESM:${distro_codename}-infra-security";
+      };
+      Unattended-Upgrade::AutoFixInterruptedDpkg "true";
+      Unattended-Upgrade::MinimalSteps "true";
+      Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+      Unattended-Upgrade::Remove-Unused-Dependencies "true";
+      Unattended-Upgrade::Automatic-Reboot "false";
+    dest: /etc/apt/apt.conf.d/50unattended-upgrades
+    mode: '0644'
+
+# ── File Limits ──
+- name: Set system file limits
+  ansible.builtin.copy:
+    content: |
+      * soft nofile 65535
+      * hard nofile 65535
+      root soft nofile 65535
+      root hard nofile 65535
+    dest: /etc/security/limits.d/99-hireadda.conf
+    mode: '0644'

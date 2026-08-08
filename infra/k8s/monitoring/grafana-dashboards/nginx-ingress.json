@@ -1,0 +1,179 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    {
+      "title": "Request Rate by Status",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(nginx_ingress_controller_requests{namespace=\"ingress-nginx\"}[5m])) by (status)",
+          "legendFormat": "{{status}}"
+        }
+      ]
+    },
+    {
+      "title": "Request Rate by Host",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(nginx_ingress_controller_requests{namespace=\"ingress-nginx\"}[5m])) by (host)",
+          "legendFormat": "{{host}}"
+        }
+      ]
+    },
+    {
+      "title": "Total Requests/s",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 8 },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(nginx_ingress_controller_requests{namespace=\"ingress-nginx\"}[5m]))",
+          "legendFormat": "Requests/s"
+        }
+      ]
+    },
+    {
+      "title": "4xx Rate",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 10 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(nginx_ingress_controller_requests{namespace=\"ingress-nginx\",status=~\"4..\"}[5m]))",
+          "legendFormat": "4xx/s"
+        }
+      ]
+    },
+    {
+      "title": "5xx Rate",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 0.1 },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(nginx_ingress_controller_requests{namespace=\"ingress-nginx\",status=~\"5..\"}[5m]))",
+          "legendFormat": "5xx/s"
+        }
+      ]
+    },
+    {
+      "title": "Active Connections",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 8 },
+      "targets": [
+        {
+          "expr": "nginx_ingress_controller_nginx_process_connections{namespace=\"ingress-nginx\",state=\"active\"}",
+          "legendFormat": "Active"
+        }
+      ]
+    },
+    {
+      "title": "Upstream Response Time (p50/p95/p99)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "fieldConfig": {
+        "defaults": { "unit": "s" }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(nginx_ingress_controller_response_duration_seconds_bucket{namespace=\"ingress-nginx\"}[5m])) by (le, host))",
+          "legendFormat": "p50 {{host}}"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(nginx_ingress_controller_response_duration_seconds_bucket{namespace=\"ingress-nginx\"}[5m])) by (le, host))",
+          "legendFormat": "p95 {{host}}"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(nginx_ingress_controller_response_duration_seconds_bucket{namespace=\"ingress-nginx\"}[5m])) by (le, host))",
+          "legendFormat": "p99 {{host}}"
+        }
+      ]
+    },
+    {
+      "title": "Request Size",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "fieldConfig": {
+        "defaults": { "unit": "bytes" }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(nginx_ingress_controller_request_size_sum{namespace=\"ingress-nginx\"}[5m])) by (host)",
+          "legendFormat": "Request {{host}}"
+        },
+        {
+          "expr": "sum(rate(nginx_ingress_controller_response_size_sum{namespace=\"ingress-nginx\"}[5m])) by (host)",
+          "legendFormat": "Response {{host}}"
+        }
+      ]
+    },
+    {
+      "title": "SSL Certificate Expiry",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "fieldConfig": {
+        "defaults": { "unit": "s" }
+      },
+      "targets": [
+        {
+          "expr": "nginx_ingress_controller_ssl_expire_time_seconds{namespace=\"ingress-nginx\"} - time()",
+          "legendFormat": "{{host}} expires in"
+        }
+      ]
+    },
+    {
+      "title": "Connection States",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "targets": [
+        {
+          "expr": "nginx_ingress_controller_nginx_process_connections{namespace=\"ingress-nginx\"}",
+          "legendFormat": "{{state}}"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["nginx", "ingress", "hire-adda"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "title": "Nginx Ingress",
+  "uid": "tb-nginx-ingress"
+}

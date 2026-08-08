@@ -1,0 +1,23 @@
+# ============================================================
+# Backend — Uploads PVC
+# Persistent storage for user-uploaded files (resumes, avatars)
+# Matches Docker Compose volume: uploads_data:/app/uploads
+# ============================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: uploads-pvc
+  namespace: hire-adda
+  labels:
+    app: backend
+    tier: app
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/component: storage
+    app.kubernetes.io/part-of: hire-adda
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 10Gi

@@ -1,0 +1,22 @@
+# ============================================================
+# Backend API — Preview Service
+# Used by Argo Rollouts for blue-green deploys (new version preview)
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-preview
+  namespace: hire-adda
+  labels:
+    app: backend
+    app.kubernetes.io/name: backend
+    role: preview
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 5000
+      targetPort: 5000
+      protocol: TCP
+  selector:
+    app: backend

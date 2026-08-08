@@ -1,0 +1,8 @@
+[
+  {
+    "_comment": "Private prefetch proxy advice — see https://github.com/buettner/private-prefetch-proxy/blob/main/traffic-advice.md. This is ORIGIN-LEVEL ONLY. The spec deliberately has no path rules: 'the robots.txt format is also designed to limit traffic by path, which isn't appropriate for agents which do not know the path'. An earlier version of this comment claimed a 'bypass below excludes auth + admin paths' — no such bypass existed or could exist, because the format has no field for it. Path scoping is enforced where it actually can be: /robots.txt disallows /candidate/, /employer/, /admin/, /super-admin/, /billing/, /auth/reset-password and friends for every user-agent; next.config.ts sends X-Robots-Tag noindex,nofollow on those prefixes; they are auth-gated server-side; and they return Cache-Control private,no-store so no shared cache retains them. Prefetching is welcomed here because the public surface (jobs, companies, pricing) benefits from anticipatory navigation.",
+    "user_agent": "prefetch-proxy",
+    "disallow": false,
+    "fraction": 1.0
+  }
+]

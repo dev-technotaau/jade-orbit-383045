@@ -1,0 +1,268 @@
+# ============================================================
+# Server Hardening Playbook
+# Secures the VPS: user setup, SSH hardening, firewall,
+# fail2ban, sysctl tuning, automatic security updates.
+# ============================================================
+# Usage:
+#   ansible-playbook -i inventory/production.ini playbooks/01-harden.yml
+# ============================================================
+
+---
+- name: Harden production VPS
+  hosts: k3s_server
+  become: true
+  gather_facts: true
+
+  tasks:
+    # ── System Updates ──
+    - name: Update apt cache and upgrade packages
+      ansible.builtin.apt:
+        update_cache: true
+        upgrade: dist
+        cache_valid_time: 3600
+
+    - name: Install base packages
+      ansible.builtin.apt:
+        name: '{{ base_packages }}'
+        state: present
+
+    # ── Deploy User ──
+    - name: Create deploy group
+      ansible.builtin.group:
+        name: '{{ deploy_group }}'
+        state: present
+
+    - name: Create deploy user
+      ansible.builtin.user:
+        name: '{{ deploy_user }}'
+        group: '{{ deploy_group }}'
+        groups: sudo,docker
+        shell: /bin/bash
+        create_home: true
+        state: present
+
+    - name: Set up SSH key for deploy user
+      ansible.posix.authorized_key:
+        user: '{{ deploy_user }}'
+        key: "{{ lookup('file', '~/.ssh/hireadda_ed25519.pub') }}"
+        state: present
+
+    - name: Allow deploy user passwordless sudo
+      ansible.builtin.lineinfile:
+        path: /etc/sudoers.d/deploy
+        line: '{{ deploy_user }} ALL=(ALL) NOPASSWD:ALL'
+        create: true
+        mode: '0440'
+        validate: 'visudo -cf %s'
+
+    # ── SSH Hardening ──
+    - name: Disable root SSH login
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PermitRootLogin'
+        line: 'PermitRootLogin no'
+      notify: restart sshd
+
+    - name: Disable password authentication
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PasswordAuthentication'
+        line: 'PasswordAuthentication no'
+      notify: restart sshd
+
+    - name: Disable challenge-response authentication
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?ChallengeResponseAuthentication'
+        line: 'ChallengeResponseAuthentication no'
+      notify: restart sshd
+
+    - name: Set SSH port
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?Port'
+        line: 'Port {{ ssh_port }}'
+      notify: restart sshd
+
+    - name: Limit SSH to deploy user
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?AllowUsers'
+        line: "AllowUsers {{ ssh_allowed_users | join(' ') }}"
+      notify: restart sshd
+
+    - name: Set SSH idle timeout (5 minutes)
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?ClientAliveInterval'
+        line: 'ClientAliveInterval 300'
+      notify: restart sshd
+
+    - name: Set SSH max auth tries
+      # 6 = OpenSSH default. Previously 3 for tighter brute-force
+      # protection, but it broke CD: GitHub Actions runners' ssh client
+      # tries multiple identities before the configured id_ed25519
+      # (until the workflows added IdentitiesOnly=yes), and 3 strikes
+      # disconnected the rsync. fail2ban covers actual brute force at a
+      # lower threshold (5 attempts → 1h ban) so 6 is safe.
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?MaxAuthTries'
+        line: 'MaxAuthTries 6'
+      notify: restart sshd
+
+    # ── Timezone ──
+    - name: Set timezone
+      community.general.timezone:
+        name: '{{ timezone }}'
+
+    # ── Sysctl Tuning ──
+    - name: Apply sysctl settings
+      ansible.builtin.template:
+        src: ../roles/common/templates/sysctl.conf.j2
+        dest: /etc/sysctl.d/99-hireadda.conf
+        mode: '0644'
+      notify: reload sysctl
+
+    # ── UFW Firewall ──
+    - name: Reset UFW to defaults
+      community.general.ufw:
+        state: reset
+
+    - name: Set UFW default deny incoming
+      community.general.ufw:
+        direction: incoming
+        default: deny
+
+    - name: Set UFW default allow outgoing
+      community.general.ufw:
+        direction: outgoing
+        default: allow
+
+    - name: Allow standard UFW rules
+      community.general.ufw:
+        rule: '{{ item.rule }}'
+        port: '{{ item.port }}'
+        proto: '{{ item.proto }}'
+        comment: '{{ item.comment }}'
+      loop: '{{ ufw_rules }}'
+
+    - name: Allow K3s API from admin IPs only
+      community.general.ufw:
+        rule: allow
+        port: 6443
+        proto: tcp
+        from_ip: '{{ item }}'
+        comment: 'K3s API (admin)'
+      loop: '{{ admin_ips }}'
+
+    - name: Allow K3s internal ports (localhost only)
+      community.general.ufw:
+        rule: allow
+        port: '{{ item.port }}'
+        proto: tcp
+        from_ip: 127.0.0.1
+        comment: '{{ item.comment }}'
+      loop:
+        - { port: 10250, comment: 'kubelet API' }
+        - { port: 10251, comment: 'kube-scheduler' }
+        - { port: 10252, comment: 'kube-controller-manager' }
+        - { port: 2379, comment: 'etcd client' }
+        - { port: 2380, comment: 'etcd peer' }
+
+    - name: Enable UFW
+      community.general.ufw:
+        state: enabled
+        logging: 'on'
+
+    # ── UFW + K3s iptables compatibility ──
+    - name: Allow forwarding in UFW (required for K3s pod networking)
+      ansible.builtin.lineinfile:
+        path: /etc/default/ufw
+        regexp: '^DEFAULT_FORWARD_POLICY='
+        line: 'DEFAULT_FORWARD_POLICY="ACCEPT"'
+      notify: reload ufw
+
+    # ── fail2ban ──
+    - name: Deploy fail2ban jail configuration
+      ansible.builtin.template:
+        src: ../roles/common/templates/fail2ban-jail.local.j2
+        dest: /etc/fail2ban/jail.local
+        mode: '0644'
+      notify: restart fail2ban
+
+    - name: Enable and start fail2ban
+      ansible.builtin.systemd:
+        name: fail2ban
+        enabled: true
+        state: started
+
+    # ── Unattended Upgrades ──
+    - name: Configure unattended-upgrades for security patches
+      ansible.builtin.copy:
+        content: |
+          Unattended-Upgrade::Allowed-Origins {
+              "${distro_id}:${distro_codename}-security";
+              "${distro_id}ESMApps:${distro_codename}-apps-security";
+              "${distro_id}ESM:${distro_codename}-infra-security";
+          };
+          Unattended-Upgrade::AutoFixInterruptedDpkg "true";
+          Unattended-Upgrade::MinimalSteps "true";
+          Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+          Unattended-Upgrade::Remove-Unused-Dependencies "true";
+          Unattended-Upgrade::Automatic-Reboot "false";
+        dest: /etc/apt/apt.conf.d/50unattended-upgrades
+        mode: '0644'
+
+    - name: Enable automatic updates
+      ansible.builtin.copy:
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Unattended-Upgrade "1";
+          APT::Periodic::AutocleanInterval "7";
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        mode: '0644'
+
+    # ── File Limits ──
+    - name: Set system file limits
+      ansible.builtin.copy:
+        content: |
+          * soft nofile 65535
+          * hard nofile 65535
+          root soft nofile 65535
+          root hard nofile 65535
+        dest: /etc/security/limits.d/99-hireadda.conf
+        mode: '0644'
+
+    # ── Disable Unused Services ──
+    - name: Check if snapd is installed
+      ansible.builtin.stat:
+        path: /usr/bin/snap
+      register: snapd_check
+
+    - name: Disable snapd if present (saves ~100MB RAM)
+      ansible.builtin.systemd:
+        name: snapd
+        enabled: false
+        state: stopped
+      when: snapd_check.stat.exists
+      ignore_errors: true
+
+  handlers:
+    - name: restart sshd
+      ansible.builtin.systemd:
+        name: sshd
+        state: restarted
+
+    - name: reload sysctl
+      ansible.builtin.command:
+        cmd: sysctl --system
+
+    - name: reload ufw
+      community.general.ufw:
+        state: reloaded
+
+    - name: restart fail2ban
+      ansible.builtin.systemd:
+        name: fail2ban
+        state: restarted

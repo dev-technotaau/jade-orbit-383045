@@ -1,0 +1,61 @@
+# ============================================================
+# Frontend — Network Policy
+# Allows: ingress from ingress-nginx + nginx reverse proxy
+# Allows: egress to nginx (BFF), DNS, external CDN
+# ============================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: frontend-netpol
+  namespace: hire-adda
+spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # From ingress-nginx controller (external traffic)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - port: 3000
+          protocol: TCP
+    # From nginx reverse proxy (internal routing)
+    - from:
+        - podSelector:
+            matchLabels:
+              app: nginx
+      ports:
+        - port: 3000
+          protocol: TCP
+  egress:
+    # To nginx (BFF calls via BACKEND_INTERNAL_URL http://nginx:80/api/v1)
+    - to:
+        - podSelector:
+            matchLabels:
+              app: nginx
+      ports:
+        - port: 80
+          protocol: TCP
+    # DNS
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # External (Firebase, Sentry, CDN)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - port: 443
+          protocol: TCP

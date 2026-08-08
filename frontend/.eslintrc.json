@@ -1,0 +1,21 @@
+{
+    "extends": [
+        "next/core-web-vitals",
+        "plugin:prettier/recommended"
+    ],
+    "rules": {
+        "prettier/prettier": [
+            "error",
+            {},
+            {
+                "usePrettierrc": true
+            }
+        ],
+        "react/no-unescaped-entities": "off",
+        "@next/next/no-page-custom-font": "off",
+        "no-eval": "error",
+        "no-implied-eval": "error",
+        "no-new-func": "error",
+        "no-script-url": "error"
+    }
+}

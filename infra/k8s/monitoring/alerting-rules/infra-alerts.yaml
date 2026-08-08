@@ -1,0 +1,92 @@
+# ============================================================
+# Infrastructure Alert Rules (Node-level)
+# ============================================================
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: hire-adda-infra-alerts
+  namespace: monitoring
+  labels:
+    release: kube-prometheus
+    app.kubernetes.io/part-of: hire-adda
+spec:
+  groups:
+    - name: hire-adda.infra
+      rules:
+        # ── CPU ──
+        - alert: HighCPUUsage
+          expr: |
+            100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+          for: 10m
+          labels:
+            severity: warning
+            team: infra
+          annotations:
+            summary: 'CPU usage above 85% for 10 minutes'
+            description: 'Current CPU usage: {{ $value | humanize }}%'
+
+        # ── Memory ──
+        - alert: HighNodeMemory
+          expr: |
+            (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) > 0.90
+          for: 5m
+          labels:
+            severity: critical
+            team: infra
+          annotations:
+            summary: 'Node memory usage above 90%'
+            description: 'Available memory: {{ $value | humanizePercentage }} used'
+
+        # ── Disk ──
+        - alert: DiskSpaceLow
+          expr: |
+            node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.10
+          for: 5m
+          labels:
+            severity: critical
+            team: infra
+          annotations:
+            summary: 'Disk space below 10% on root filesystem'
+
+        - alert: DiskSpaceWarning
+          expr: |
+            node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.20
+          for: 15m
+          labels:
+            severity: warning
+            team: infra
+          annotations:
+            summary: 'Disk space below 20% on root filesystem'
+
+        # ── Disk I/O ──
+        - alert: HighDiskIOUtil
+          expr: |
+            rate(node_disk_io_time_seconds_total[5m]) > 0.9
+          for: 10m
+          labels:
+            severity: warning
+            team: infra
+          annotations:
+            summary: 'Disk I/O utilization above 90%'
+
+        # ── Network ──
+        - alert: NetworkErrors
+          expr: |
+            rate(node_network_receive_errs_total[5m]) + rate(node_network_transmit_errs_total[5m]) > 10
+          for: 5m
+          labels:
+            severity: warning
+            team: infra
+          annotations:
+            summary: 'Network errors detected'
+
+        # ── System Load ──
+        - alert: HighSystemLoad
+          expr: |
+            node_load15 / count without(cpu, mode) (node_cpu_seconds_total{mode="idle"}) > 2
+          for: 15m
+          labels:
+            severity: warning
+            team: infra
+          annotations:
+            summary: 'System load average (15m) is high'

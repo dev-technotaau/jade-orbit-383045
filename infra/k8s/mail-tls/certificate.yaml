@@ -1,0 +1,86 @@
+# ============================================================
+# Certificate — mail.hireadda.in (docker-mailserver SMTP/IMAP)
+# ============================================================
+# Issued by `letsencrypt-prod-dns` (DNS-01 via Cloudflare) so we
+# don't need port 80 free on the host — ingress-nginx is on it.
+#
+# CRITICAL: privateKey.rotationPolicy: Never
+# -------------------------------------------------------------
+# DANE/TLSA RFC 7672 records pin the SHA-256 hash of the cert's
+# public key. If cert-manager rotates the key on every renewal
+# (the default), the TLSA record is invalidated for ~1 TTL,
+# causing receiving MTAs that enforce DANE to defer all mail.
+#
+# `Never` keeps the same private key across renewals — equivalent
+# to certbot's `--reuse-key`. The Secret must be pre-seeded with
+# the existing host key (see README at the bottom of this file)
+# so the TLSA hash already published in DNS keeps matching.
+#
+# Algorithm/size MUST match the existing host key. Verified on
+# the running VPS as ECDSA P-256:
+#   sudo openssl pkey -in /etc/letsencrypt/live/mail.hireadda.in/privkey.pem \
+#     -text -noout | head -1
+#   → Private-Key: (256 bit)
+# ============================================================
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: mail-tls
+  namespace: mail-tls
+  labels:
+    app.kubernetes.io/name: mail-tls
+    app.kubernetes.io/component: mail-cert
+    app.kubernetes.io/part-of: hire-adda
+spec:
+  # Where cert-manager writes the issued cert. The cert-sync
+  # CronJob reads from this Secret and writes to the host's
+  # /etc/letsencrypt/live/mail.hireadda.in/ so docker-mailserver
+  # picks it up via its existing volume mount.
+  secretName: mail-tls
+  secretTemplate:
+    labels:
+      app.kubernetes.io/name: mail-tls
+      app.kubernetes.io/component: mail-cert
+      app.kubernetes.io/part-of: hire-adda
+
+  # Renew when 30 days remain (Let's Encrypt cert lifetime is 90d).
+  duration: 2160h # 90d
+  renewBefore: 720h # 30d
+
+  # ── Subject ─────────────────────────────────────────────────
+  commonName: mail.hireadda.in
+  dnsNames:
+    - mail.hireadda.in
+
+  # ── Key — MUST stay aligned with TLSA record ────────────────
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    encoding: PKCS1
+    rotationPolicy: Never
+
+  # ── Issuer ──────────────────────────────────────────────────
+  issuerRef:
+    name: letsencrypt-prod-dns
+    kind: ClusterIssuer
+    group: cert-manager.io
+
+  # ── Usages ──────────────────────────────────────────────────
+  # `server auth` for SMTP/IMAP/Submission TLS termination,
+  # `client auth` for SMTP relay client cert (matches certbot default).
+  usages:
+    - server auth
+    - client auth
+# ============================================================
+# One-time bootstrap (do this BEFORE this Certificate is applied)
+# ============================================================
+# Pre-seed the `mail-tls` Secret with the existing host key so
+# cert-manager picks it up on first issuance and TLSA stays valid:
+#
+#   sudo kubectl -n mail-tls create secret tls mail-tls \
+#     --cert=/etc/letsencrypt/live/mail.hireadda.in/fullchain.pem \
+#     --key=/etc/letsencrypt/live/mail.hireadda.in/privkey.pem
+#
+# After that, ArgoCD syncs this Certificate, cert-manager finds
+# the existing key in the Secret, and (because rotationPolicy is
+# Never) every subsequent renewal reuses it.

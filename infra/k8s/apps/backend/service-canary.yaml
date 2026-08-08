@@ -1,0 +1,22 @@
+# ============================================================
+# Backend API — Canary Service
+# Used by Argo Rollouts for traffic splitting during canary deploys
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-canary
+  namespace: hire-adda
+  labels:
+    app: backend
+    app.kubernetes.io/name: backend
+    role: canary
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 5000
+      targetPort: 5000
+      protocol: TCP
+  selector:
+    app: backend

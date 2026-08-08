@@ -1,0 +1,112 @@
+# ============================================================
+# Chaos Engineering — Pod Kill Experiment
+# Kills a random application pod every 6 hours on weekdays
+# SUSPENDED by default — enable manually when ready to test
+# ============================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: chaos-runner
+  namespace: hire-adda
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: chaos-pod-killer
+  namespace: hire-adda
+rules:
+  - apiGroups: ['']
+    resources: ['pods']
+    verbs: ['get', 'list', 'delete']
+  - apiGroups: ['']
+    resources: ['pods/exec']
+    verbs: ['create']
+  - apiGroups: ['networking.k8s.io']
+    resources: ['networkpolicies']
+    verbs: ['get', 'list', 'create', 'delete']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: chaos-pod-killer-binding
+  namespace: hire-adda
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: chaos-pod-killer
+subjects:
+  - kind: ServiceAccount
+    name: chaos-runner
+    namespace: hire-adda
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: chaos-pod-kill
+  namespace: hire-adda
+  labels:
+    app: chaos-engineering
+spec:
+  schedule: '0 */6 * * 1-5' # Every 6h, weekdays only
+  suspend: true # MANUALLY enable: kubectl patch cronjob chaos-pod-kill -n hire-adda -p '{"spec":{"suspend":false}}'
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 5
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 60
+      template:
+        metadata:
+          labels:
+            app: chaos-engineering
+        spec:
+          serviceAccountName: chaos-runner
+          securityContext:
+            runAsUser: 1001
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: chaos
+              image: bitnami/kubectl:1.31
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  echo "=== Chaos Engineering: Pod Kill ==="
+                  echo "Time: $(date -u)"
+
+                  # Get running app pods (exclude databases and chaos pods)
+                  PODS=$(kubectl get pods -n hire-adda \
+                    -l tier=app \
+                    --field-selector=status.phase=Running \
+                    -o name 2>/dev/null)
+
+                  if [ -z "$PODS" ]; then
+                    echo "No eligible pods found. Skipping."
+                    exit 0
+                  fi
+
+                  # Pick a random pod
+                  TARGET=$(echo "$PODS" | shuf -n 1)
+                  echo "Target: $TARGET"
+
+                  # Kill it (graceful)
+                  kubectl delete "$TARGET" -n hire-adda --grace-period=10
+                  echo "Pod deleted. K3s will auto-recreate it."
+                  echo "=== Experiment Complete ==="
+              resources:
+                requests:
+                  memory: '16Mi'
+                  cpu: '10m'
+                limits:
+                  memory: '32Mi'
+                  cpu: '50m'
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+          restartPolicy: Never

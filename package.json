@@ -1,0 +1,53 @@
+{
+  "name": "hire-adda-monorepo",
+  "version": "1.0.0",
+  "description": "Hire Adda - A specialized job portal for blue-collar workers.",
+  "private": true,
+  "scripts": {
+    "dev": "npx -y concurrently \"npm run dev:backend\" \"npm run dev:frontend\" --kill-others",
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "build": "npm --prefix backend run build && npm --prefix frontend run build",
+    "build:backend": "npm --prefix backend run build",
+    "build:frontend": "npm --prefix frontend run build",
+    "start": "npx -y concurrently \"npm run start:backend\" \"npm run start:frontend\" --kill-others",
+    "start:backend": "npm --prefix backend run start",
+    "start:frontend": "npm --prefix frontend run start",
+    "lint": "npm --prefix backend run lint && npm --prefix frontend run lint",
+    "test": "npm --prefix backend run test && npm --prefix frontend run test",
+    "install:all": "npm install && npm --prefix backend install && npm --prefix frontend install",
+    "clean": "npx -y rimraf node_modules coverage backend/node_modules frontend/node_modules backend/dist frontend/.next",
+    "prepare": "husky || true"
+  },
+  "keywords": [
+    "job-portal",
+    "full-stack",
+    "nextjs",
+    "express",
+    "typescript"
+  ],
+  "author": "Hire Adda Team",
+  "license": "UNLICENSED",
+  "lint-staged": {
+    "backend/src/**/*.{ts,js}": [
+      "node --max-old-space-size=8192 backend/node_modules/eslint/bin/eslint.js --fix --config backend/eslint.config.mjs",
+      "prettier --write"
+    ],
+    "frontend/src/**/*.{ts,tsx,js,jsx}": [
+      "node --max-old-space-size=4096 frontend/node_modules/eslint/bin/eslint.js --fix --config frontend/eslint.config.mjs",
+      "prettier --write"
+    ],
+    "*.{md,yml,yaml}": [
+      "prettier --write"
+    ]
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^20.4.1",
+    "@commitlint/config-conventional": "^20.4.1",
+    "eslint": "10.0.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.2.7",
+    "prettier": "3.8.1",
+    "prettier-plugin-tailwindcss": "0.7.2"
+  }
+}

@@ -1,0 +1,205 @@
+# ============================================================
+# Fluent Bit Helm Values
+# Lightweight log collector — dual output to OpenSearch + Loki
+# Replaces both Fluent Bit AND Promtail from Docker Compose
+# ============================================================
+# Install:
+#   helm install fluent-bit fluent/fluent-bit \
+#     --namespace logging -f fluent-bit-values.yaml
+# ============================================================
+
+resources:
+  requests:
+    memory: '128Mi'
+    cpu: '50m'
+  limits:
+    # Bumped from 64Mi to 256Mi to accommodate the larger Mem_Buf_Limit
+    # below + filesystem buffer page cache. Under burst (e.g. backend
+    # stack-trace storm) the previous 10MB / 64Mi limit silently dropped
+    # logs.
+    memory: '256Mi'
+    cpu: '200m'
+
+# Scrape fluent-bit's own /api/v2/metrics with the kube-prometheus-stack
+# Prometheus instance, so log-pipeline alerts (no-ingest, parse-fail,
+# retry storms) can be wired into Alertmanager.
+serviceMonitor:
+  enabled: true
+  namespace: monitoring
+  interval: 30s
+  scrapeTimeout: 10s
+  labels:
+    release: kube-prometheus-stack
+
+prometheusRule:
+  enabled: true
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+  rules:
+    - alert: FluentBitNoOutputRecords
+      expr: |
+        sum(rate(fluentbit_output_proc_records_total[10m])) by (name) == 0
+      for: 15m
+      labels: { severity: warning, component: logging }
+      annotations:
+        summary: 'fluent-bit output {{ $labels.name }} has emitted 0 records for 15m'
+        description: 'Logs are not being shipped to {{ $labels.name }}. Check connectivity and credentials.'
+    - alert: FluentBitOutputErrors
+      expr: |
+        sum(rate(fluentbit_output_errors_total[10m])) by (name) > 0.5
+      for: 10m
+      labels: { severity: warning, component: logging }
+      annotations:
+        summary: 'fluent-bit output {{ $labels.name }} > 0.5 err/s'
+        description: 'Persistent output errors. Inspect fluent-bit logs.'
+    - alert: FluentBitInputDropping
+      expr: |
+        sum(rate(fluentbit_input_records_dropped_total[10m])) > 0
+      for: 5m
+      labels: { severity: critical, component: logging }
+      annotations:
+        summary: 'fluent-bit dropping records — buffer pressure'
+        description: 'Increase storage.max_chunks_up / Mem_Buf_Limit or scale receivers.'
+    - alert: OpenSearchClusterNotGreen
+      expr: |
+        opensearch_cluster_status{cluster="hireadda"} != 0
+      for: 5m
+      labels: { severity: critical, component: logging }
+      annotations:
+        summary: 'OpenSearch cluster status is not green'
+        description: 'Investigate shard allocation / node health.'
+
+config:
+  service: |
+    [SERVICE]
+        Daemon        Off
+        Flush         5
+        Log_Level     warn
+        Parsers_File  /fluent-bit/etc/parsers.conf
+        HTTP_Server   On
+        HTTP_Listen   0.0.0.0
+        HTTP_Port     2020
+        Health_Check  On
+        # Filesystem buffer overflow → bursts that exceed Mem_Buf_Limit
+        # spill to disk instead of being dropped.
+        storage.path              /var/log/flb-storage/
+        storage.sync              normal
+        storage.checksum          off
+        storage.backlog.mem_limit 32M
+
+  inputs: |
+    [INPUT]
+        Name              tail
+        Tag               kube.*
+        Path              /var/log/containers/*.log
+        Parser            cri
+        DB                /var/log/flb_kube.db
+        # Bumped from 10MB to 100MB; bursts during e.g. backend stack
+        # traces no longer silently drop. Backed by filesystem storage.
+        Mem_Buf_Limit     100MB
+        storage.type      filesystem
+        Skip_Long_Lines   On
+        Refresh_Interval  10
+        # Multi-line stack traces (Java/Node) are reassembled before
+        # being shipped; otherwise each line becomes its own log entry
+        # and traces are unsearchable.
+        multiline.parser  cri
+
+  filters: |
+    [FILTER]
+        Name                kubernetes
+        Match               kube.*
+        Kube_URL            https://kubernetes.default.svc:443
+        Kube_CA_File        /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        Kube_Token_File     /var/run/secrets/kubernetes.io/serviceaccount/token
+        Kube_Tag_Prefix     kube.var.log.containers.
+        Merge_Log           On
+        Keep_Log            Off
+        K8S-Logging.Parser  On
+        K8S-Logging.Exclude Off
+        Labels              On
+        Annotations         Off
+
+    [FILTER]
+        Name    modify
+        Match   kube.*
+        Add     cluster hireadda-production
+        Add     environment production
+
+    # Note: kube-system used to be excluded here. Removed so CoreDNS,
+    # metrics-server, sealed-secrets-controller and the local-path
+    # provisioner are searchable in Dashboards/Loki. ISM policy keeps
+    # disk usage bounded.
+
+  outputs: |
+    [OUTPUT]
+        Name            opensearch
+        Match           kube.*
+        Host            opensearch.hire-adda.svc.cluster.local
+        Port            9200
+        Index           logs-hire-adda
+        Type            _doc
+        Logstash_Format On
+        Logstash_Prefix logs-hire-adda
+        Suppress_Type_Name On
+        Retry_Limit     5
+        tls             Off
+        Replace_Dots    On
+        Trace_Error     On
+        storage.total_limit_size 1G
+
+    [OUTPUT]
+        Name            loki
+        Match           kube.*
+        Host            loki.logging.svc.cluster.local
+        Port            3100
+        # Stable, low-cardinality labels only — keeps Loki streams from
+        # exploding. Per-pod variability stays in the log line itself
+        # (queryable via |~ regex / json filters), not promoted to
+        # stream labels.
+        Labels          job=fluent-bit, environment=production, cluster=hireadda-production
+        Label_Keys      $kubernetes['namespace_name'],$kubernetes['pod_name'],$kubernetes['container_name'],$stream
+        Auto_Kubernetes_Labels Off
+        Remove_Keys     kubernetes,docker_id,container_hash
+        Line_Format     json
+        Retry_Limit     5
+        storage.total_limit_size 1G
+
+# Storage volume for the on-disk buffer (ephemeral; survives only as
+# long as the pod). Mounts at /var/log/flb-storage as required by
+# the [SERVICE] block above.
+extraVolumes:
+  - name: flb-storage
+    emptyDir:
+      sizeLimit: 2Gi
+extraVolumeMounts:
+  - name: flb-storage
+    mountPath: /var/log/flb-storage
+
+# Tolerations for running on all nodes (DaemonSet)
+tolerations:
+  - operator: Exists
+
+# Volume mounts for log collection
+volumeMounts:
+  - name: varlog
+    mountPath: /var/log
+    readOnly: true
+  - name: varlibdockercontainers
+    mountPath: /var/lib/docker/containers
+    readOnly: true
+  - name: runlog
+    mountPath: /run/log
+    readOnly: true
+
+volumes:
+  - name: varlog
+    hostPath:
+      path: /var/log
+  - name: varlibdockercontainers
+    hostPath:
+      path: /var/lib/docker/containers
+  - name: runlog
+    hostPath:
+      path: /run/log

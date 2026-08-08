@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en-IN">
+  <head>
+    <meta charset="utf-8" />
+    <title>Receipt — {{invoiceNumber}}</title>
+    <!-- Inter + Roboto Mono — required for the ₹ glyph (U+20B9) and other
+         high-Unicode characters that Chromium's default font lacks. See
+         tax-invoice.hbs for the longer explanation. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Roboto+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      @page { size: A4; margin: 14mm 18mm; }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      html, body {
+        font-family: 'Inter', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+        font-size: 12px;
+        line-height: 1.6;
+        color: #1f2937;
+        background: #fff;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+      .page { max-width: 720px; margin: 0 auto; padding: 32px 36px; }
+
+      /* ---- Header ---- */
+      .header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 24px;
+        padding-bottom: 24px;
+        margin-bottom: 28px;
+        border-bottom: 3px solid #059669;
+      }
+      .brand { display: flex; gap: 14px; align-items: flex-start; }
+      .brand-logo {
+        width: 56px; height: 56px; border-radius: 8px;
+        background: #fff; padding: 4px; border: 1px solid #e5e7eb;
+      }
+      .brand-logo img { width: 100%; height: 100%; object-fit: contain; display: block; }
+      .brand-text h1 {
+        font-size: 22px; font-weight: 800; color: #059669;
+        letter-spacing: -0.3px; margin-bottom: 2px;
+      }
+      .brand-text .legal-name { font-size: 11px; color: #4b5563; font-weight: 500; }
+      .brand-text .web { color: #059669; font-size: 10px; font-weight: 600; margin-top: 4px; }
+      .doc-title {
+        font-size: 18px; font-weight: 800; color: #059669;
+        text-transform: uppercase; letter-spacing: 0.5px; text-align: right;
+      }
+      .doc-title .num { font-size: 11px; color: #4b5563; margin-top: 4px; font-family: 'Roboto Mono', monospace; }
+
+      /* ---- Hero amount ---- */
+      .receipt-hero {
+        text-align: center;
+        padding: 32px 24px;
+        background: linear-gradient(135deg, #ECFDF5 0%, #D1FAE5 100%);
+        border: 1px solid #86EFAC;
+        border-radius: 12px;
+        margin-bottom: 28px;
+      }
+      .receipt-hero .label {
+        text-transform: uppercase;
+        font-size: 11px;
+        letter-spacing: 1.2px;
+        color: #047857;
+        font-weight: 700;
+        margin-bottom: 8px;
+      }
+      .receipt-hero .amount {
+        font-size: 36px;
+        font-weight: 900;
+        color: #064e3b;
+        margin-bottom: 6px;
+        letter-spacing: -0.5px;
+      }
+      .receipt-hero .words {
+        font-size: 11px;
+        color: #065f46;
+        font-style: italic;
+      }
+
+      /* ---- Two-column meta ---- */
+      .meta-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 18px;
+        margin-bottom: 24px;
+      }
+      .meta-block {
+        background: #F9FAFB;
+        padding: 14px 16px;
+        border-radius: 8px;
+        border: 1px solid #e5e7eb;
+      }
+      .meta-block h4 {
+        text-transform: uppercase;
+        font-size: 10px;
+        color: #059669;
+        letter-spacing: 0.7px;
+        margin-bottom: 8px;
+        font-weight: 700;
+      }
+      .meta-block .v { font-size: 11px; color: #1f2937; margin-bottom: 2px; }
+      .meta-block .v strong { color: #111827; }
+      .meta-block .name { font-weight: 700; font-size: 12.5px; color: #111827; margin-bottom: 4px; }
+
+      /* ---- Pay-card ---- */
+      .pay-card {
+        margin: 12px 0 24px;
+        padding: 14px 18px;
+        background: #F0FDF4;
+        border: 1px solid #86EFAC;
+        border-radius: 8px;
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 16px;
+        align-items: center;
+        font-size: 11px;
+        color: #064e3b;
+      }
+      .pay-card .badge {
+        background: #059669;
+        color: #fff;
+        padding: 5px 12px;
+        border-radius: 4px;
+        font-weight: 700;
+        font-size: 10px;
+        letter-spacing: 0.6px;
+        text-transform: uppercase;
+      }
+      .pay-card strong { font-family: 'Roboto Mono', monospace; }
+
+      /* ---- Stamp ---- */
+      .stamp-row { text-align: center; margin: 24px 0; }
+      .stamp {
+        display: inline-block;
+        padding: 8px 24px;
+        border: 3px solid #059669;
+        color: #059669;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 2.5px;
+        font-size: 14px;
+        transform: rotate(-3deg);
+        border-radius: 4px;
+      }
+
+      /* ---- Footer ---- */
+      .footer {
+        margin-top: 32px;
+        padding-top: 18px;
+        border-top: 1px dashed #d1d5db;
+        font-size: 10px;
+        color: #6b7280;
+        text-align: center;
+        line-height: 1.7;
+      }
+      .footer strong { color: #374151; }
+
+      .gst-note-receipt {
+        margin: 16px 0;
+        padding: 10px 14px;
+        background: #FFFBEB;
+        border: 1px solid #FCD34D;
+        border-radius: 6px;
+        font-size: 10px;
+        color: #78350F;
+        text-align: center;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <div class="header">
+        <div class="brand">
+          {{#if seller.logoUrl}}<div class="brand-logo"><img src="{{seller.logoUrl}}" alt="{{seller.tradeName}}" /></div>{{/if}}
+          <div class="brand-text">
+            <h1>{{seller.tradeName}}</h1>
+            <div class="legal-name">A unit of {{seller.legalName}}</div>
+            {{#if seller.website}}<div class="web">{{seller.website}}</div>{{/if}}
+          </div>
+        </div>
+        <div>
+          <div class="doc-title">Payment Receipt</div>
+          <div class="num">{{invoiceNumber}}<br/>Issued {{issuedAtFormatted}}</div>
+        </div>
+      </div>
+
+      <!-- Hero amount -->
+      <div class="receipt-hero">
+        <div class="label">Amount Received</div>
+        <div class="amount">{{totals.grandFormatted}}</div>
+        <div class="words">{{totals.grandInWords}}</div>
+      </div>
+
+      <div class="meta-grid">
+        <div class="meta-block">
+          <h4>Received From</h4>
+          <div class="name">{{buyer.legalName}}</div>
+          {{#if buyer.gstin}}<div class="v"><strong>GSTIN:</strong> {{buyer.gstin}}</div>{{/if}}
+          {{#if buyer.email}}<div class="v">{{buyer.email}}</div>{{/if}}
+          {{#if buyer.phone}}<div class="v">{{buyer.phone}}</div>{{/if}}
+        </div>
+        <div class="meta-block">
+          <h4>Towards</h4>
+          {{#if planSnapshot.name}}<div class="v"><strong>{{planSnapshot.name}}</strong></div>{{/if}}
+          {{#if order.receiptNumber}}<div class="v">Order: {{order.receiptNumber}}</div>{{/if}}
+          {{#if subscription.id}}<div class="v">Subscription: {{subscription.id}}</div>{{/if}}
+          {{#if periodLabel}}<div class="v">Period: {{periodLabel}}</div>{{/if}}
+        </div>
+      </div>
+
+      {{#if payment.razorpayPaymentId}}
+      <div class="pay-card">
+        <span class="badge">{{payment.method}}</span>
+        <div>
+          {{#if payment.cardLast4}}Card ending <strong>{{payment.cardLast4}}</strong>{{#if payment.cardNetwork}} · {{payment.cardNetwork}}{{/if}}<br/>{{/if}}
+          {{#if payment.vpa}}UPI <strong>{{payment.vpa}}</strong><br/>{{/if}}
+          {{#if payment.bank}}Net Banking · <strong>{{payment.bank}}</strong><br/>{{/if}}
+          {{#if payment.wallet}}Wallet · <strong>{{payment.wallet}}</strong><br/>{{/if}}
+          Razorpay Payment ID: <strong>{{payment.razorpayPaymentId}}</strong>
+          {{#if payment.capturedAtFormatted}}<br/>Captured {{payment.capturedAtFormatted}}{{/if}}
+        </div>
+      </div>
+      {{/if}}
+
+      <div class="gst-note-receipt">
+        <strong>Note:</strong> This is a payment receipt only. The corresponding GST tax invoice
+        has been issued separately with sequential number {{invoiceNumber}} for input-tax-credit purposes.
+      </div>
+
+      {{#if isPaid}}
+        <div class="stamp-row"><span class="stamp">Paid</span></div>
+      {{/if}}
+
+      <div class="footer">
+        <strong>{{seller.legalName}}</strong> · GSTIN {{seller.gstin}}
+        {{#if seller.cin}} · CIN {{seller.cin}}{{/if}}
+        {{#if seller.pan}} · PAN {{seller.pan}}{{/if}}
+        <br/>
+        {{seller.line1}}{{#if seller.line2}}, {{seller.line2}}{{/if}}, {{seller.city}} {{seller.pincode}}
+        <br/><br/>
+        Support: {{seller.supportEmail}}{{#if seller.supportPhone}} · {{seller.supportPhone}}{{/if}}
+        <br/>
+        <span style="font-size:9px; color:#9ca3af;">Generated on {{generatedAt}}</span>
+      </div>
+    </div>
+  </body>
+</html>

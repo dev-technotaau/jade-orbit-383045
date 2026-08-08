@@ -1,0 +1,280 @@
+# ============================================================
+# Argo Rollouts — Canary Deployment Strategy for Frontend
+# Replaces the Deployment when Argo Rollouts is installed
+# ============================================================
+# Usage: Applied by deploy-k8s.sh --strategy progressive|canary
+# NOTE: This is an ALTERNATIVE to apps/frontend/deployment.yaml.
+# Use ONE or the other, not both.
+# ============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: frontend
+  namespace: hire-adda
+  labels:
+    app: frontend
+    tier: app
+spec:
+  replicas: 2
+  revisionHistoryLimit: 2
+  progressDeadlineSeconds: 300
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+        tier: app
+    spec:
+      # Spread replicas across nodes when a multi-node cluster is
+      # available (preferred, not required → no-op on single node).
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: frontend
+                topologyKey: kubernetes.io/hostname
+      securityContext:
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: frontend
+          image: ghcr.io/dev-technotaau/hire-adda-frontend:f62f03f70cde4c467e3bd6822f3cc26b68ee5cd5
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          env:
+            - name: NODE_ENV
+              value: 'production'
+            - name: BACKEND_INTERNAL_URL
+              value: 'http://nginx:80/api/v1'
+            - name: BFF_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: BFF_SECRET
+            - name: COOKIE_ACCESS_MAX_AGE_DAYS
+              value: '7'
+            - name: COOKIE_REFRESH_MAX_AGE_DAYS
+              value: '30'
+            - name: OTEL_ENABLED
+              value: 'true'
+            - name: OTEL_SERVICE_NAME
+              value: 'hire-adda-frontend'
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: 'http://otel-collector.monitoring.svc.cluster.local:4318/v1/traces'
+          resources:
+            requests:
+              memory: '384Mi'
+              cpu: '150m'
+            limits:
+              memory: '768Mi'
+              cpu: '750m'
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 128Mi
+      imagePullSecrets:
+        - name: ghcr-credentials
+      terminationGracePeriodSeconds: 15
+  strategy:
+    canary:
+      canaryService: frontend-canary
+      stableService: frontend
+      scaleDownDelaySeconds: 0
+      trafficRouting:
+        nginx:
+          stableIngress: frontend-ingress
+      steps:
+        - setWeight: 20
+        - pause: { duration: 60s }
+        - analysis:
+            templates:
+              - templateName: frontend-success-rate
+              - templateName: frontend-canary-comparison
+        - setWeight: 50
+        - pause: { duration: 120s }
+        - analysis:
+            templates:
+              - templateName: frontend-success-rate
+              - templateName: frontend-canary-comparison
+        - setWeight: 100
+      maxSurge: 1
+      maxUnavailable: 1
+---
+# ============================================================
+# AnalysisTemplate — Frontend canary analysis (absolute thresholds)
+# Used by both canary steps AND blue-green prePromotionAnalysis
+# ============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: frontend-success-rate
+  namespace: hire-adda
+spec:
+  metrics:
+    # ── Error Rate ──────────────────────────────────────────
+    - name: error-rate
+      interval: 30s
+      count: 3
+      successCondition: result[0] < 0.05
+      failureLimit: 2
+      provider:
+        prometheus:
+          address: http://kube-prometheus-stack-prometheus.monitoring:9090
+          query: |
+            (
+              sum(rate(nginx_ingress_controller_requests{host="hireadda.in",status=~"5.."}[2m]))
+              /
+              sum(rate(nginx_ingress_controller_requests{host="hireadda.in"}[2m]))
+            ) >= 0
+            or vector(0)
+
+    # ── Latency P95 ────────────────────────────────────────
+    - name: latency-p95
+      interval: 30s
+      count: 3
+      successCondition: result[0] < 3
+      failureLimit: 1
+      provider:
+        prometheus:
+          address: http://kube-prometheus-stack-prometheus.monitoring:9090
+          query: |
+            histogram_quantile(0.95, sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{host="hireadda.in"}[2m])) by (le)) >= 0
+            or vector(0)
+
+    # ── Latency P99 (tail latency) ─────────────────────────
+    - name: latency-p99
+      interval: 30s
+      count: 3
+      successCondition: result[0] < 5
+      failureLimit: 1
+      provider:
+        prometheus:
+          address: http://kube-prometheus-stack-prometheus.monitoring:9090
+          query: |
+            histogram_quantile(0.99, sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{host="hireadda.in"}[2m])) by (le)) >= 0
+            or vector(0)
+
+    # ── CPU Saturation ─────────────────────────────────────
+    - name: cpu-saturation
+      interval: 30s
+      count: 3
+      successCondition: result[0] < 0.90
+      failureLimit: 1
+      provider:
+        prometheus:
+          address: http://kube-prometheus-stack-prometheus.monitoring:9090
+          query: |
+            (
+              max(rate(container_cpu_usage_seconds_total{namespace="hire-adda",container="frontend"}[2m]))
+              /
+              max(kube_pod_container_resource_limits{namespace="hire-adda",container="frontend",resource="cpu"})
+            ) or vector(0)
+
+    # ── Memory Saturation ──────────────────────────────────
+    - name: memory-saturation
+      interval: 30s
+      count: 3
+      successCondition: result[0] < 0.90
+      failureLimit: 1
+      provider:
+        prometheus:
+          address: http://kube-prometheus-stack-prometheus.monitoring:9090
+          query: |
+            (
+              max(container_memory_working_set_bytes{namespace="hire-adda",container="frontend"})
+              /
+              max(kube_pod_container_resource_limits{namespace="hire-adda",container="frontend",resource="memory"})
+            ) or vector(0)
+---
+# ============================================================
+# AnalysisTemplate — Frontend canary vs stable comparison
+# Uses nginx ingress service labels (frontend vs frontend-canary)
+# Only used in canary/progressive steps (NOT blue-green)
+# ============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: frontend-canary-comparison
+  namespace: hire-adda
+spec:
+  metrics:
+    # ── Error Rate Ratio ───────────────────────────────────
+    # Canary error rate must not exceed 1.5x the stable error rate
+    - name: canary-vs-stable-error-rate
+      interval: 30s
+      count: 3
+      successCondition: result[0] <= 1.5
+      failureLimit: 2
+      inconclusiveLimit: 3
+      provider:
+        prometheus:
+          address: http://kube-prometheus-stack-prometheus.monitoring:9090
+          query: |
+            (
+              (
+                sum(rate(nginx_ingress_controller_requests{host="hireadda.in",service="frontend-canary",status=~"5.."}[2m]))
+                / sum(rate(nginx_ingress_controller_requests{host="hireadda.in",service="frontend-canary"}[2m]))
+              ) / (
+                sum(rate(nginx_ingress_controller_requests{host="hireadda.in",service="frontend",status=~"5.."}[2m]))
+                / sum(rate(nginx_ingress_controller_requests{host="hireadda.in",service="frontend"}[2m]))
+              )
+            ) or vector(1)
+
+    # ── Latency Ratio ──────────────────────────────────────
+    # Canary P95 must not exceed 3x the stable P95
+    - name: canary-vs-stable-latency
+      interval: 30s
+      count: 3
+      successCondition: result[0] <= 3.0
+      failureLimit: 2
+      inconclusiveLimit: 3
+      provider:
+        prometheus:
+          address: http://kube-prometheus-stack-prometheus.monitoring:9090
+          query: |
+            (
+              histogram_quantile(0.95,
+                sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{host="hireadda.in",service="frontend-canary"}[2m])) by (le)
+              )
+              /
+              histogram_quantile(0.95,
+                sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{host="hireadda.in",service="frontend"}[2m])) by (le)
+              )
+            ) or vector(1)

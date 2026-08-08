@@ -1,0 +1,22 @@
+# ============================================================
+# Frontend — Preview Service
+# Used by Argo Rollouts for blue-green deploys (new version preview)
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-preview
+  namespace: hire-adda
+  labels:
+    app: frontend
+    app.kubernetes.io/name: frontend
+    role: preview
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+      protocol: TCP
+  selector:
+    app: frontend

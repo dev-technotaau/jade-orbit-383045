@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  browserconfig.xml — Windows / Internet Explorer tile configuration.
+
+  When a user pins hireadda.in to the Windows Start screen, this file
+  controls the live-tile appearance. Microsoft Edge (Chromium) reads it
+  too for legacy tile rendering. Referenced via:
+      <meta name="msapplication-config" content="/browserconfig.xml" />
+
+  See: https://learn.microsoft.com/en-us/previous-versions/windows/internet-explorer/ie-developer/platform-apis/dn320426(v=vs.85)
+-->
+<browserconfig>
+  <msapplication>
+    <tile>
+      <square70x70logo src="/icon-72x72.png"/>
+      <square150x150logo src="/icon-144x144.png"/>
+      <square310x310logo src="/icon-384x384.png"/>
+      <wide310x150logo src="/icon-384x384.png"/>
+      <TileColor>#1E5CAF</TileColor>
+    </tile>
+    <notification>
+      <polling-uri src="https://hireadda.in/api/v1/notifications/live-tile" />
+      <frequency>60</frequency>
+      <cycle>1</cycle>
+    </notification>
+  </msapplication>
+</browserconfig>

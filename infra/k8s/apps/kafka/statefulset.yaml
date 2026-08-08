@@ -1,0 +1,167 @@
+# ============================================================
+# Apache Kafka 3.8 — StatefulSet (2-node KRaft cluster)
+# Event streaming for consolidated topics
+# Quorum-based HA: 2 combined broker+controller nodes
+# ============================================================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka
+  namespace: hire-adda
+  labels:
+    app: kafka
+    tier: messaging
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/component: messaging
+    app.kubernetes.io/part-of: hire-adda
+spec:
+  serviceName: kafka
+  replicas: 2
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: kafka
+  template:
+    metadata:
+      labels:
+        app: kafka
+        tier: messaging
+      annotations:
+        prometheus.io/scrape: 'true'
+        prometheus.io/port: '9308'
+        # Skip the Kafka PVC from Velero file-system backup. Kafka
+        # topics are replayable from upstream sources (producers
+        # retain offsets, downstream consumers can re-fetch from
+        # earliest), so paying R2 storage to back up the broker's
+        # local log directory adds no recoverability we don't
+        # already have — and Kafka's continual log-rolling
+        # defeats Kopia's content-addressed dedup, so each backup
+        # uploaded ~hundreds of MB of "changed" segment files.
+        backup.velero.io/backup-volumes-excludes: kafka-data
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: kafka
+          image: apache/kafka:3.8.1
+          command:
+            - sh
+            - -c
+            - |
+              ORDINAL=${HOSTNAME##*-}
+              export KAFKA_NODE_ID=$((ORDINAL + 1))
+              export KAFKA_ADVERTISED_LISTENERS="PLAINTEXT://${HOSTNAME}.kafka.hire-adda.svc.cluster.local:9092"
+              exec /etc/kafka/docker/run
+          ports:
+            - name: tcp-kafka
+              containerPort: 9092
+              protocol: TCP
+            - name: tcp-controller
+              containerPort: 9093
+              protocol: TCP
+          env:
+            - name: KAFKA_PROCESS_ROLES
+              value: 'broker,controller'
+            - name: KAFKA_CONTROLLER_QUORUM_VOTERS
+              value: '1@kafka-0.kafka.hire-adda.svc.cluster.local:9093,2@kafka-1.kafka.hire-adda.svc.cluster.local:9093'
+            - name: KAFKA_LISTENERS
+              value: 'PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093'
+            - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+              value: 'PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT'
+            - name: KAFKA_CONTROLLER_LISTENER_NAMES
+              value: 'CONTROLLER'
+            - name: KAFKA_INTER_BROKER_LISTENER_NAME
+              value: 'PLAINTEXT'
+            - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: '2'
+            - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+              value: '2'
+            - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+              value: '2'
+            - name: KAFKA_NUM_PARTITIONS
+              value: '3'
+            - name: KAFKA_DEFAULT_REPLICATION_FACTOR
+              value: '2'
+            - name: KAFKA_MIN_INSYNC_REPLICAS
+              value: '1'
+            - name: KAFKA_LOG_RETENTION_HOURS
+              value: '168'
+            - name: KAFKA_LOG_RETENTION_BYTES
+              value: '5368709120'
+            - name: KAFKA_LOG_SEGMENT_BYTES
+              value: '1073741824'
+            - name: KAFKA_HEAP_OPTS
+              value: '-Xmx384m -Xms384m'
+            - name: KAFKA_AUTO_CREATE_TOPICS_ENABLE
+              value: 'true'
+          resources:
+            requests:
+              memory: '384Mi'
+              cpu: '150m'
+            limits:
+              memory: '768Mi'
+              cpu: '500m'
+          livenessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
+          readinessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: kafka-data
+              mountPath: /var/lib/kafka/data
+
+        # Kafka Exporter sidecar for Prometheus
+        - name: kafka-exporter
+          image: danielqsj/kafka-exporter:v1.8.0
+          args:
+            - '--kafka.server=localhost:9092'
+            - '--topic.filter=ha\..*|hire-adda\..*'
+          ports:
+            - name: metrics
+              containerPort: 9308
+              protocol: TCP
+          resources:
+            requests:
+              memory: '24Mi'
+              cpu: '15m'
+            limits:
+              memory: '64Mi'
+              cpu: '50m'
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
+  volumeClaimTemplates:
+    - metadata:
+        name: kafka-data
+        labels:
+          app: kafka
+      spec:
+        accessModes: ['ReadWriteOnce']
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 10Gi

@@ -1,0 +1,6 @@
+{
+  "_comment": "Global Privacy Control discovery. Per https://globalprivacycontrol.org/spec, this static document signals that the site honours the GPC `Sec-GPC: 1` request header. When present and `gpc: true`, browsers (Brave, DuckDuckGo, Privacy Badger, Firefox-with-extension) interpret a request from this site as 'do not sell or share my personal information' under CCPA / CPRA / VCDPA / similar privacy regulations.",
+  "gpc": true,
+  "version": 1,
+  "lastUpdate": "2026-05-09"
+}

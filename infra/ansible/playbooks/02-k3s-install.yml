@@ -1,0 +1,190 @@
+# ============================================================
+# K3s Installation Playbook
+# Installs K3s (lightweight Kubernetes) alongside Docker.
+# Docker keeps running for the mail server.
+# ============================================================
+# Usage:
+#   ansible-playbook -i inventory/production.ini playbooks/02-k3s-install.yml
+# ============================================================
+
+---
+- name: Install K3s on production VPS
+  hosts: k3s_server
+  become: true
+  gather_facts: true
+
+  tasks:
+    # ── Pre-flight Checks ──
+    - name: Verify Docker is running (mail server depends on it)
+      ansible.builtin.systemd:
+        name: docker
+        state: started
+      check_mode: true
+      register: docker_status
+
+    - name: Show Docker status
+      ansible.builtin.debug:
+        msg: "Docker is {{ 'running' if docker_status.status.ActiveState == 'active' else 'NOT running' }}"
+
+    - name: Verify sysctl settings are applied
+      ansible.builtin.command:
+        cmd: sysctl vm.max_map_count
+      register: sysctl_check
+      changed_when: false
+
+    - name: Fail if vm.max_map_count not set
+      ansible.builtin.fail:
+        msg: 'vm.max_map_count must be 262144. Run 01-harden.yml first.'
+      when: "'262144' not in sysctl_check.stdout"
+
+    # ── Install K3s ──
+    - name: Check if K3s is already installed
+      ansible.builtin.stat:
+        path: /usr/local/bin/k3s
+      register: k3s_binary
+
+    - name: Download and install K3s
+      ansible.builtin.shell: |
+        curl -sfL https://get.k3s.io | \
+          INSTALL_K3S_VERSION="{{ k3s_version }}" \
+          INSTALL_K3S_EXEC="server" \
+          sh -s - \
+          --disable={{ k3s_disable | join(',') }} \
+          --write-kubeconfig-mode={{ kubeconfig_mode }} \
+          --kubelet-arg="max-pods=110" \
+          --kubelet-arg="eviction-hard=memory.available<500Mi,nodefs.available<10%" \
+          --kubelet-arg="eviction-soft=memory.available<1Gi,nodefs.available<15%" \
+          --kubelet-arg="eviction-soft-grace-period=memory.available=2m,nodefs.available=2m" \
+          --kube-apiserver-arg="enable-admission-plugins=NodeRestriction,PodSecurity" \
+          --kube-apiserver-arg="audit-log-maxage=30" \
+          --kube-apiserver-arg="audit-log-maxbackup=10" \
+          --kube-apiserver-arg="audit-log-maxsize=100"
+      args:
+        creates: /usr/local/bin/k3s
+      environment:
+        INSTALL_K3S_SKIP_START: 'false'
+
+    - name: Wait for K3s to be ready
+      ansible.builtin.command:
+        cmd: k3s kubectl wait --for=condition=Ready node --all --timeout=120s
+      register: k3s_ready
+      retries: 5
+      delay: 10
+      until: k3s_ready.rc == 0
+      changed_when: false
+
+    - name: Verify K3s node status
+      ansible.builtin.command:
+        cmd: k3s kubectl get nodes -o wide
+      register: k3s_nodes
+      changed_when: false
+
+    - name: Show K3s node status
+      ansible.builtin.debug:
+        msg: '{{ k3s_nodes.stdout }}'
+
+    # ── Configure kubeconfig for deploy user ──
+    - name: Create .kube directory for deploy user
+      ansible.builtin.file:
+        path: '/home/{{ deploy_user }}/.kube'
+        state: directory
+        owner: '{{ deploy_user }}'
+        group: '{{ deploy_group }}'
+        mode: '0700'
+
+    - name: Copy kubeconfig to deploy user
+      ansible.builtin.copy:
+        src: /etc/rancher/k3s/k3s.yaml
+        dest: '/home/{{ deploy_user }}/.kube/config'
+        remote_src: true
+        owner: '{{ deploy_user }}'
+        group: '{{ deploy_group }}'
+        mode: '0600'
+
+    - name: Fix kubeconfig server address (localhost → actual IP)
+      ansible.builtin.replace:
+        path: '/home/{{ deploy_user }}/.kube/config'
+        regexp: 'https://127.0.0.1:6443'
+        replace: 'https://{{ ansible_host }}:6443'
+
+    # ── Install Helm ──
+    - name: Check if Helm is installed
+      ansible.builtin.stat:
+        path: /usr/local/bin/helm
+      register: helm_binary
+
+    - name: Install Helm 3
+      ansible.builtin.shell: |
+        curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+      args:
+        creates: /usr/local/bin/helm
+
+    - name: Verify Helm installation
+      ansible.builtin.command:
+        cmd: helm version --short
+      register: helm_version
+      changed_when: false
+
+    - name: Show Helm version
+      ansible.builtin.debug:
+        msg: '{{ helm_version.stdout }}'
+
+    # ── Install kubectl aliases ──
+    - name: Add kubectl aliases for deploy user
+      ansible.builtin.blockinfile:
+        path: '/home/{{ deploy_user }}/.bashrc'
+        marker: '# {mark} KUBERNETES ALIASES'
+        block: |
+          # kubectl
+          alias k='kubectl'
+          alias kg='kubectl get'
+          alias kd='kubectl describe'
+          alias kl='kubectl logs'
+          alias kex='kubectl exec -it'
+          alias kaf='kubectl apply -f'
+          alias kdf='kubectl delete -f'
+          alias kgp='kubectl get pods'
+          alias kgs='kubectl get svc'
+          alias kgn='kubectl get nodes'
+          alias kga='kubectl get all'
+          alias kns='kubectl config set-context --current --namespace'
+          alias ktb='kubectl -n hire-adda'
+
+          # Helm
+          alias h='helm'
+          alias hl='helm list'
+          alias hi='helm install'
+          alias hu='helm upgrade'
+          alias hd='helm delete'
+
+          # K3s
+          alias k3s-logs='sudo journalctl -u k3s -f'
+          alias k3s-status='sudo systemctl status k3s'
+
+          # kubectl completion
+          source <(kubectl completion bash)
+          complete -o default -F __start_kubectl k
+        owner: '{{ deploy_user }}'
+        group: '{{ deploy_group }}'
+
+    # ── Verify Docker still works ──
+    - name: Verify Docker containers still running after K3s install
+      ansible.builtin.command:
+        cmd: docker ps --format "table {{ '{{' }}.Names{{ '}}' }}\t{{ '{{' }}.Status{{ '}}' }}"
+      register: docker_containers
+      changed_when: false
+
+    - name: Show Docker containers
+      ansible.builtin.debug:
+        msg: '{{ docker_containers.stdout }}'
+
+    # ── K3s system pods check ──
+    - name: List K3s system pods
+      ansible.builtin.command:
+        cmd: k3s kubectl get pods -A -o wide
+      register: k3s_pods
+      changed_when: false
+
+    - name: Show K3s system pods
+      ansible.builtin.debug:
+        msg: '{{ k3s_pods.stdout }}'

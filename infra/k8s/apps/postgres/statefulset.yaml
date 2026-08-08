@@ -1,0 +1,130 @@
+# ============================================================
+# PostgreSQL 16 — StatefulSet
+# Matches existing docker-compose configuration
+# ============================================================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: hire-adda
+  labels:
+    app: postgres
+    tier: database
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: hire-adda
+spec:
+  serviceName: postgres
+  # Local PostgreSQL — migrated from Cloud Neon
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+        tier: database
+      annotations:
+        # Skip the Postgres data PVC from Velero file-system
+        # backup. The `db-backup` CronJob already produces a
+        # logical `pg_dump | gzip` to R2 daily — that's a
+        # restorable artifact independent of Postgres version
+        # / on-disk layout, and orders of magnitude smaller than
+        # the raw heap files Velero would otherwise capture.
+        backup.velero.io/backup-volumes-excludes: postgres-data
+    spec:
+      securityContext:
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - name: tcp-pg
+              containerPort: 5432
+              protocol: TCP
+          env:
+            - name: POSTGRES_USER
+              value: 'postgres'
+            - name: POSTGRES_DB
+              value: 'hireadda'
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secrets
+                  key: POSTGRES_PASSWORD
+            - name: PGDATA
+              value: '/var/lib/postgresql/data/pgdata'
+            # Performance tuning for 16GB VPS
+            - name: POSTGRES_INITDB_ARGS
+              value: '--encoding=UTF8 --locale=C'
+          args:
+            - '-c'
+            - 'shared_buffers=256MB'
+            - '-c'
+            - 'effective_cache_size=512MB'
+            - '-c'
+            - 'work_mem=8MB'
+            - '-c'
+            - 'maintenance_work_mem=128MB'
+            - '-c'
+            - 'max_connections=100'
+            - '-c'
+            - 'wal_buffers=16MB'
+            - '-c'
+            - 'log_min_duration_statement=1000'
+          resources:
+            requests:
+              memory: '768Mi'
+              cpu: '200m'
+            limits:
+              memory: '2Gi'
+              cpu: '1500m'
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - postgres
+                - -d
+                - hireadda
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 5
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - postgres
+                - -d
+                - hireadda
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+        labels:
+          app: postgres
+      spec:
+        accessModes: ['ReadWriteOnce']
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 20Gi

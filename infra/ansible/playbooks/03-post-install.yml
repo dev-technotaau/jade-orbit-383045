@@ -1,0 +1,392 @@
+# ============================================================
+# Post-Install Playbook
+# Creates K8s namespaces, adds Helm repos, verifies cluster.
+# ============================================================
+# Usage:
+#   ansible-playbook -i inventory/production.ini playbooks/03-post-install.yml
+# ============================================================
+
+---
+- name: Post-install K3s configuration
+  hosts: k3s_server
+  become: true
+  gather_facts: false
+
+  tasks:
+    # ── Create Namespaces ──
+    - name: Create Kubernetes namespaces
+      ansible.builtin.command:
+        cmd: 'k3s kubectl create namespace {{ item }}'
+      loop: '{{ k8s_namespaces }}'
+      register: ns_result
+      changed_when: "'created' in ns_result.stdout"
+      failed_when:
+        - ns_result.rc != 0
+        - "'already exists' not in ns_result.stderr"
+
+    # ── Label Namespaces for Pod Security ──
+    - name: Apply restricted Pod Security Standard to hire-adda
+      ansible.builtin.command:
+        cmd: >
+          k3s kubectl label namespace hire-adda
+          pod-security.kubernetes.io/enforce=restricted
+          pod-security.kubernetes.io/audit=restricted
+          pod-security.kubernetes.io/warn=restricted
+          --overwrite
+      changed_when: true
+
+    - name: Apply baseline Pod Security Standard to monitoring
+      ansible.builtin.command:
+        cmd: >
+          k3s kubectl label namespace monitoring
+          pod-security.kubernetes.io/enforce=baseline
+          pod-security.kubernetes.io/audit=restricted
+          pod-security.kubernetes.io/warn=restricted
+          --overwrite
+      changed_when: true
+
+    - name: Apply baseline Pod Security Standard to logging
+      ansible.builtin.command:
+        cmd: >
+          k3s kubectl label namespace logging
+          pod-security.kubernetes.io/enforce=baseline
+          pod-security.kubernetes.io/audit=restricted
+          pod-security.kubernetes.io/warn=restricted
+          --overwrite
+      changed_when: true
+
+    # ── Add Helm Repositories ──
+    - name: Add Helm repositories
+      ansible.builtin.command:
+        cmd: 'helm repo add {{ item.name }} {{ item.url }}'
+      loop:
+        - { name: jetstack, url: 'https://charts.jetstack.io' }
+        - { name: ingress-nginx, url: 'https://kubernetes.github.io/ingress-nginx' }
+        - { name: prometheus-community, url: 'https://prometheus-community.github.io/helm-charts' }
+        - { name: fluent, url: 'https://fluent.github.io/helm-charts' }
+        - { name: argo, url: 'https://argoproj.github.io/argo-helm' }
+        - { name: sealed-secrets, url: 'https://bitnami-labs.github.io/sealed-secrets' }
+        - { name: vmware-tanzu, url: 'https://vmware-tanzu.github.io/helm-charts' }
+      register: helm_add
+      changed_when: "'has been added' in helm_add.stdout"
+      failed_when:
+        - helm_add.rc != 0
+        - "'already exists' not in helm_add.stderr"
+
+    - name: Update Helm repositories
+      ansible.builtin.command:
+        cmd: helm repo update
+      changed_when: true
+
+    # ── Install metrics-server (required for HPA) ──
+    - name: Check if metrics-server is running
+      ansible.builtin.command:
+        cmd: k3s kubectl get deployment metrics-server -n kube-system
+      register: metrics_server
+      changed_when: false
+      failed_when: false
+
+    - name: Install metrics-server if not present
+      ansible.builtin.shell: |
+        k3s kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+      when: metrics_server.rc != 0
+
+    # ── Create GHCR Image Pull Secret ──
+    - name: Check if GHCR secret exists
+      ansible.builtin.command:
+        cmd: k3s kubectl get secret ghcr-credentials -n hire-adda
+      register: ghcr_secret
+      changed_when: false
+      failed_when: false
+
+    - name: Create GHCR pull secret from env vars
+      ansible.builtin.shell: |
+        k3s kubectl create secret docker-registry ghcr-credentials \
+          --namespace=hire-adda \
+          --docker-server=ghcr.io \
+          --docker-username="{{ lookup('env', 'GHCR_USERNAME') }}" \
+          --docker-password="{{ lookup('env', 'GHCR_PAT') }}" \
+          --docker-email="{{ lookup('env', 'GHCR_EMAIL') | default('admin@' + domain, true) }}"
+      when:
+        - ghcr_secret.rc != 0
+        - lookup('env', 'GHCR_USERNAME') != ''
+        - lookup('env', 'GHCR_PAT') != ''
+
+    - name: Warn if GHCR secret missing and env vars not set
+      ansible.builtin.debug:
+        msg: |
+          GHCR pull secret not found and GHCR_USERNAME/GHCR_PAT env vars not set.
+          Create manually:
+            kubectl create secret docker-registry ghcr-credentials \
+              --namespace=hire-adda \
+              --docker-server=ghcr.io \
+              --docker-username=<github-username> \
+              --docker-password=<github-pat> \
+              --docker-email=admin@{{ domain }}
+      when:
+        - ghcr_secret.rc != 0
+        - lookup('env', 'GHCR_USERNAME') == '' or lookup('env', 'GHCR_PAT') == ''
+
+    # ── Create local-path storage directories ──
+    - name: Create persistent storage directories
+      ansible.builtin.file:
+        path: '{{ item }}'
+        state: directory
+        mode: '0755'
+      loop:
+        - /opt/k3s-storage/postgres
+        - /opt/k3s-storage/redis
+        - /opt/k3s-storage/opensearch/data
+        - /opt/k3s-storage/opensearch/snapshots
+        - /opt/k3s-storage/uploads
+        - /opt/k3s-storage/backups
+        - /opt/k3s-storage/prometheus
+
+    # ── Install Helm Charts ──
+    - name: Install cert-manager
+      ansible.builtin.shell: |
+        helm upgrade --install cert-manager jetstack/cert-manager \
+          --namespace cert-manager \
+          --create-namespace \
+          --set crds.enabled=true \
+          --set resources.requests.memory=64Mi \
+          --set resources.limits.memory=128Mi \
+          --wait --timeout 5m
+      register: cert_manager_install
+      changed_when: "'has been upgraded' in cert_manager_install.stdout or 'has been installed' in cert_manager_install.stdout"
+
+    - name: Install ingress-nginx
+      ansible.builtin.shell: |
+        helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+          --namespace ingress-nginx \
+          --create-namespace \
+          --set controller.hostNetwork=true \
+          --set controller.kind=DaemonSet \
+          --set controller.service.enabled=false \
+          --set controller.metrics.enabled=true \
+          --set controller.config.enable-modsecurity=true \
+          --set controller.config.enable-owasp-modsecurity-crs=true \
+          --set-string 'controller.config.modsecurity-snippet=SecRuleEngine On
+            SecRule REQUEST_URI "^/\.well-known/" "id:1000,phase:1,pass,nolog,ctl:ruleEngine=Off"
+            SecRule REQUEST_URI "^/api/(proxy|v1)/" "id:1004,phase:1,pass,nolog,ctl:ruleEngine=DetectionOnly"
+            SecRule REQUEST_URI "^/monitoring" "id:1005,phase:1,pass,nolog,ctl:ruleEngine=DetectionOnly"
+            SecRule REQUEST_URI "^/otel/" "id:1006,phase:1,pass,nolog,ctl:ruleEngine=DetectionOnly"
+            SecRule REQUEST_URI "^/(browserconfig\.xml|humans\.txt|ads\.txt|ai\.txt|llms\.txt|opensearch\.xml|feed\.xml|robots\.txt|sitemap\.xml|sitemap/[^/]+\.xml|safari-pinned-tab\.svg|favicon[-.][^/]*|apple-icon[^/]*|icon[-0-9][^/]*|web-app-manifest[^/]*|browserconfig\.xml|widgets/[^/]+\.json)$" "id:1007,phase:1,pass,nolog,ctl:ruleEngine=Off"
+            SecRule REQUEST_HEADERS:User-Agent "@pm curl/ wget/ httpie scrapy python-requests Go-http-client aiohttp node-fetch axios/ phantomjs headlesschrome selenium puppeteer playwright libwww-perl colly HTTrack nikto sqlmap nmap masscan zgrab nuclei dirbuster gobuster wpscan jorgee MJ12bot DotBot AhrefsBot SemrushBot BLEXBot MegaIndex BUbiNG Exabot Majestic SEOkicks" "id:2000,phase:1,deny,status:403,msg:Bad bot detected"
+            SecRule &REQUEST_HEADERS:User-Agent "@eq 0" "id:2001,phase:1,deny,status:403,msg:Missing User-Agent"' \
+          --set controller.resources.requests.memory=128Mi \
+          --set controller.resources.limits.memory=256Mi \
+          --wait --timeout 5m
+      register: ingress_install
+      changed_when: "'has been upgraded' in ingress_install.stdout or 'has been installed' in ingress_install.stdout"
+
+    - name: Install sealed-secrets controller
+      ansible.builtin.shell: |
+        helm upgrade --install sealed-secrets sealed-secrets/sealed-secrets \
+          --namespace kube-system \
+          --set resources.requests.memory=32Mi \
+          --set resources.limits.memory=64Mi \
+          --wait --timeout 3m
+      register: sealed_secrets_install
+      changed_when: "'has been upgraded' in sealed_secrets_install.stdout or 'has been installed' in sealed_secrets_install.stdout"
+
+    - name: Install kube-prometheus-stack
+      ansible.builtin.shell: |
+        helm upgrade --install kube-prometheus prometheus-community/kube-prometheus-stack \
+          --namespace monitoring \
+          --create-namespace \
+          -f /root/hire_adda/infra/k8s/monitoring/kube-prometheus-values.yaml \
+          --wait --timeout 10m
+      register: prometheus_install
+      changed_when: "'has been upgraded' in prometheus_install.stdout or 'has been installed' in prometheus_install.stdout"
+
+    - name: Install fluent-bit
+      ansible.builtin.shell: |
+        helm upgrade --install fluent-bit fluent/fluent-bit \
+          --namespace logging \
+          --create-namespace \
+          -f /root/hire_adda/infra/k8s/logging/fluent-bit-values.yaml \
+          --wait --timeout 5m
+      register: fluent_bit_install
+      changed_when: "'has been upgraded' in fluent_bit_install.stdout or 'has been installed' in fluent_bit_install.stdout"
+
+    - name: Install Velero
+      ansible.builtin.shell: |
+        helm upgrade --install velero vmware-tanzu/velero \
+          --namespace velero \
+          --create-namespace \
+          -f /root/hire_adda/infra/k8s/backup/velero-values.yaml \
+          --wait --timeout 5m
+      register: velero_install
+      changed_when: "'has been upgraded' in velero_install.stdout or 'has been installed' in velero_install.stdout"
+      failed_when: false
+
+    - name: Install ArgoCD
+      ansible.builtin.shell: |
+        helm upgrade --install argocd argo/argo-cd \
+          --namespace argocd \
+          --create-namespace \
+          -f /root/hire_adda/infra/k8s/cd/argocd-values.yaml \
+          --wait --timeout 10m
+      register: argocd_install
+      changed_when: "'has been upgraded' in argocd_install.stdout or 'has been installed' in argocd_install.stdout"
+
+    - name: Install Argo Rollouts
+      ansible.builtin.shell: |
+        helm upgrade --install argo-rollouts argo/argo-rollouts \
+          --namespace argo-rollouts \
+          --create-namespace \
+          --set controller.resources.limits.memory=128Mi \
+          --set controller.resources.requests.memory=64Mi \
+          --wait --timeout 5m
+      register: rollouts_install
+      changed_when: "'has been upgraded' in rollouts_install.stdout or 'has been installed' in rollouts_install.stdout"
+
+    - name: Install kubectl-argo-rollouts plugin
+      ansible.builtin.get_url:
+        url: https://github.com/argoproj/argo-rollouts/releases/latest/download/kubectl-argo-rollouts-linux-amd64
+        dest: /usr/local/bin/kubectl-argo-rollouts
+        mode: '0755'
+
+    # ── Apply K8s Manifests ──
+    - name: Apply namespaces
+      ansible.builtin.command:
+        cmd: k3s kubectl apply -f /root/hire_adda/infra/k8s/namespaces.yaml
+      register: ns_apply
+      changed_when: "'configured' in ns_apply.stdout or 'created' in ns_apply.stdout"
+
+    - name: Apply cert-manager ClusterIssuers
+      ansible.builtin.command:
+        cmd: k3s kubectl apply -f /root/hire_adda/infra/k8s/ingress/cluster-issuer.yaml
+      register: issuer_apply
+      changed_when: "'configured' in issuer_apply.stdout or 'created' in issuer_apply.stdout"
+
+    - name: Apply ingress rules
+      ansible.builtin.command:
+        cmd: k3s kubectl apply -f /root/hire_adda/infra/k8s/ingress/ingress.yaml
+      register: ingress_apply
+      changed_when: "'configured' in ingress_apply.stdout or 'created' in ingress_apply.stdout"
+
+    - name: Apply ModSecurity WAF config
+      ansible.builtin.command:
+        cmd: k3s kubectl apply -f /root/hire_adda/infra/k8s/ingress/modsecurity-configmap.yaml
+      register: waf_apply
+      changed_when: "'configured' in waf_apply.stdout or 'created' in waf_apply.stdout"
+
+    - name: Apply network policies
+      ansible.builtin.shell: |
+        k3s kubectl apply -f /root/hire_adda/infra/k8s/security/network-policies/
+      register: netpol_apply
+      changed_when: "'configured' in netpol_apply.stdout or 'created' in netpol_apply.stdout"
+
+    - name: Apply monitoring resources (alerting rules + service monitors)
+      ansible.builtin.shell: |
+        k3s kubectl apply -f /root/hire_adda/infra/k8s/monitoring/alerting-rules/
+        k3s kubectl apply -f /root/hire_adda/infra/k8s/monitoring/servicemonitors/
+      register: monitoring_apply
+      changed_when: "'configured' in monitoring_apply.stdout or 'created' in monitoring_apply.stdout"
+
+    - name: Apply Velero backup schedules
+      ansible.builtin.command:
+        cmd: k3s kubectl apply -f /root/hire_adda/infra/k8s/backup/backup-schedule.yaml
+      register: backup_apply
+      changed_when: "'configured' in backup_apply.stdout or 'created' in backup_apply.stdout"
+      failed_when: false
+
+    # ── Provision Grafana Dashboards ──
+    - name: Create Grafana dashboard ConfigMaps from JSON files
+      ansible.builtin.shell: |
+        DASHBOARD_DIR="/root/hire_adda/infra/k8s/monitoring/grafana-dashboards"
+        for f in "$DASHBOARD_DIR"/*.json; do
+          name="tb-dashboard-$(basename "$f" .json)"
+          k3s kubectl create configmap "$name" \
+            --namespace monitoring \
+            --from-file="$(basename "$f")=$f" \
+            --dry-run=client -o yaml | k3s kubectl apply -f -
+          k3s kubectl label configmap "$name" -n monitoring \
+            grafana_dashboard="1" --overwrite
+          k3s kubectl annotate configmap "$name" -n monitoring \
+            grafana_folder="Hire Adda" --overwrite
+        done
+      register: dashboards_result
+      changed_when: "'configured' in dashboards_result.stdout or 'created' in dashboards_result.stdout"
+
+    # ── Apply Logging Stack ──
+    - name: Apply OpenSearch Dashboards
+      ansible.builtin.shell: |
+        k3s kubectl apply -f /root/hire_adda/infra/k8s/logging/opensearch-dashboards-deployment.yaml
+      register: logging_apply
+      changed_when: "'configured' in logging_apply.stdout or 'created' in logging_apply.stdout"
+      failed_when: false
+
+    # ── Apply ArgoCD Applications ──
+    - name: Apply ArgoCD applications
+      ansible.builtin.command:
+        cmd: k3s kubectl apply -f /root/hire_adda/infra/k8s/cd/applications/hire-adda-app.yaml
+      register: argocd_apps_apply
+      changed_when: "'configured' in argocd_apps_apply.stdout or 'created' in argocd_apps_apply.stdout"
+
+    # ── Final Verification ──
+    - name: Get cluster info
+      ansible.builtin.command:
+        cmd: k3s kubectl cluster-info
+      register: cluster_info
+      changed_when: false
+
+    - name: Show cluster info
+      ansible.builtin.debug:
+        msg: '{{ cluster_info.stdout }}'
+
+    - name: Get all namespaces
+      ansible.builtin.command:
+        cmd: k3s kubectl get namespaces
+      register: namespaces
+      changed_when: false
+
+    - name: Show namespaces
+      ansible.builtin.debug:
+        msg: '{{ namespaces.stdout }}'
+
+    - name: Get all pods across namespaces
+      ansible.builtin.command:
+        cmd: k3s kubectl get pods -A
+      register: all_pods
+      changed_when: false
+
+    - name: Show all pods
+      ansible.builtin.debug:
+        msg: '{{ all_pods.stdout }}'
+
+    - name: Verify Docker containers still running
+      ansible.builtin.command:
+        cmd: docker ps --format "table {{ '{{' }}.Names{{ '}}' }}\t{{ '{{' }}.Status{{ '}}' }}"
+      register: docker_ps
+      changed_when: false
+
+    - name: Show Docker containers
+      ansible.builtin.debug:
+        msg: '{{ docker_ps.stdout }}'
+
+    - name: Print setup summary
+      ansible.builtin.debug:
+        msg: |
+          ╔══════════════════════════════════════════════════╗
+          ║  K3s Full Stack Deployment Complete              ║
+          ╠══════════════════════════════════════════════════╣
+          ║  Cluster:       K3s Ready                       ║
+          ║  Namespaces:    {{ k8s_namespaces | length }} created                        ║
+          ║  Ingress:       nginx + cert-manager + WAF      ║
+          ║  Monitoring:    Prometheus + Grafana + Alerts    ║
+          ║  Logging:       Fluent Bit + OpenSearch          ║
+          ║  CD:            ArgoCD + Argo Rollouts           ║
+          ║  Security:      SealedSecrets + NetworkPolicies  ║
+          ║  Backup:        Velero + Schedules               ║
+          ║  Docker:        Mail server (standalone)         ║
+          ║                                                  ║
+          ║  Dashboards:                                     ║
+          ║    ArgoCD:   https://argocd.{{ domain }}          ║
+          ║    Grafana:  https://grafana.{{ domain }}         ║
+          ║    Logs:     https://dashboards.{{ domain }}      ║
+          ║                                                  ║
+          ║  Next: Run migrate-to-k3s.sh for traffic cutover ║
+          ╚══════════════════════════════════════════════════╝

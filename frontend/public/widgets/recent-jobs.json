@@ -1,0 +1,99 @@
+{
+  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+  "type": "AdaptiveCard",
+  "version": "1.5",
+  "body": [
+    {
+      "type": "ColumnSet",
+      "columns": [
+        {
+          "type": "Column",
+          "width": "auto",
+          "items": [
+            {
+              "type": "Image",
+              "url": "${$root.brandIcon}",
+              "size": "Small",
+              "altText": "Hire Adda"
+            }
+          ]
+        },
+        {
+          "type": "Column",
+          "width": "stretch",
+          "items": [
+            {
+              "type": "TextBlock",
+              "text": "Latest Jobs",
+              "weight": "Bolder",
+              "size": "Medium",
+              "color": "Accent"
+            },
+            {
+              "type": "TextBlock",
+              "text": "${$root.subtitle}",
+              "isSubtle": true,
+              "wrap": true,
+              "spacing": "None"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "Container",
+      "$data": "${jobs}",
+      "spacing": "Small",
+      "separator": true,
+      "items": [
+        {
+          "type": "TextBlock",
+          "text": "${title}",
+          "weight": "Bolder",
+          "wrap": true,
+          "maxLines": 1
+        },
+        {
+          "type": "TextBlock",
+          "text": "${company} · ${location}",
+          "isSubtle": true,
+          "spacing": "None",
+          "wrap": true,
+          "maxLines": 1
+        },
+        {
+          "type": "TextBlock",
+          "text": "${if(salary, salary, '')}",
+          "isVisible": "${if(salary, true, false)}",
+          "size": "Small",
+          "color": "Good",
+          "spacing": "None"
+        }
+      ],
+      "selectAction": {
+        "type": "Action.OpenUrl",
+        "url": "${url}"
+      }
+    },
+    {
+      "type": "TextBlock",
+      "text": "${if(empty, 'No new jobs right now — check back soon.', '')}",
+      "isVisible": "${empty}",
+      "isSubtle": true,
+      "wrap": true,
+      "spacing": "Medium"
+    }
+  ],
+  "actions": [
+    {
+      "type": "Action.OpenUrl",
+      "title": "See all jobs",
+      "url": "${$root.allJobsUrl}"
+    },
+    {
+      "type": "Action.OpenUrl",
+      "title": "Open Hire Adda",
+      "url": "${$root.homeUrl}"
+    }
+  ]
+}

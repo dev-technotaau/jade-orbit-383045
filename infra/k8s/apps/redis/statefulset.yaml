@@ -1,0 +1,143 @@
+# ============================================================
+# Redis 7 — StatefulSet
+# Cache + BullMQ job queue, matches existing docker-compose
+# ============================================================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: hire-adda
+  labels:
+    app: redis
+    tier: cache
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: cache
+    app.kubernetes.io/part-of: hire-adda
+spec:
+  serviceName: redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+        tier: cache
+      annotations:
+        prometheus.io/scrape: 'true'
+        prometheus.io/port: '9121'
+        # Skip the Redis data PVC from Velero file-system backup.
+        # The `redis-backup` CronJob triggers BGSAVE and uploads
+        # the resulting RDB dump to R2 daily — a single restorable
+        # snapshot file per day, with its own 30-day rotation.
+        backup.velero.io/backup-volumes-excludes: redis-data
+    spec:
+      securityContext:
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          command:
+            - sh
+            - -c
+            - >-
+              redis-server
+              --requirepass "$REDIS_PASSWORD"
+              --appendonly yes
+              --maxmemory 256mb
+              --maxmemory-policy noeviction
+              --save "900 1"
+              --save "300 10"
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: REDIS_PASSWORD
+          ports:
+            - name: tcp-redis
+              containerPort: 6379
+              protocol: TCP
+          resources:
+            requests:
+              memory: '384Mi'
+              cpu: '100m'
+            limits:
+              memory: '768Mi'
+              cpu: '750m'
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - redis-cli -a "$REDIS_PASSWORD" --no-auth-warning ping
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 5
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - redis-cli -a "$REDIS_PASSWORD" --no-auth-warning ping
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+
+        # Redis Exporter sidecar for Prometheus
+        - name: redis-exporter
+          image: oliver006/redis_exporter:v1.66.0-alpine
+          ports:
+            - name: metrics
+              containerPort: 9121
+              protocol: TCP
+          env:
+            - name: REDIS_ADDR
+              value: 'redis://localhost:6379'
+            - name: REDIS_PASSWORD
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: REDIS_PASSWORD
+          resources:
+            requests:
+              memory: '16Mi'
+              cpu: '10m'
+            limits:
+              memory: '32Mi'
+              cpu: '50m'
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-data
+        labels:
+          app: redis
+      spec:
+        accessModes: ['ReadWriteOnce']
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 5Gi

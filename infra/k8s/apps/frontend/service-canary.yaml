@@ -1,0 +1,22 @@
+# ============================================================
+# Frontend — Canary Service
+# Used by Argo Rollouts for traffic splitting during canary deploys
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-canary
+  namespace: hire-adda
+  labels:
+    app: frontend
+    app.kubernetes.io/name: frontend
+    role: canary
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+      protocol: TCP
+  selector:
+    app: frontend

@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Georgia', 'Times New Roman', serif;
+            font-size: 11.5px;
+            line-height: 1.6;
+            color: #1c1917;
+            max-width: 740px;
+            margin: 0 auto;
+            padding: 36px 40px;
+        }
+
+        a { color: #7c2d12; text-decoration: none; }
+
+        /* ── Header ── */
+        .header {
+            text-align: center;
+            padding-bottom: 18px;
+            margin-bottom: 24px;
+            border-bottom: 3px double #7c2d12;
+        }
+
+        .name {
+            font-size: 32px;
+            font-weight: 400;
+            color: #1c1917;
+            letter-spacing: 4px;
+            text-transform: uppercase;
+            line-height: 1.1;
+        }
+
+        .headline {
+            font-size: 13px;
+            color: #57534e;
+            margin-top: 6px;
+            font-style: italic;
+            font-weight: 400;
+        }
+
+        .contact-info {
+            margin-top: 10px;
+            font-size: 10.5px;
+            color: #44403c;
+            display: flex;
+            justify-content: center;
+            flex-wrap: wrap;
+            gap: 14px;
+        }
+
+        .contact-info span { white-space: nowrap; }
+        .contact-info .sep { color: #a8a29e; }
+
+        /* ── Sections ── */
+        .section {
+            margin-bottom: 22px;
+            page-break-inside: avoid;
+        }
+
+        .section-title {
+            font-size: 13.5px;
+            font-weight: 700;
+            color: #7c2d12;
+            text-transform: uppercase;
+            letter-spacing: 3px;
+            margin-bottom: 12px;
+            text-align: center;
+            position: relative;
+        }
+
+        .section-title::before,
+        .section-title::after {
+            content: '';
+            position: absolute;
+            top: 50%;
+            width: 80px;
+            height: 1px;
+            background: #d6d3d1;
+        }
+
+        .section-title::before { left: 50%; transform: translateX(-160px); }
+        .section-title::after { right: 50%; transform: translateX(160px); }
+
+        .summary-text {
+            font-size: 11.5px;
+            color: #292524;
+            line-height: 1.8;
+            text-align: justify;
+            font-style: italic;
+        }
+
+        .entry {
+            margin-bottom: 16px;
+            page-break-inside: avoid;
+        }
+
+        .entry-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin-bottom: 3px;
+        }
+
+        .entry-title {
+            font-size: 13px;
+            font-weight: 700;
+            color: #1c1917;
+        }
+
+        .entry-subtitle {
+            color: #57534e;
+            font-size: 11.5px;
+            font-style: italic;
+        }
+
+        .entry-date {
+            font-size: 10.5px;
+            color: #7c2d12;
+            white-space: nowrap;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        }
+
+        .entry-meta {
+            color: #57534e;
+            font-size: 11px;
+            margin-bottom: 4px;
+        }
+
+        .entry-description {
+            font-size: 11px;
+            color: #292524;
+            margin-top: 4px;
+            line-height: 1.7;
+        }
+
+        .entry-highlights {
+            margin: 6px 0 0 0;
+            padding-left: 22px;
+            list-style-type: '— ';
+        }
+
+        .entry-highlights li {
+            font-size: 11px;
+            color: #292524;
+            margin-bottom: 3px;
+            line-height: 1.6;
+            padding-left: 4px;
+        }
+
+        /* ── Skills ── */
+        .skills-list {
+            text-align: center;
+            font-size: 11px;
+            color: #292524;
+            line-height: 1.9;
+        }
+
+        .skills-list .skill { display: inline-block; padding: 0 8px; }
+        .skills-list .skill::after { content: '·'; margin-left: 14px; color: #a8a29e; }
+        .skills-list .skill:last-child::after { content: ''; }
+
+        /* ── Other ── */
+        .cert-entry, .award-entry, .project-entry {
+            margin-bottom: 8px;
+        }
+
+        .cert-name, .award-title, .project-name {
+            font-weight: 700;
+            font-size: 11.5px;
+            color: #1c1917;
+        }
+
+        .cert-issuer, .award-issuer, .project-role {
+            color: #57534e;
+            font-style: italic;
+        }
+
+        .cert-meta {
+            font-size: 10px;
+            color: #78716c;
+            font-style: italic;
+        }
+
+        .project-tech {
+            font-size: 10.5px;
+            color: #7c2d12;
+            margin-top: 2px;
+            font-style: italic;
+        }
+
+        .lang-list { text-align: center; font-size: 11px; line-height: 1.9; }
+        .lang-list .lang { display: inline-block; padding: 0 12px; }
+        .lang-list .prof { color: #78716c; font-style: italic; font-size: 10.5px; }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <h1 class="name">{{fullName}}</h1>
+        {{#if headline}}<div class="headline">{{headline}}</div>{{/if}}
+        <div class="contact-info">
+            {{#if email}}<span>{{email}}</span>{{/if}}
+            {{#if phone}}<span class="sep">·</span><span>{{phone}}</span>{{/if}}
+            {{#if location}}<span class="sep">·</span><span>{{location}}</span>{{/if}}
+            {{#if linkedin}}<span class="sep">·</span><a href="{{linkedin}}">LinkedIn</a>{{/if}}
+            {{#if portfolio}}<span class="sep">·</span><a href="{{portfolio}}">Portfolio</a>{{/if}}
+            {{#if github}}<span class="sep">·</span><a href="{{github}}">GitHub</a>{{/if}}
+        </div>
+    </header>
+
+    {{#if summary}}
+    <section class="section">
+        <div class="section-title">Executive Summary</div>
+        <p class="summary-text">{{summary}}</p>
+    </section>
+    {{/if}}
+
+    {{#if experience.length}}
+    <section class="section">
+        <div class="section-title">Professional Experience</div>
+        {{#each experience}}
+        <div class="entry">
+            <div class="entry-header">
+                <span class="entry-title">{{title}}</span>
+                <span class="entry-date">{{startDate}} — {{endDate}}</span>
+            </div>
+            <div class="entry-meta"><em>{{company}}</em>{{#if location}}, {{location}}{{/if}}</div>
+            {{#if description}}<div class="entry-description">{{description}}</div>{{/if}}
+            {{#if highlights}}
+            <ul class="entry-highlights">
+                {{#each highlights}}<li>{{this}}</li>{{/each}}
+            </ul>
+            {{/if}}
+        </div>
+        {{/each}}
+    </section>
+    {{/if}}
+
+    {{#if education.length}}
+    <section class="section">
+        <div class="section-title">Education</div>
+        {{#each education}}
+        <div class="entry">
+            <div class="entry-header">
+                <span class="entry-title">{{degree}}{{#if field}}, {{field}}{{/if}}</span>
+                {{#if year}}<span class="entry-date">{{year}}</span>{{/if}}
+            </div>
+            <div class="entry-meta"><em>{{institution}}</em>{{#if grade}} — Grade: {{grade}}{{/if}}</div>
+        </div>
+        {{/each}}
+    </section>
+    {{/if}}
+
+    {{#if skills.length}}
+    <section class="section">
+        <div class="section-title">Core Competencies</div>
+        <div class="skills-list">
+            {{#each skills}}<span class="skill">{{this}}</span>{{/each}}
+        </div>
+    </section>
+    {{/if}}
+
+    {{#if certifications.length}}
+    <section class="section">
+        <div class="section-title">Certifications</div>
+        {{#each certifications}}
+        <div class="cert-entry">
+            <span class="cert-name">{{name}}</span><span class="cert-issuer"> — {{issuer}}</span>
+            <span class="cert-meta">{{#if date}} ({{date}}){{/if}}{{#if credentialId}} · ID {{credentialId}}{{/if}}{{#if url}} · <a href="{{url}}">verify</a>{{/if}}</span>
+        </div>
+        {{/each}}
+    </section>
+    {{/if}}
+
+    {{#if projects.length}}
+    <section class="section">
+        <div class="section-title">Selected Projects</div>
+        {{#each projects}}
+        <div class="project-entry">
+            <span class="project-name">{{name}}</span>{{#if role}} <span class="project-role">— {{role}}</span>{{/if}}{{#if url}} · <a href="{{url}}">{{url}}</a>{{/if}}
+            {{#if technologies}}<div class="project-tech">{{#each technologies}}{{this}}{{#unless @last}} · {{/unless}}{{/each}}</div>{{/if}}
+            {{#if description}}<div class="entry-description">{{description}}</div>{{/if}}
+        </div>
+        {{/each}}
+    </section>
+    {{/if}}
+
+    {{#if awards.length}}
+    <section class="section">
+        <div class="section-title">Honours &amp; Awards</div>
+        {{#each awards}}
+        <div class="award-entry">
+            <span class="award-title">{{title}}</span>{{#if issuer}} <span class="award-issuer">— {{issuer}}</span>{{/if}}{{#if date}} <span class="cert-meta">({{date}})</span>{{/if}}
+            {{#if description}}<div class="entry-description">{{description}}</div>{{/if}}
+        </div>
+        {{/each}}
+    </section>
+    {{/if}}
+
+    {{#if languages.length}}
+    <section class="section">
+        <div class="section-title">Languages</div>
+        <div class="lang-list">
+            {{#each languages}}<span class="lang">{{language}} <span class="prof">({{proficiency}})</span></span>{{/each}}
+        </div>
+    </section>
+    {{/if}}
+</body>
+</html>

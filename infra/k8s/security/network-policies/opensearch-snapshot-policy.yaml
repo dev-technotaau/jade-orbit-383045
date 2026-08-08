@@ -1,0 +1,29 @@
+# ============================================================
+# OpenSearch Snapshot CronJob — Network Policy
+# Allows egress to OpenSearch (port 9200) + DNS
+# ============================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: opensearch-snapshot-netpol
+  namespace: hire-adda
+spec:
+  podSelector:
+    matchLabels:
+      app: opensearch-snapshot
+  policyTypes:
+    - Egress
+  egress:
+    # DNS
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+    # OpenSearch HTTP API
+    - to:
+        - podSelector:
+            matchLabels:
+              app: opensearch
+      ports:
+        - port: 9200
+          protocol: TCP

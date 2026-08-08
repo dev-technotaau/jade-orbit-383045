@@ -1,0 +1,140 @@
+# ============================================================
+# Roundcube Webmail — Deployment
+# Web UI for the Docker mailserver (SMTP/IMAP stays in Docker)
+# Accessed via K8s ingress at mail.hireadda.in
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: roundcube
+  namespace: hire-adda
+  labels:
+    app: roundcube
+    tier: app
+    app.kubernetes.io/name: roundcube
+    app.kubernetes.io/component: webmail
+    app.kubernetes.io/part-of: hire-adda
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: roundcube
+  template:
+    metadata:
+      labels:
+        app: roundcube
+        tier: app
+      annotations:
+        # roundcube-data IS persistent and WE WANT it backed up
+        # by Velero (no native backup mechanism for the mailserver
+        # state). Exclude only the ephemeral temp/config EmptyDirs.
+        backup.velero.io/backup-volumes-excludes: roundcube-temp,roundcube-config
+    spec:
+      securityContext:
+        runAsUser: 33 # www-data
+        runAsGroup: 33
+        fsGroup: 33
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: roundcube
+          image: roundcube/roundcubemail:latest
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          env:
+            # Connect to Docker mailserver via the manually-managed
+            # `mailserver-external` Service+Endpoints pair (see
+            # apps/roundcube/mailserver-external.yaml).
+            #
+            # IMAP: `ssl://...:993` (IMAPS / implicit TLS). The previous
+            # `tls://...:143` (STARTTLS over plain) broke after the
+            # 2026-04-29 VPS cutover because the new mailserver
+            # container does NOT publish port 143 to the host
+            # (`docker ps` shows 143/tcp exposed but unbound), so every
+            # IMAP connect was "Connection refused" → login hung. 993
+            # IS bound on the host and works.
+            #
+            # SMTP: `tls://...:587` (submission with STARTTLS) is fine —
+            # 587 IS published to the host.
+            - name: ROUNDCUBEMAIL_DEFAULT_HOST
+              value: 'ssl://mailserver-external'
+            - name: ROUNDCUBEMAIL_DEFAULT_PORT
+              value: '993'
+            - name: ROUNDCUBEMAIL_SMTP_SERVER
+              value: 'tls://mailserver-external'
+            - name: ROUNDCUBEMAIL_SMTP_PORT
+              value: '587'
+            - name: ROUNDCUBEMAIL_UPLOAD_MAX_FILESIZE
+              value: '25M'
+            - name: ROUNDCUBEMAIL_SKIN
+              value: 'elastic'
+            - name: ROUNDCUBEMAIL_PLUGINS
+              value: 'archive,managesieve,zipdownload,markasjunk'
+            - name: ROUNDCUBEMAIL_DB_TYPE
+              value: 'sqlite'
+          resources:
+            requests:
+              memory: '128Mi'
+              cpu: '25m'
+            limits:
+              memory: '256Mi'
+              cpu: '250m'
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - NET_BIND_SERVICE # Required to bind port 80
+          volumeMounts:
+            - name: roundcube-data
+              mountPath: /var/roundcube/db
+            - name: roundcube-temp
+              mountPath: /tmp/roundcube-temp
+            - name: roundcube-config
+              mountPath: /var/roundcube/config/custom.config.php
+              subPath: custom.config.php
+              readOnly: true
+      volumes:
+        - name: roundcube-data
+          persistentVolumeClaim:
+            claimName: roundcube-data
+        - name: roundcube-temp
+          emptyDir: {}
+        - name: roundcube-config
+          configMap:
+            name: roundcube-config
+---
+# PVC for Roundcube SQLite database
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: roundcube-data
+  namespace: hire-adda
+  labels:
+    app: roundcube
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi

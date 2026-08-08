@@ -1,0 +1,24 @@
+# K3s server configuration
+# Placed at /etc/rancher/k3s/config.yaml
+
+write-kubeconfig-mode: "{{ kubeconfig_mode }}"
+
+# Disable built-in components we replace
+disable:
+{% for component in k3s_disable %}
+  - {{ component }}
+{% endfor %}
+
+# Kubelet arguments
+kubelet-arg:
+  - "max-pods=110"
+  - "eviction-hard=memory.available<500Mi,nodefs.available<10%"
+  - "eviction-soft=memory.available<1Gi,nodefs.available<15%"
+  - "eviction-soft-grace-period=memory.available=2m,nodefs.available=2m"
+
+# API server arguments
+kube-apiserver-arg:
+  - "enable-admission-plugins=NodeRestriction,PodSecurity"
+  - "audit-log-maxage=30"
+  - "audit-log-maxbackup=10"
+  - "audit-log-maxsize=100"

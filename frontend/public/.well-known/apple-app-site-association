@@ -1,0 +1,29 @@
+{
+  "_comment": "iOS Universal Links (https://developer.apple.com/documentation/xcode/supporting-universal-links-in-your-app). When tapped in Mail/Messages/Safari, matched URLs open directly in the native iOS app instead of Safari. Must be served at /.well-known/apple-app-site-association with Content-Type: application/json and NO file extension (Apple's crawler is strict). Replace TEAMID.BUNDLE with real Apple Developer Team ID + bundle identifier once the iOS app is registered.",
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appID": "TEAMID.in.hireadda.app",
+        "paths": [
+          "/",
+          "/about",
+          "/jobs/*",
+          "/companies/*",
+          "/candidate/*",
+          "/employer/*",
+          "NOT /admin/*",
+          "NOT /super-admin/*",
+          "NOT /auth/*",
+          "NOT /api/*"
+        ]
+      }
+    ]
+  },
+  "webcredentials": {
+    "apps": ["TEAMID.in.hireadda.app"]
+  },
+  "appclips": {
+    "apps": []
+  }
+}

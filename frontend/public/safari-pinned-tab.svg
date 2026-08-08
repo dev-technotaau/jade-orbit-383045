@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Safari Pinned Tab icon — monochrome "HA" wordmark.
+
+  Path geometry lifted verbatim from public/icons/logo-bimi.svg (the BIMI
+  email-brand logo) so the pinned-tab glyph matches the authoritative
+  brand letterforms exactly. Fills are omitted because Safari re-colours
+  the whole mask via the `color` attribute on the <link> tag:
+      <link rel="mask-icon" href="/safari-pinned-tab.svg" color="#1E5CAF" />
+
+  `fill-rule="evenodd"` preserves the triangular counter inside the "A"
+  (no accidental solid fill from sub-path winding mismatch).
+
+  Rendered at 16×16 in Safari's tab strip. The rounded-square outer
+  frame that wraps the BIMI version is dropped here — Safari supplies
+  its own tab-bar framing.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill-rule="evenodd">
+  <path d="M 16 25 L 22 25 L 22 47 L 34 47 L 34 25 L 40 25 L 40 75 L 34 75 L 34 53 L 22 53 L 22 75 L 16 75 Z"/>
+  <path d="M 52 75 L 58.5 75 L 61 65 L 77 65 L 79.5 75 L 86 75 L 73 25 L 65 25 Z M 63 59 L 69 35 L 75 59 Z"/>
+</svg>

@@ -1,0 +1,91 @@
+# ============================================================
+# OpenSearch — Network Policy (3-node cluster)
+# Backend + Fluent Bit + Dashboards + inter-node transport
+# ============================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: opensearch-netpol
+  namespace: hire-adda
+spec:
+  podSelector:
+    matchLabels:
+      app: opensearch
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Inter-node communication (cluster formation + replication)
+    - from:
+        - podSelector:
+            matchLabels:
+              app: opensearch
+      ports:
+        - port: 9200
+          protocol: TCP
+        - port: 9300
+          protocol: TCP
+    # From backend (search queries)
+    - from:
+        - podSelector:
+            matchLabels:
+              app: backend
+      ports:
+        - port: 9200
+          protocol: TCP
+    # From Fluent Bit (log ingestion)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: logging
+      ports:
+        - port: 9200
+          protocol: TCP
+    # From OpenSearch Dashboards
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: logging
+          podSelector:
+            matchLabels:
+              app: opensearch-dashboards
+      ports:
+        - port: 9200
+          protocol: TCP
+    # From snapshot CronJobs
+    - from:
+        - podSelector:
+            matchLabels:
+              app: opensearch-snapshot
+      ports:
+        - port: 9200
+          protocol: TCP
+    # From ISM policy bootstrap Job (one-shot, sets up index lifecycle)
+    - from:
+        - podSelector:
+            matchLabels:
+              app: opensearch-ism-bootstrap
+      ports:
+        - port: 9200
+          protocol: TCP
+  egress:
+    # DNS
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+    # Inter-node communication (cluster formation + replication)
+    - to:
+        - podSelector:
+            matchLabels:
+              app: opensearch
+      ports:
+        - port: 9200
+          protocol: TCP
+        - port: 9300
+          protocol: TCP
+    # S3 snapshots to Cloudflare R2 (HTTPS)
+    - to: []
+      ports:
+        - port: 443
+          protocol: TCP

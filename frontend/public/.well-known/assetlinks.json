@@ -1,0 +1,16 @@
+[
+  {
+    "_comment": "Android Digital Asset Links (RFC 8615 + https://developers.google.com/digital-asset-links). Required for publishing a Trusted Web Activity (TWA) wrapping Hire Adda as an Android app on Google Play, and for Android App Links that bypass the disambiguation dialog. Replace placeholder package_name and sha256_cert_fingerprints with real values once the Android app is generated (e.g. via Bubblewrap). Multiple objects in the array are supported — add release + debug keys both during development.",
+    "relation": [
+      "delegate_permission/common.handle_all_urls",
+      "delegate_permission/common.get_login_creds"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "in.hireadda.app",
+      "sha256_cert_fingerprints": [
+        "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
+      ]
+    }
+  }
+]

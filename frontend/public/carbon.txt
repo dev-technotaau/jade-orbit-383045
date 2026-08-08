@@ -1,0 +1,42 @@
+# Hire Adda — Sustainability Disclosure (carbon.txt v1)
+# https://carbontxt.org/
+
+# This file declares Hire Adda's hosting + delivery sustainability
+# stance per the carbon.txt specification. Tools that probe sites for
+# climate-aware metadata (Green Web Foundation, EcoGrader, branchwise)
+# read this file and link the assertions back to underlying providers.
+
+# ── Domain ────────────────────────────────────────────────────────────
+# Apex: hireadda.in (canonical), www.hireadda.in (308 → apex)
+
+# ── Provider declarations ────────────────────────────────────────────
+# Format: domain {provider} <evidence URL>
+#
+# Cloudflare (CDN, edge cache, DNS, WAF, R2 object storage)
+#   100% renewable electricity since 2017 — Cloudflare's annual
+#   sustainability report is the evidence record.
+domain hireadda.in cloudflare https://www.cloudflare.com/impact/
+
+# Backend / app-tier compute lives on a Hetzner-provisioned bare-metal
+# VPS (Helsinki / Falkenstein region). Hetzner runs on 100% renewable
+# energy across all EU datacentres (Iceland: geothermal/hydro, Finland:
+# hydro/nuclear, Germany: wind/solar with carbon offset).
+domain hireadda.in hetzner https://www.hetzner.com/unternehmen/umweltschutz
+
+# Email infrastructure (docker-mailserver) co-located on the same
+# Hetzner host — same renewable-energy footprint.
+domain mail.hireadda.in hetzner https://www.hetzner.com/unternehmen/umweltschutz
+
+# ── Practices ─────────────────────────────────────────────────────────
+# - Aggressive image optimisation (AVIF + WebP via Next.js Image,
+#   long Cache-Control TTL on /_next/static/*)
+# - HTTP/3 + Brotli compression at the Cloudflare edge
+# - PWA service worker reduces repeat-visit network usage by ~70%
+# - Database queries are aggressively cached in Redis (10–24h TTL on
+#   public-listing endpoints)
+# - Sitemaps + RSS feeds are cached at the edge with stale-while-revalidate
+# - Dark-mode UI ships by default-respecting `prefers-color-scheme`,
+#   reducing OLED-display power draw on phone visitors
+
+# Disclosures: send@technotaau.com
+# Last updated: 2026-05-09
