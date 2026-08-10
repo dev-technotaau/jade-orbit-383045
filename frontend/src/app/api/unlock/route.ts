@@ -20,6 +20,26 @@ import type { NextRequest } from 'next/server';
 const COOKIE = 'wa_unlock';
 const BACKEND = process.env.BACKEND_INTERNAL_URL || 'http://localhost:5000/api/v1';
 
+/**
+ * Absolute session lifetime, in seconds.
+ *
+ * This was a pure session cookie (no maxAge), which sounds safe but is not:
+ * Chrome and Edge restore session cookies with "continue where you left off",
+ * and the token itself carries no expiry, so a cookie that escaped stayed valid
+ * until APP_PASSWORD was rotated for the whole team.
+ *
+ * Twelve hours covers a full shift, so nobody is logged out mid-conversation,
+ * while still bounding how long a leaked cookie is useful. Deliberately
+ * ABSOLUTE, not idle-based: a shared inbox has operators reading a long thread
+ * without clicking, and an idle timeout would sign them out mid-reply.
+ *
+ * For instant revocation across all sessions, bump SESSION_EPOCH on the backend.
+ */
+const SESSION_MAX_AGE_SECONDS = (() => {
+  const hours = Number(process.env.SESSION_MAX_AGE_HOURS);
+  return Number.isFinite(hours) && hours > 0 ? Math.round(hours * 3600) : 12 * 3600;
+})();
+
 export async function POST(request: NextRequest) {
   let password: unknown;
   try {
@@ -65,8 +85,7 @@ export async function POST(request: NextRequest) {
     sameSite: 'lax',
     secure: process.env.NODE_ENV === 'production',
     path: '/',
-    // No maxAge — a session cookie. Closing the browser re-locks the tool,
-    // which is the safer default for something with a single shared password.
+    maxAge: SESSION_MAX_AGE_SECONDS,
   });
   return res;
 }

@@ -42,9 +42,21 @@ function secret(): string {
   return s;
 }
 
-/** Value stored in the cookie: an HMAC of the password, not the password. */
+/**
+ * Value stored in the cookie: an HMAC of the password, not the password.
+ *
+ * The message carries SESSION_EPOCH so sessions are revocable. Without it the
+ * token was a fixed function of the password — valid forever, with no way to
+ * invalidate a leaked cookie short of rotating APP_PASSWORD and re-issuing it
+ * to everyone. Bumping the epoch kills every outstanding cookie and socket
+ * while the password stays the same.
+ *
+ * All three consumers derive the token here — the unlock endpoint that issues
+ * it, this middleware, and the Socket.IO handshake — so they can never diverge.
+ */
 export function unlockToken(): string {
-  return crypto.createHmac('sha256', secret()).update('wa-unlock-v1').digest('hex');
+  const epoch = env.SESSION_EPOCH || '1';
+  return crypto.createHmac('sha256', secret()).update(`wa-unlock-v${epoch}`).digest('hex');
 }
 
 /** Constant-time compare so the token cannot be probed byte by byte. */

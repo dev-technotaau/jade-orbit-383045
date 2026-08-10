@@ -66,6 +66,15 @@ const envSchema = z
     /** Optional label stamped onto createdBy / actorUserId. Defaults to 'operator'. */
     OPERATOR_LABEL: z.string().optional(),
     /**
+     * Session generation. Mixed into the unlock token's HMAC message, so
+     * incrementing it invalidates every outstanding cookie and socket
+     * immediately — without changing APP_PASSWORD, which the whole team knows.
+     *
+     * Bump this when someone leaves, a device is lost, or a token may have
+     * leaked. Operators simply unlock again with the same password.
+     */
+    SESSION_EPOCH: z.string().default('1'),
+    /**
      * Display name for the API's HTML pages (root, health, 404) and the OpenAPI
      * docs. The frontend has its own NEXT_PUBLIC_BRAND_NAME; keep them in sync.
      */
