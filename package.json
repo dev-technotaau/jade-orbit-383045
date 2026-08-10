@@ -1,7 +1,7 @@
 {
-  "name": "hire-adda-monorepo",
+  "name": "whatsapp-cloud-module",
   "version": "1.0.0",
-  "description": "Hire Adda - A specialized job portal for blue-collar workers.",
+  "description": "Reusable WhatsApp Business Cloud API module — inbox, templates and campaigns.",
   "private": true,
   "scripts": {
     "dev": "npx -y concurrently \"npm run dev:backend\" \"npm run dev:frontend\" --kill-others",
@@ -20,13 +20,14 @@
     "prepare": "husky || true"
   },
   "keywords": [
-    "job-portal",
-    "full-stack",
+    "whatsapp",
+    "whatsapp-cloud-api",
+    "inbox",
+    "campaigns",
     "nextjs",
     "express",
     "typescript"
   ],
-  "author": "Hire Adda Team",
   "license": "UNLICENSED",
   "lint-staged": {
     "backend/src/**/*.{ts,js}": [

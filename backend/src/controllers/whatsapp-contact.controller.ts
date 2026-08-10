@@ -1,7 +1,6 @@
 import type { Request, Response, NextFunction } from 'express';
 import * as contactService from '../services/whatsapp-contact.service';
 import { AppError } from '../middleware/error';
-import { Role } from '@prisma/client';
 import type { WaOptInStatus } from '@prisma/client';
 
 function triBool(v: unknown): boolean | undefined {
@@ -38,39 +37,12 @@ export const listContacts = async (
   next: NextFunction
 ): Promise<void> => {
   try {
-    const { optInStatus, tag, blocked, onPlatform, role, q, page, limit } = req.query;
+    const { optInStatus, tag, blocked, q, page, limit } = req.query;
     const result = await contactService.listContacts({
       optInStatus: (optInStatus as WaOptInStatus) || undefined,
       tag: (tag as string) || undefined,
       blocked: triBool(blocked),
-      onPlatform: triBool(onPlatform),
-      role: (role as Role) || undefined,
       q: (q as string) || undefined,
-      page: page ? parseInt(page as string, 10) : undefined,
-      limit: limit ? parseInt(limit as string, 10) : undefined,
-    });
-    res.json({ success: true, data: result });
-  } catch (e) {
-    next(e);
-  }
-};
-
-/** Platform User accounts reachable on WhatsApp (has a whatsapp/mobile number). */
-export const listPlatformUsers = async (
-  req: Request,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
-  try {
-    const { q, role, page, limit } = req.query;
-    const roleStr = role as string;
-    const validRole =
-      roleStr && (Object.values(Role) as string[]).includes(roleStr)
-        ? (roleStr as Role)
-        : undefined;
-    const result = await contactService.listPlatformUsers({
-      q: (q as string) || undefined,
-      role: validRole,
       page: page ? parseInt(page as string, 10) : undefined,
       limit: limit ? parseInt(limit as string, 10) : undefined,
     });

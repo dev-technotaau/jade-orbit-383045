@@ -5,11 +5,9 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Upload } from '@aws-sdk/lib-storage';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
-import { trace, SpanStatusCode } from '@opentelemetry/api';
 import { scanFile } from '../utils/file-scan';
 import { AppError } from '../middleware/error';
 
-const tracer = trace.getTracer('storage-service');
 
 /**
  * Uploads a file to Cloudflare R2
@@ -35,43 +33,33 @@ export const uploadFileToR2 = async (
 
   if (!r2Client) throw new Error('R2 storage is not configured');
 
-  return tracer.startActiveSpan('r2.upload', async (span) => {
-    span.setAttribute('storage.system', 'cloudflare-r2');
-    span.setAttribute('storage.bucket', R2_BUCKET_NAME);
-    span.setAttribute('storage.key', key);
-    span.setAttribute('storage.content_type', mimetype);
-    try {
-      const upload = new Upload({
-        client: r2Client!,
-        params: {
-          Bucket: R2_BUCKET_NAME,
-          Key: key,
-          Body: fileBuffer,
-          ContentType: mimetype,
-        },
-      });
+  try {
+    const upload = new Upload({
+      client: r2Client,
+      params: {
+        Bucket: R2_BUCKET_NAME,
+        Key: key,
+        Body: fileBuffer,
+        ContentType: mimetype,
+      },
+    });
 
-      await upload.done();
+    await upload.done();
 
-      // Generate public URL
-      let url = `/${key}`;
+    // Generate public URL
+    let url = `/${key}`;
 
-      if (process.env.R2_PUBLIC_URL) {
-        const baseUrl = process.env.R2_PUBLIC_URL.replace(/\/$/, '');
-        const cleanKey = key.replace(/^\//, '');
-        url = `${baseUrl}/${cleanKey}`;
-      }
-
-      span.setStatus({ code: SpanStatusCode.OK });
-      span.end();
-      return { key, url };
-    } catch (error) {
-      span.setStatus({ code: SpanStatusCode.ERROR, message: (error as Error).message });
-      span.end();
-      logger.error('R2 Upload Error:', error);
-      throw new Error('Failed to upload file to storage');
+    if (process.env.R2_PUBLIC_URL) {
+      const baseUrl = process.env.R2_PUBLIC_URL.replace(/\/$/, '');
+      const cleanKey = key.replace(/^\//, '');
+      url = `${baseUrl}/${cleanKey}`;
     }
-  });
+
+    return { key, url };
+  } catch (error) {
+    logger.error('R2 Upload Error:', error);
+    throw new Error('Failed to upload file to storage');
+  }
 };
 
 /**

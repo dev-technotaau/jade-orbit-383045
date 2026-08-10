@@ -1,5 +1,4 @@
 @import 'tailwindcss';
-@import 'leaflet/dist/leaflet.css';
 @plugin 'tailwindcss-animate';
 
 /* Hide Edge/IE built-in password reveal button (we have our own toggle) */

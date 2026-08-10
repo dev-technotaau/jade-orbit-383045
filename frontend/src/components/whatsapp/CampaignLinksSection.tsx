@@ -80,7 +80,7 @@ export default function CampaignLinksSection({ campaignId }: CampaignLinksSectio
             label="Target URL"
             value={targetUrl}
             onChange={(e) => setTargetUrl(e.target.value)}
-            placeholder="https://hireadda.com/jobs/123"
+            placeholder="https://example.com/landing-page"
           />
         </div>
         <Button

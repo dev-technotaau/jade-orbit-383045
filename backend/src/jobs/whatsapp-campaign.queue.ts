@@ -1,7 +1,6 @@
 import { Queue } from 'bullmq';
 import { redis } from '../config/redis';
 import logger from '../config/logger';
-import { injectTraceContext } from '../utils/trace-propagation';
 
 export const WHATSAPP_CAMPAIGN_QUEUE_NAME = 'whatsapp-campaign-queue';
 
@@ -31,6 +30,5 @@ logger.info(`WhatsApp Campaign Queue initialized: ${WHATSAPP_CAMPAIGN_QUEUE_NAME
 export async function addCampaignBatchJob(data: { campaignId: string; recipientIds: string[] }) {
   return whatsappCampaignQueue.add('send-batch', {
     ...data,
-    _traceContext: injectTraceContext(),
   });
 }

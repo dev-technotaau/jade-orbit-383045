@@ -2,7 +2,6 @@
 
 import { Component, type ReactNode, type ErrorInfo } from 'react';
 import { AlertTriangle, RefreshCw, Home, Copy } from 'lucide-react';
-import { trackEvent } from '@/lib/analytics';
 
 interface ErrorBoundaryProps {
   children: ReactNode;
@@ -30,9 +29,6 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
     this.setState({ errorInfo });
     console.error('ErrorBoundary caught an error:', error, errorInfo);
-
-    // Report to analytics
-    trackEvent('error_boundary', 'error', error.message);
 
     // Call custom error handler
     this.props.onError?.(error, errorInfo);

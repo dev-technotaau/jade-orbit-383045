@@ -80,8 +80,13 @@ const createPool = () => {
 // Get or create pool
 const pool = globalForPrisma.pool ?? createPool();
 
-// Create adapter with pool
-// @ts-expect-error - @types/pg version mismatch between top-level and @prisma/adapter-pg's bundled copy
+// Create adapter with pool.
+//
+// This carried a `@ts-expect-error` for a @types/pg mismatch between the
+// top-level copy and the one @prisma/adapter-pg bundled. Prisma 7.9 aligned
+// them, so the directive became an error in its own right ("unused
+// '@ts-expect-error'"). Removed rather than downgraded to `@ts-ignore` —
+// if the mismatch ever returns, a real error is better than a silent one.
 const adapter = new PrismaPg(pool);
 
 // ---------------------------------------------------------------------------

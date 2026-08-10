@@ -1,6 +1,6 @@
 /* eslint-disable no-undef */
 /**
- * Hire Adda service worker — enterprise tier.
+ * Service worker.
  *
  *  Strategies:
  *    - Navigation: network-first → offline fallback (`/offline`).
@@ -17,17 +17,11 @@
  *    - On message {type: 'SKIP_WAITING'}: force update on user click.
  *
  *  Background sync:
- *    - 'sync-applications': retries failed POSTs to /api/v1/candidates/jobs/.../apply.
  *    - 'sync-saves': retries failed save-job actions.
  *    - 'sync-analytics': retries Sentry/GA beacons buffered while offline.
  *
- *  Periodic background sync:
- *    - 'periodic-jobs-fresh': pre-warms /api/v1/public/jobs cache once a day
- *      so users open the app to fresh listings even after offline stretches.
- *
- *  Push notifications:
- *    - Firebase handles its own messaging via firebase-messaging-sw.js;
- *      sw.js only handles raw Web Push for transactional messages.
+ *  (Periodic background sync and push notifications were removed with the
+ *  job-board prewarm task and the Web Push / FCM stack.)
  */
 
 const CACHE_VERSION = 'v6';
@@ -353,11 +347,7 @@ async function handleStatic(request) {
 /* ── Background Sync ───────────────────────────────────────────────── */
 
 self.addEventListener('sync', (event) => {
-  if (event.tag === 'sync-applications') {
-    event.waitUntil(replayQueue('applications'));
-  } else if (event.tag === 'sync-saves') {
-    event.waitUntil(replayQueue('saves'));
-  } else if (event.tag === 'sync-analytics') {
+  if (event.tag === 'sync-analytics') {
     event.waitUntil(replayQueue('analytics'));
   }
 });
@@ -376,65 +366,8 @@ async function replayQueue(tag) {
     client.postMessage({ type: 'REPLAY_SYNC_QUEUE', tag });
   }
 }
-
-/* ── Periodic Background Sync ──────────────────────────────────────── */
-
-self.addEventListener('periodicsync', (event) => {
-  if (event.tag === 'periodic-jobs-fresh') {
-    event.waitUntil(prewarmJobs());
-  }
-});
-
-async function prewarmJobs() {
-  try {
-    const cache = await caches.open(API_CACHE);
-    const res = await fetch('/api/v1/public/jobs?limit=20&page=1', {
-      // user-agent quirk: some cached fetches respect cache-control;
-      // bypass for periodic warming.
-      cache: 'reload',
-    });
-    if (res && res.ok) {
-      await cache.put('/api/v1/public/jobs?limit=20&page=1', res.clone());
-    }
-  } catch {
-    /* offline or 5xx — caller's next live fetch will catch up */
-  }
-}
-
-/* ── Push notifications (raw Web Push fallback) ────────────────────── */
-
-self.addEventListener('push', (event) => {
-  if (!event.data) return;
-  let payload;
-  try {
-    payload = event.data.json();
-  } catch {
-    payload = { title: 'Hire Adda', body: event.data.text() };
-  }
-  const title = payload.title || 'Hire Adda';
-  const options = {
-    body: payload.body || '',
-    icon: payload.icon || '/icon-192x192.png',
-    badge: payload.badge || '/icon-72x72.png',
-    data: payload.data || {},
-    tag: payload.tag || 'default',
-    requireInteraction: !!payload.requireInteraction,
-    actions: payload.actions || [],
-  };
-  event.waitUntil(self.registration.showNotification(title, options));
-});
-
-self.addEventListener('notificationclick', (event) => {
-  event.notification.close();
-  const url = event.notification.data?.url || '/';
-  event.waitUntil(
-    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
-      for (const client of clients) {
-        if (client.url === url && 'focus' in client) {
-          return client.focus();
-        }
-      }
-      return self.clients.openWindow(url);
-    }),
-  );
-});
+/* ── Push notifications ─────────────────────────────────────────────
+   The push + notificationclick handlers were removed with the Web Push /
+   FCM stack: no backend endpoint accepts a subscription and nothing sends,
+   so they could never fire. Realtime reaches the inbox over Socket.IO.
+   ────────────────────────────────────────────────────────────────── */

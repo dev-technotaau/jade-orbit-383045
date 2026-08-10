@@ -2,6 +2,7 @@ import { prisma } from '../config/prisma';
 import { env } from '../config/env';
 import { AppError } from '../middleware/error';
 import { graphVersion } from './whatsapp.service';
+import { oneLineParam } from '../utils/whatsapp-template-params';
 import type {
   Prisma,
   WaTemplateCategory,
@@ -323,7 +324,10 @@ export function buildTemplateSendComponents(opts: {
       parameters: [{ type: t, [t]: { link: opts.headerMediaUrl } }],
     });
   } else if (opts.headerText) {
-    components.push({ type: 'header', parameters: [{ type: 'text', text: opts.headerText }] });
+    components.push({
+      type: 'header',
+      parameters: [{ type: 'text', text: oneLineParam(opts.headerText) }],
+    });
   }
   if (opts.bodyNamedParams?.length) {
     // Named-parameter templates ({{name}}): each parameter MUST carry
@@ -333,13 +337,13 @@ export function buildTemplateSendComponents(opts: {
       parameters: opts.bodyNamedParams.map((p) => ({
         type: 'text',
         parameter_name: p.name,
-        text: p.text,
+        text: oneLineParam(p.text),
       })),
     });
   } else if (opts.bodyParams?.length) {
     components.push({
       type: 'body',
-      parameters: opts.bodyParams.map((text) => ({ type: 'text', text })),
+      parameters: opts.bodyParams.map((text) => ({ type: 'text', text: oneLineParam(text) })),
     });
   }
   // Buttons must carry their authored index. The optional URL button is index 0;
@@ -350,7 +354,7 @@ export function buildTemplateSendComponents(opts: {
       type: 'button',
       sub_type: 'url',
       index: String(buttonIndex),
-      parameters: [{ type: 'text', text: opts.buttonUrlParam }],
+      parameters: [{ type: 'text', text: oneLineParam(opts.buttonUrlParam) }],
     });
     buttonIndex++;
   }

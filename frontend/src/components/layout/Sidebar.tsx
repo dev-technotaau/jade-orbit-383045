@@ -11,7 +11,6 @@ import {
   Send,
   BarChart3,
   Settings,
-  ToggleLeft,
   LogOut,
   Menu,
   X,
@@ -37,8 +36,10 @@ import { whatsappService } from '@/services/whatsapp.service';
  * The header also owned the mobile hamburger, so this now provides its own
  * trigger and drawer rather than relying on a separate MobileSidebar.
  *
- * `getNavStructure`, `buildNavFilter` and `filterStructureByFeature` are kept as
- * pass-through exports because KeyboardShortcuts.tsx (Ctrl+K) imports them.
+ * The Ctrl+K command palette was removed too — with six destinations there was
+ * nothing worth searching — so the nav compatibility exports it needed
+ * (getNavStructure, buildNavFilter, filterStructureByFeature, flattenNav) and
+ * the NavStructure/NavGroup shapes went with it.
  */
 
 export interface NavItem {
@@ -49,17 +50,6 @@ export interface NavItem {
   whatsappUnread?: boolean;
 }
 
-export interface NavGroup {
-  label: string;
-  icon: LucideIcon;
-  items: NavItem[];
-}
-
-export interface NavStructure {
-  top: NavItem[];
-  groups: NavGroup[];
-}
-
 const NAV: NavItem[] = [
   { label: 'Inbox', href: '/whatsapp', icon: MessageCircle, whatsappUnread: true },
   { label: 'Templates', href: '/whatsapp/templates', icon: FileText },
@@ -67,23 +57,7 @@ const NAV: NavItem[] = [
   { label: 'Campaigns', href: '/whatsapp/campaigns', icon: Send },
   { label: 'Analytics', href: '/whatsapp/analytics', icon: BarChart3 },
   { label: 'Settings', href: '/whatsapp/settings', icon: Settings },
-  { label: 'Feature Flags', href: '/feature-flags', icon: ToggleLeft },
 ];
-
-/* ── Compatibility exports for the Ctrl+K palette ─────────────── */
-
-export function getNavStructure(_role?: string | undefined): NavStructure {
-  return { top: NAV, groups: [] };
-}
-export function buildNavFilter(_opts?: unknown): (item: NavItem) => boolean {
-  return () => true;
-}
-export function filterStructureByFeature(structure: NavStructure): NavStructure {
-  return structure;
-}
-export function flattenNav(structure: NavStructure): NavItem[] {
-  return [...structure.top, ...structure.groups.flatMap((g) => g.items)];
-}
 
 /* ── Live unread badge ─────────────────────────────────────────── */
 

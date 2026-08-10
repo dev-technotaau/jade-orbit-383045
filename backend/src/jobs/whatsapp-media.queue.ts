@@ -1,7 +1,6 @@
 import { Queue } from 'bullmq';
 import { redis } from '../config/redis';
 import logger from '../config/logger';
-import { injectTraceContext } from '../utils/trace-propagation';
 
 export const WHATSAPP_MEDIA_QUEUE_NAME = 'whatsapp-media-queue';
 
@@ -35,6 +34,5 @@ export async function addWhatsappMediaJob(data: {
 }) {
   return whatsappMediaQueue.add('archive-inbound-media', {
     ...data,
-    _traceContext: injectTraceContext(),
   });
 }

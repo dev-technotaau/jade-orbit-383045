@@ -1,10 +1,5 @@
-// Sentry must be imported first before any other modules
-// CI trigger: re-run after Sentry token rotation (2026-05-11)
-// Build marker: WhatsApp release image rebuild (2026-06-29)
-import './instrument';
 import type { Application, Request, Response } from 'express';
 import express, { Router } from 'express';
-import * as Sentry from '@sentry/node';
 import cors from 'cors';
 import helmet from 'helmet';
 import compression from 'compression';
@@ -39,7 +34,6 @@ import { xssSanitize } from './middleware/xss-sanitize';
 import { enforceContentType } from './middleware/content-type';
 import { ddosProtection } from './middleware/ddos-protection';
 import { waf } from './middleware/waf';
-import { Role } from '@prisma/client';
 
 // Security middleware
 app.use(requestId()); // Add request ID for tracing
@@ -52,15 +46,16 @@ app.use(
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
-        scriptSrc: ["'self'", "'unsafe-eval'", 'https://challenges.cloudflare.com'], // Allow Cloudflare Turnstile
-        frameSrc: ["'self'", 'https://challenges.cloudflare.com'], // Allow Turnstile iframe
+        scriptSrc: ["'self'", "'unsafe-eval'"],
+        frameSrc: ["'self'"],
         frameAncestors: ["'none'"], // Modern CSP3 replacement for X-Frame-Options: DENY
         imgSrc: [
           "'self'",
           'data:',
-          'https://res.cloudinary.com',
-          'https://assets.hireadda.in', // R2 custom domain
-          'https://hireadda.in', // wordmark logo loaded by /api/* HTML pretty-pages
+          // R2 public bucket, when a custom domain is configured. Was hardcoded
+          // to assets.hireadda.in; the pretty-pages' remote wordmark that also
+          // needed hireadda.in here is now an inline data-URL, so it is gone.
+          ...(env.R2_PUBLIC_URL ? [env.R2_PUBLIC_URL] : []),
         ],
         objectSrc: ["'none'"],
         upgradeInsecureRequests: [],
@@ -156,31 +151,8 @@ app.get('/l/:code', async (req: Request, res: Response) => {
   }
 });
 
-// ----------------------------------------------------------
-// Public email tracking + unsubscribe endpoints — open pixel, click redirect,
-// and RFC 8058 one-click unsubscribe. Mounted here (BEFORE CSRF + the API rate
-// limiter) next to the other public webhook routes; covered by the ingress
-// ModSecurity `/api/v1/webhooks/` exemption. No auth — these are the tracking
-// URLs embedded in outbound campaign mail (HMAC-signed tokens are the guard).
-// ----------------------------------------------------------
-
-// ----------------------------------------------------------
-// Twilio SMS delivery receipts — mounted HERE, before the API rate limiter
-// and the CSRF layer, because Twilio has no credential to present. The
-// handler verifies the X-Twilio-Signature instead.
-//
-// Its own urlencoded parser: Twilio POSTs application/x-www-form-urlencoded
-// and the global parser is mounted further down, so without this req.body
-// would be empty and every receipt silently ignored.
-// ----------------------------------------------------------
 // Apply rate limits
 app.use('/api', apiLimiter);
-
-// ----------------------------------------------------------
-// Razorpay webhook — MUST be mounted BEFORE the global JSON parser so
-// the raw bytes survive HMAC verification. CSRF is bypassed (signature is
-// the auth). Idempotent at the DB layer (RazorpayWebhookEvent.razorpayEventId).
-// ----------------------------------------------------------
 
 // WhatsApp outbound proxy (optional Chatwoot bridge) — own JSON parser, gated by
 // the X-Bridge-Secret header. Lets a self-hosted Chatwoot send through us.
@@ -238,7 +210,7 @@ if (env.NODE_ENV === 'development') {
 // Swagger API docs (protected in production)
 const swaggerSetup = swaggerUi.setup(swaggerSpec, {
   customCss: '.swagger-ui .topbar { display: none }',
-  customSiteTitle: 'Hire Adda API Docs',
+  customSiteTitle: 'WhatsApp Module API Docs',
 });
 if (env.NODE_ENV === 'production') {
   // Was protect + restrictTo(ADMIN, SUPER_ADMIN). With no users or roles, the
@@ -272,60 +244,15 @@ app.get('/api/csrf-token', (req: Request, res: Response) => {
   res.json({ csrfToken });
 });
 
-// Public config endpoints (Frontend fetches to stay in sync with backend env)
-import {
-  getOtpExpiryMinutes,
-  getOtpLength,
-  getOtpMaxResendAttempts,
-  getOtpResendCooldown,
-  getPasswordMinLength,
-  getPasswordMaxLength,
-  getPasswordRequireUppercase,
-  getPasswordRequireLowercase,
-  getPasswordRequireNumber,
-  getPasswordRequireSpecial,
-  getMaxLoginAttempts,
-  getAccountLockDuration,
-  getSessionTimeout,
-  getPasswordResetExpiryHours,
-  getPasswordResetMaxAttempts,
-  getMaxSessionsPerUser,
-} from './config/env';
-
-app.get('/api/config/otp', (_req: Request, res: Response) => {
-  res.json({
-    length: getOtpLength(),
-    resendCooldown: getOtpResendCooldown(),
-    expiry: getOtpExpiryMinutes() * 60,
-    maxResendAttempts: getOtpMaxResendAttempts(),
-  });
-});
-
-app.get('/api/config/security', (_req: Request, res: Response) => {
-  res.json({
-    password: {
-      minLength: getPasswordMinLength(),
-      maxLength: getPasswordMaxLength(),
-      requireUppercase: getPasswordRequireUppercase(),
-      requireLowercase: getPasswordRequireLowercase(),
-      requireNumber: getPasswordRequireNumber(),
-      requireSpecial: getPasswordRequireSpecial(),
-    },
-    account: {
-      maxLoginAttempts: getMaxLoginAttempts(),
-      lockDurationMinutes: getAccountLockDuration(),
-      sessionTimeoutHours: getSessionTimeout(),
-      maxSessionsPerUser: getMaxSessionsPerUser(),
-      passwordResetExpiryHours: getPasswordResetExpiryHours(),
-      passwordResetMaxAttempts: getPasswordResetMaxAttempts(),
-    },
-  });
-});
+// The host platform served /api/config/otp and /api/config/security here so the
+// signup + login forms could mirror backend OTP and password policy. There are
+// no such forms — one app password, no accounts — and nothing called either
+// endpoint. Removed along with the 18 getters in config/env.ts that fed them.
 
 // Internal cluster-only routes — mounted BEFORE doubleCsrfProtection because
 // AlertManager (and other in-cluster callers) can't carry a CSRF token. The
 // /api/v1/internal/* prefix is locked down at the NetworkPolicy layer (only
-// pods in `monitoring` / `hire-adda` namespaces can reach backend:5000), so
+// pods in a monitoring namespace can reach backend:5000), so
 // CSRF on top would be both impossible and redundant.
 
 // Protect all state-changing API routes
@@ -353,8 +280,6 @@ app.use((req: Request, res: Response, next) => {
 });
 
 // Maintenance mode check (after health routes so probes still work)
-import { maintenanceCheck } from './middleware/maintenance';
-app.use('/api', maintenanceCheck());
 
 // Passport initialization
 
@@ -396,17 +321,10 @@ app.get('/', (req: Request, res: Response) => {
     return;
   }
   res.json({
-    message: 'Welcome to Hire Adda API',
+    message: 'WhatsApp Module API',
     docs: '/api-docs',
   });
 });
-
-// Test Sentry route (dev only)
-if (env.NODE_ENV !== 'production') {
-  app.get('/debug-sentry', (_req: Request, _res: Response) => {
-    throw new Error('Sentry test error!');
-  });
-}
 
 // API versioning enforcement — reject unsupported versions
 app.all('/api/v:version/*path', (req: Request, res: Response) => {
@@ -442,9 +360,6 @@ app.use((req: Request, res: Response) => {
   }
   res.status(404).json({ success: false, error: { message: 'Not found', code: 'NOT_FOUND' } });
 });
-
-// Sentry error handler
-Sentry.setupExpressErrorHandler(app);
 
 // Global Error Handling Middleware
 import { errorHandler } from './middleware/error';

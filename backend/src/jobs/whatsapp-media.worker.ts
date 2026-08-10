@@ -4,7 +4,6 @@ import { redis } from '../config/redis';
 import { prisma } from '../config/prisma';
 import logger from '../config/logger';
 import { WHATSAPP_MEDIA_QUEUE_NAME } from './whatsapp-media.queue';
-import { withExtractedContext, SpanKind } from '../utils/trace-propagation';
 import { archiveInboundMedia } from '../services/whatsapp-media.service';
 
 interface WhatsappMediaJobData {
@@ -24,13 +23,7 @@ export function createWhatsappMediaWorker(): Worker<WhatsappMediaJobData> {
   const worker = new Worker<WhatsappMediaJobData>(
     WHATSAPP_MEDIA_QUEUE_NAME,
     async (job: Job<WhatsappMediaJobData>) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const traceCtx = (job.data as Record<string, any>)?._traceContext || {};
-      return withExtractedContext(
-        traceCtx,
-        `bullmq.process ${job.name}`,
-        SpanKind.CONSUMER,
-        async () => {
+      return (async () => {
           const { messageId, mediaId, mime } = job.data;
           const key = await archiveInboundMedia(mediaId, mime || 'application/octet-stream');
           if (!key) {
@@ -43,8 +36,7 @@ export function createWhatsappMediaWorker(): Worker<WhatsappMediaJobData> {
             data: { mediaUrl: key },
           });
           return { archived: true, key };
-        }
-      );
+        })();
     },
     {
       connection: redis,

@@ -505,13 +505,9 @@ export async function sendReaction(
     throw new AppError(result.error?.title || 'Failed to send reaction', 502, 'WA_REACTION_FAILED');
   }
 
-  // Resolve the acting agent's display name for the "who reacted" UI.
-  const actor = actorUserId
-    ? await prisma.user
-        .findUnique({ where: { id: actorUserId }, select: { firstName: true, lastName: true } })
-        .catch(() => null)
-    : null;
-  const byName = [actor?.firstName, actor?.lastName].filter(Boolean).join(' ').trim() || 'You';
+  // The acting agent's display name for the "who reacted" UI. This used to be a
+  // User lookup; `actorUserId` is the operator label itself now.
+  const byName = actorUserId || 'You';
   const at = new Date().toISOString();
 
   const target = await prisma.waMessage.findUnique({

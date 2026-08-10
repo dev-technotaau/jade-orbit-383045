@@ -4,7 +4,6 @@ import { redis } from '../config/redis';
 import { env } from '../config/env';
 import logger from '../config/logger';
 import { SCHEDULER_QUEUE_NAME } from './scheduler.queue';
-import { withExtractedContext, SpanKind } from '../utils/trace-propagation';
 import {
   handleWaSyncTemplates,
   handleWaScheduledCampaigns,
@@ -39,13 +38,7 @@ export function createSchedulerWorker(): Worker {
   const worker = new Worker(
     SCHEDULER_QUEUE_NAME,
     async (job: Job) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const traceCtx = (job.data as Record<string, any>)?._traceContext || {};
-      return withExtractedContext(
-        traceCtx,
-        `bullmq.process ${job.name}`,
-        SpanKind.CONSUMER,
-        async () => {
+      return (async () => {
           switch (job.name) {
             case 'wa-sync-templates':
               return handleWaSyncTemplates();
@@ -69,8 +62,7 @@ export function createSchedulerWorker(): Worker {
               logger.warn(`Unknown scheduler job name: ${job.name}`);
               return null;
           }
-        }
-      );
+        })();
     },
     {
       connection: redis,

@@ -601,5 +601,70 @@ model WaConversion {
 }
 
 // ============================================================================
-// EMAIL SYSTEM (super-admin operated bulk/marketing email — mirrors WhatsApp)
+// OPERATIONS — audit trail + outbound webhooks
 // ============================================================================
+
+/// Tamper-evident action log. `performedBy` is the free-text operator label
+/// (OPERATOR_LABEL), not a foreign key — the host platform related this to its
+/// User table, which no longer exists. `checksum` is a SHA-256 over the entry
+/// so tampering is detectable (see audit.service.verifyIntegrity).
+model AuditLog {
+  id          String   @id @default(uuid())
+  action      String /// e.g. "WA_BULK_CONTACTS"
+  entity      String /// e.g. "WaContact"
+  entityId    String?
+  performedBy String? /// operator label
+  details     Json?
+  ipAddress   String?
+  userAgent   String?
+  checksum    String?
+  isArchived  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@index([performedBy])
+  @@index([action])
+  @@index([entity])
+  @@index([createdAt])
+}
+
+/// Outbound webhook subscription. WhatsApp events fan out through these — see
+/// whatsapp-events.service.ts, which calls webhookService.dispatch(). `userId`
+/// is retained as a plain ownership label (no FK) so the service's scoping
+/// queries keep working with a single operator.
+model WebhookEndpoint {
+  id              String    @id @default(cuid())
+  userId          String /// operator label
+  url             String
+  secret          String
+  events          String[]
+  isActive        Boolean   @default(true)
+  description     String?
+  failureCount    Int       @default(0)
+  lastTriggeredAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  deliveries WebhookDelivery[]
+
+  @@index([userId])
+  @@index([isActive])
+}
+
+/// One delivery attempt of one event to one endpoint.
+model WebhookDelivery {
+  id         String   @id @default(cuid())
+  webhookId  String
+  event      String
+  payload    Json
+  statusCode Int?
+  response   String?
+  success    Boolean  @default(false)
+  attempt    Int      @default(1)
+  error      String?
+  createdAt  DateTime @default(now())
+
+  webhook WebhookEndpoint @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+
+  @@index([webhookId])
+  @@index([createdAt])
+}

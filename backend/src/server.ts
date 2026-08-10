@@ -1,12 +1,10 @@
 // Trigger CI/CD rebuild: refresh GHCR credentials after VPS reboot
 import app from './app';
 import logger from './config/logger';
-import { initTelemetry } from './config/telemetry';
 import { initializeServices, shutdownServices } from './config/service-init';
 import { initializeWorkers, closeAllWorkers } from './jobs';
 
 // Initialize OpenTelemetry (must be before other imports that need tracing)
-initTelemetry();
 
 const PORT: number = parseInt(process.env.PORT || '5000', 10);
 
@@ -57,7 +55,7 @@ const startServer = async () => {
 // Catch unhandled promise rejections
 process.on('unhandledRejection', (reason: unknown) => {
   logger.error('Unhandled Rejection:', reason);
-  // Let the process continue — Sentry will capture it
+  // Let the process continue — the error is already logged
 });
 
 // Catch uncaught exceptions — these are fatal

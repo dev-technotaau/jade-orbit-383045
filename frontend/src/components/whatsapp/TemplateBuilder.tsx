@@ -1010,7 +1010,7 @@ export default function TemplateBuilder({ onClose }: TemplateBuilderProps) {
                                   inputSize="sm"
                                   value={b.url}
                                   onChange={(e) => updateButton(b.key, { url: e.target.value })}
-                                  placeholder="https://hireadda.in/order/{{1}}"
+                                  placeholder="https://example.com/order/{{1}}"
                                 />
                                 {/\{\{1\}\}/.test(b.url) && (
                                   <Input
@@ -1020,7 +1020,7 @@ export default function TemplateBuilder({ onClose }: TemplateBuilderProps) {
                                     onChange={(e) =>
                                       updateButton(b.key, { urlExample: e.target.value })
                                     }
-                                    placeholder="https://hireadda.in/order/A1234"
+                                    placeholder="https://example.com/order/A1234"
                                   />
                                 )}
                               </>

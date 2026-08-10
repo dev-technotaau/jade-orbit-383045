@@ -32,11 +32,6 @@ function filterChips(filter: Record<string, unknown>): string[] {
     chips.push(OPT_IN_LABEL[optInStatus] ?? optInStatus);
   }
 
-  const onPlatform = filter.onPlatform;
-  if (typeof onPlatform === 'boolean') {
-    chips.push(onPlatform ? 'On platform' : 'Not on platform');
-  }
-
   return chips;
 }
 

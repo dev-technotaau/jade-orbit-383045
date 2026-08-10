@@ -39,7 +39,6 @@ export const initializeServices = async (): Promise<void> => {
   registerService('Rate Limiting', 'ready');
   registerService('DDoS Protection', 'ready');
   registerService('WAF (Web App Firewall)', 'ready');
-  registerService('Maintenance Mode', 'ready');
   registerService(
     'App Password',
     env.APP_PASSWORD ? 'ready' : 'not_configured',
@@ -100,21 +99,8 @@ export const initializeServices = async (): Promise<void> => {
       : 'META_WHATSAPP_APP_SECRET unset — inbound webhooks cannot be verified'
   );
 
-  /* ── Observability ────────────────────────────────────── */
-  registerService('Sentry', env.SENTRY_DSN ? 'ready' : 'not_configured');
-  registerService(
-    'OpenTelemetry',
-    env.OTEL_ENABLED === 'true' ? 'ready' : 'disabled',
-    env.OTEL_EXPORTER_OTLP_ENDPOINT
-  );
   registerService('Swagger API Docs', 'ready', '/api-docs');
 
-  try {
-    await import('./feature-flags');
-    registerService('Feature Flags', 'ready');
-  } catch {
-    registerService('Feature Flags', 'error');
-  }
 
   displayStartupStatus();
 };

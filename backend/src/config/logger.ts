@@ -59,7 +59,7 @@ const fileFormat = winston.format.combine(
 
 const logger = winston.createLogger({
   level: process.env.LOG_LEVEL || (isProduction ? 'info' : 'debug'),
-  defaultMeta: { service: 'hire-adda-api' },
+  defaultMeta: { service: 'whatsapp-module-api' },
   transports: [
     // Console — human-readable in dev, JSON in prod
     new winston.transports.Console({

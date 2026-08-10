@@ -1,91 +1,12 @@
-export type {
-  ApiResponse,
-  PaginatedData,
-  PaginatedResponse,
-  PaginationParams,
-  ApiError,
-  SortParams,
-} from './api';
-export type {
-  User,
-  Role,
-  LoginRequest,
-  RegisterRequest,
-  AuthResponse,
-  TokenPair,
-  ForgotPasswordRequest,
-  ResetPasswordRequest,
-  ChangePasswordRequest,
-  VerifyEmailRequest,
-  VerifyMobileRequest,
-  MfaSetupResponse,
-  MfaVerifyRequest,
-  Session,
-} from './auth';
-export type {
-  Job,
-  JobCompany,
-  JobApplication,
-  JobType,
-  JobStatus,
-  ApplicationStatus,
-  WorkMode,
-  ShiftType,
-  ExperienceLevel,
-  SalaryType,
-  EducationLevel,
-  UrgencyLevel,
-  CompanyType,
-  CreateJobRequest,
-  UpdateJobRequest,
-  JobSearchFilters,
-export type {
-  CandidateProfile,
-  CandidateDashboard,
-  CandidateSearchFilters,
-  UpdateCandidateRequest,
-  ProfileCompleteness,
-  Gender,
-  WorkStatus,
-  NoticePeriod,
-  MaritalStatus,
-  DisabilityType,
-  EducationEntry,
-  ExperienceEntry,
-  CertificationEntry,
-  ProjectEntry,
-  AwardEntry,
-  LanguageEntry,
-  SkillWithProficiency,
-export type {
-  Notification,
-  NotificationType,
-  NotificationFilters,
-  UnreadCount,
-export type {
-  AdminStats,
-  UserListItem,
-  UserDetail,
-  AuditLog,
-  AuditLogFilters,
-  AnalyticsData,
-  AnalyticsFilters,
-  SystemConfig,
-  SuspendUserRequest,
-  UpdateUserRoleRequest,
-  FlagJobRequest,
-export type {
-  VerificationRequest,
-  VerificationType,
-  VerificationStatus,
-  VerificationPriority,
-  CreateVerificationRequest,
-  ReviewVerificationRequest,
-  EscalateVerificationRequest,
-  VerificationStats,
-  VerificationFilters,
-export type {
-  SavedSearch,
-  SavedSearchType,
-  CreateSavedSearchRequest,
-  UpdateSavedSearchRequest,
+/**
+ * Type barrel.
+ *
+ * The host platform's version hand-listed types from `./jobs`, `./candidate`,
+ * `./notification`, `./admin`, `./verification` and `./saved-search`. Those
+ * modules went with the job board; re-exporting the surviving five wholesale
+ * keeps this from drifting out of date again (verified collision-free: 89
+ * distinct exports, no duplicate names).
+ */
+export * from './api';
+export * from './auth';
+export * from './whatsapp';

@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" version="1.2" baseProfile="tiny-ps" viewBox="0 0 100 100">
-  <title>Hire Adda</title>
-  <rect x="0" y="0" width="100" height="100" rx="12" ry="12" fill="#FFFFFF"/>
-  <path d="M 16 25 L 22 25 L 22 47 L 34 47 L 34 25 L 40 25 L 40 75 L 34 75 L 34 53 L 22 53 L 22 75 L 16 75 Z" fill="#F5880A"/>
-  <path d="M 52 75 L 58.5 75 L 61 65 L 77 65 L 79.5 75 L 86 75 L 73 25 L 65 25 Z M 63 59 L 69 35 L 75 59 Z" fill="#1E5CAF"/>
-</svg>

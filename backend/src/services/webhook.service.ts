@@ -3,7 +3,6 @@ import prisma from '../config/prisma';
 import logger from '../config/logger';
 import { webhookQueue } from '../jobs/webhook.queue';
 import { AppError } from '../middleware/error';
-import { isFeatureEnabled } from '../config/feature-flags';
 
 export const webhookService = {
   async register(userId: string, url: string, events: string[], description?: string) {
@@ -144,10 +143,6 @@ export const webhookService = {
   },
 
   async dispatch(event: string, payload: Record<string, unknown>) {
-    if (!(await isFeatureEnabled('enableWebhooks'))) {
-      logger.debug('Webhooks disabled via feature flag — skipping dispatch');
-      return;
-    }
 
     try {
       const webhooks = await prisma.webhookEndpoint.findMany({
@@ -192,7 +187,7 @@ export const webhookService = {
       payload: {
         event: 'test',
         timestamp: new Date().toISOString(),
-        message: 'This is a test webhook delivery from Hire Adda.',
+        message: 'This is a test webhook delivery.',
       },
     });
 

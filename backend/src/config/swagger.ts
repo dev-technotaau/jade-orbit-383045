@@ -5,13 +5,9 @@ const options: swaggerJsdoc.Options = {
   definition: {
     openapi: '3.0.0',
     info: {
-      title: 'Hire Adda API',
+      title: 'WhatsApp Module API',
       version: '1.0.0',
-      description: 'Job Portal & Recruitment Platform API Documentation',
-      contact: {
-        name: 'API Support',
-        email: 'support@hireadda.in',
-      },
+      description: 'WhatsApp Business inbox, templates and campaigns.',
     },
     servers: [
       {

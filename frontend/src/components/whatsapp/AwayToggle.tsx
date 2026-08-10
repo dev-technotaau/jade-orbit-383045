@@ -5,8 +5,6 @@ import { Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { showToast } from '@/components/ui/Toast';
 import BrandIcon from '@/components/common/BrandIcon';
-import { usePermissions } from '@/hooks/use-permissions';
-import { PERM } from '@/constants/permissions';
 import { whatsappService as svc } from '@/services/whatsapp.service';
 import type { ApiError } from '@/types/api';
 
@@ -20,17 +18,12 @@ import type { ApiError } from '@/types/api';
  */
 export default function AwayToggle() {
   const qc = useQueryClient();
-  // Permission-gated, not role-gated: this control is mounted globally in
-  // DashboardHeader and self-gates, so a role check meant a granted admin
-  // running the WhatsApp inbox could not see or change the away status even
-  // though the endpoints behind it accept them.
-  const { can } = usePermissions();
-  const canView = can(PERM.WA_SETTINGS_VIEW);
-  const canEdit = can(PERM.WA_SETTINGS_EDIT);
+  // The host platform gated this on WA_SETTINGS_VIEW / WA_SETTINGS_EDIT. There
+  // is one operator behind one app password here, so there is nothing to gate:
+  // reaching this component at all means the settings endpoints are reachable.
   const { data } = useQuery({
     queryKey: ['wa-settings'],
     queryFn: () => svc.getSettings(),
-    enabled: canView,
   });
   const settings = data?.data ?? null;
   const away = settings?.awayMode ?? false;
@@ -45,7 +38,7 @@ export default function AwayToggle() {
       showToast.error((e as unknown as ApiError).message || 'Failed to update status'),
   });
 
-  if (!canView || !settings) return null;
+  if (!settings) return null;
 
   return (
     <button
@@ -53,7 +46,7 @@ export default function AwayToggle() {
       role="switch"
       aria-checked={!away}
       onClick={() => mut.mutate(!away)}
-      disabled={mut.isPending || !canEdit}
+      disabled={mut.isPending}
       aria-label={
         away
           ? 'WhatsApp status: Away — tap to go Online'

@@ -23,9 +23,6 @@ jest.mock('../../config/logger', () => ({
   __esModule: true,
   default: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
 }));
-jest.mock('../../config/feature-flags', () => ({
-  isFeatureEnabled: jest.fn().mockResolvedValue(true),
-}));
 jest.mock('../../utils/whatsapp-realtime', () => ({ emitWa: jest.fn() }));
 // whatsapp-contact.service imports storage.service (DPDP erase) which pulls in
 // ESM-only `uuid`; mock it so this pure suite doesn't load the R2/uuid chain.

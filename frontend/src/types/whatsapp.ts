@@ -157,7 +157,8 @@ export interface WaContact {
   phone: string;
   waId: string | null;
   name: string | null;
-  userId: string | null;
+  // `userId` (the platform-account link) was dropped with the User model — see
+  // the note on WaContactLite. The API no longer returns it.
   optInStatus: WaOptInStatus;
   optInAt: string | null;
   optInSource: string | null;
@@ -186,29 +187,6 @@ export interface WaContactsPage {
  * (`numberSource` says which). `contactId`/`conversationId` are set when a
  * WhatsApp contact/conversation already exists for this user.
  */
-export interface WaPlatformUser {
-  id: string;
-  firstName: string | null;
-  lastName: string | null;
-  email: string;
-  role: 'CANDIDATE' | 'EMPLOYER' | 'ADMIN' | 'SUPER_ADMIN';
-  mobileNumber: string | null;
-  whatsappNumber: string | null;
-  isWhatsappVerified: boolean;
-  resolvedNumber: string;
-  numberSource: 'whatsapp' | 'mobile';
-  contactId: string | null;
-  conversationId: string | null;
-}
-
-export interface WaPlatformUsersPage {
-  items: WaPlatformUser[];
-  total: number;
-  page: number;
-  limit: number;
-  totalPages: number;
-}
-
 export type WaCampaignStatus =
   | 'DRAFT'
   | 'SCHEDULED'

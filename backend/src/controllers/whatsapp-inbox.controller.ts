@@ -20,7 +20,7 @@ import { getContactsForExport } from '../services/whatsapp-contact.service';
 import { scanFile } from '../utils/file-scan';
 import { safeCsvCell } from '../utils/whatsapp-csv';
 import { AppError } from '../middleware/error';
-import type { WaConversationStatus, WaOptInStatus, Role } from '@prisma/client';
+import type { WaConversationStatus, WaOptInStatus } from '@prisma/client';
 
 /** Bulk action over many conversations (archive/resolve/assign/label/snooze/markRead/status). */
 export const bulkConversations = async (
@@ -70,23 +70,13 @@ export const getConversations = async (
   next: NextFunction
 ): Promise<void> => {
   try {
-    const {
-      status,
-      assignedTo,
-      q,
-      unread,
-      onPlatform,
-      searchMessages,
-      includeArchived,
-      page,
-      limit,
-    } = req.query;
+    const { status, assignedTo, q, unread, searchMessages, includeArchived, page, limit } =
+      req.query;
     const result = await conversationService.list({
       status: (status as WaConversationStatus) || undefined,
       assignedTo: (assignedTo as string) || undefined,
       q: (q as string) || undefined,
       unreadOnly: unread === 'true',
-      onPlatform: onPlatform === 'true' ? true : onPlatform === 'false' ? false : undefined,
       searchMessages: searchMessages === 'true',
       includeArchived: includeArchived === 'true',
       page: page ? parseInt(page as string, 10) : undefined,
@@ -614,7 +604,7 @@ export const exportContacts = async (
   next: NextFunction
 ): Promise<void> => {
   try {
-    const { optInStatus, tag, blocked, onPlatform, role, q, ids } = req.query;
+    const { optInStatus, tag, blocked, q, ids } = req.query;
     // Selected-rows export: ?ids=a,b,c exports exactly those (overrides filters).
     const idList =
       typeof ids === 'string' && ids.trim()
@@ -627,20 +617,17 @@ export const exportContacts = async (
       optInStatus: (optInStatus as WaOptInStatus) || undefined,
       tag: (tag as string) || undefined,
       blocked: triBoolQ(blocked),
-      onPlatform: triBoolQ(onPlatform),
-      role: (role as Role) || undefined,
       q: (q as string) || undefined,
       ids: idList,
     });
     const csv = toCsv(
-      ['phone', 'name', 'optInStatus', 'tags', 'blocked', 'onPlatform', 'createdAt'],
+      ['phone', 'name', 'optInStatus', 'tags', 'blocked', 'createdAt'],
       contacts.map((c) => [
         c.phone,
         c.name,
         c.optInStatus,
         c.tags.join(';'),
         c.isBlocked,
-        c.userId ? 'yes' : 'no',
         c.createdAt.toISOString(),
       ])
     );

@@ -1,10 +1,11 @@
 /**
- * Prometheus metrics + optional-Sentry helper for the WhatsApp system.
+ * Prometheus metrics + the WhatsApp exception funnel.
  *
  * Metrics auto-register to prom-client's global registry, so they appear at
  * `GET /metrics` (see `src/routes/metrics.routes.ts`) without any wiring there.
  */
 import client from 'prom-client';
+import logger from '../config/logger';
 
 /**
  * `wa_messages_total` — every inbound/outbound message keyed by direction +
@@ -75,17 +76,15 @@ export const waMessagingTierLimit = new client.Gauge({
 });
 
 /**
- * Report a WhatsApp-area exception to Sentry. Sentry is optional in dev — the
- * dynamic import + try/catch means a missing/unconfigured Sentry never throws.
+ * Report a WhatsApp-area exception.
+ *
+ * This forwarded to Sentry; with the error-reporting stack removed it logs
+ * instead. Kept as a single funnel (7 call sites) so wiring a reporter back in
+ * is a one-file change.
  */
 export async function captureWaException(
   err: unknown,
   extra?: Record<string, unknown>
 ): Promise<void> {
-  try {
-    const Sentry = await import('@sentry/node');
-    Sentry.captureException(err, { tags: { area: 'whatsapp' }, extra });
-  } catch {
-    /* Sentry optional */
-  }
+  logger.error(`[whatsapp] ${(err as Error)?.message ?? String(err)}`, extra);
 }

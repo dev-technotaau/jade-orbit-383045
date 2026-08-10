@@ -1,5 +1,6 @@
 import { prisma } from '../config/prisma';
 import { AppError } from '../middleware/error';
+import { APP_ACTOR } from '../middleware/app-password';
 import { emitWa } from '../utils/whatsapp-realtime';
 import { sendReadReceipt } from './whatsapp.service';
 import type { Prisma, WaConversationStatus } from '@prisma/client';
@@ -24,7 +25,6 @@ export interface ConversationListFilters {
   assignedTo?: string;
   q?: string;
   unreadOnly?: boolean;
-  onPlatform?: boolean;
   searchMessages?: boolean;
   includeArchived?: boolean;
 }
@@ -37,8 +37,6 @@ function buildConversationListWhere(
   params: ConversationListFilters
 ): Prisma.WaConversationWhereInput {
   const contactWhere: Prisma.WaContactWhereInput = {
-    ...(params.onPlatform === true ? { userId: { not: null } } : {}),
-    ...(params.onPlatform === false ? { userId: null } : {}),
     ...(params.q
       ? {
           OR: [
@@ -85,17 +83,16 @@ export async function list(params: ConversationListFilters & { page?: number; li
       take: limit,
       include: {
         contact: {
+          // `userId` and the `user` relation (which supplied an avatar for
+          // contacts linked to a platform account) went with the User model.
+          // The Cloud API does not expose customers' profile photos, so the
+          // inbox falls back to initials.
           select: {
             id: true,
             phone: true,
             name: true,
-            userId: true,
             optInStatus: true,
             isBlocked: true,
-            // On-platform contacts link to a Hire Adda account — surface its
-            // avatar so the inbox can show a real photo (WhatsApp's Cloud API
-            // does NOT expose customers' WhatsApp profile pictures).
-            user: { select: { avatar: true } },
           },
         },
       },
@@ -203,7 +200,7 @@ export async function getById(id: string) {
   return prisma.waConversation.findUnique({
     where: { id },
     include: {
-      contact: { include: { user: { select: { avatar: true } } } },
+      contact: true,
       channel: { select: { id: true, displayPhone: true } },
     },
   });
@@ -311,32 +308,21 @@ export async function markRead(conversationId: string) {
   return conv;
 }
 
-/** Active staff users (SUPER_ADMIN/ADMIN) a conversation can be assigned to. */
+/**
+ * Agents a conversation can be assigned to.
+ *
+ * The host platform queried its User table for active SUPER_ADMIN/ADMIN staff.
+ * This module has a single operator behind one app password, so there is exactly
+ * one assignee: the operator. `assignedTo` is a free-text label, not an FK, so
+ * this list exists to give the inbox UI something to render.
+ */
 export async function listAssignableAgents() {
-  return prisma.user.findMany({
-    where: { role: { in: ['SUPER_ADMIN', 'ADMIN'] }, isActive: true, isSuspended: false },
-    select: { id: true, firstName: true, lastName: true, email: true },
-    orderBy: [{ firstName: 'asc' }, { email: 'asc' }],
-  });
+  return [{ id: APP_ACTOR.id, firstName: APP_ACTOR.id, lastName: null, email: '' }];
 }
 
 export async function assign(conversationId: string, userId: string | null) {
-  // When assigning to someone, that someone must be an active staff user
-  // (SUPER_ADMIN/ADMIN). Unassigning (null) is always allowed.
-  if (userId) {
-    const assignee = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { id: true, role: true, isActive: true, isSuspended: true },
-    });
-    if (
-      !assignee ||
-      !assignee.isActive ||
-      assignee.isSuspended ||
-      (assignee.role !== 'SUPER_ADMIN' && assignee.role !== 'ADMIN')
-    ) {
-      throw new AppError('Assignee must be an active admin user', 400, 'WA_INVALID_ASSIGNEE');
-    }
-  }
+  // `assignedTo` is a free-text operator label now — there is no user table to
+  // validate against, and no roles to check. Any label (or null) is accepted.
   const conv = await prisma.waConversation.update({
     where: { id: conversationId },
     data: { assignedTo: userId },
@@ -384,7 +370,7 @@ export async function getTranscript(conversationId: string) {
   return prisma.waConversation.findUnique({
     where: { id: conversationId },
     include: {
-      contact: { select: { id: true, phone: true, name: true, userId: true } },
+      contact: { select: { id: true, phone: true, name: true } },
       channel: { select: { id: true, displayPhone: true } },
       messages: { orderBy: { createdAt: 'asc' } },
     },

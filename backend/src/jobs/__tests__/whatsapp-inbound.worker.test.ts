@@ -76,12 +76,6 @@ jest.mock('../../utils/whatsapp-metrics', () => {
   };
 });
 
-// withExtractedContext just invokes the fn (no real OTel context); re-export
-// SpanKind so the worker's `import { ... SpanKind }` resolves.
-jest.mock('../../utils/trace-propagation', () => ({
-  withExtractedContext: (_carrier: any, _name: string, _kind: any, fn: () => any) => fn(),
-  SpanKind: { CONSUMER: 'consumer' },
-}));
 
 // ── queue stubs ─────────────────────────────────────────────────────────────
 // Mock the inbound queue module so importing the worker doesn't build a real

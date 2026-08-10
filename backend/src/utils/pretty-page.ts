@@ -16,6 +16,7 @@
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import type { Request } from 'express';
+import { env } from '../config/env';
 
 /**
  * Read the API version from package.json at runtime.
@@ -34,8 +35,8 @@ const pkg = JSON.parse(readFileSync(resolve(__dirname, '..', '..', 'package.json
 };
 
 export const API_VERSION = pkg.version;
-export const BRAND = 'Hire Adda API';
-export const BRAND_SHORT = 'Hire Adda';
+export const BRAND_SHORT = env.BRAND_NAME;
+export const BRAND = `${env.BRAND_NAME} API`;
 export const BRAND_COLOR = '#1E5CAF';
 export const BRAND_ACCENT = '#F5880A';
 
@@ -89,20 +90,13 @@ function formatUptime(seconds: number): string {
 }
 
 /**
- * Header wordmark — same logo the public site renders at hireadda.in.
- * Loaded as an <img> instead of inlined because the production wordmark
- * SVG is ~345 KB; embedding it would balloon every probe response.
+ * Inline monogram, used as a data-URL favicon.
  *
- * NOTE: requires `https://hireadda.in` in the backend's helmet CSP imgSrc
- * directive (see backend/src/app.ts) — without it the browser blocks
- * the load and the header renders empty.
- */
-const PUBLIC_LOGO_URL = 'https://hireadda.in/icons/logo.svg';
-
-/**
- * Inline "HA" monogram — used only as a data-URL favicon so the tab icon
- * works even when the public site is unreachable. Matches the BIMI mark
- * at frontend/public/icons/logo-bimi.svg.
+ * These pages are fully self-contained. The host platform's version pulled a
+ * ~345 KB wordmark and four favicon PNGs from hireadda.in, which meant every
+ * deployment of this module rendered another company's logo — and required that
+ * origin in the backend's helmet CSP imgSrc. Nothing here fetches a remote
+ * asset now, so the CSP no longer needs an exception for it.
  */
 const FAVICON_MARK = `
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" aria-hidden="true">
@@ -138,13 +132,7 @@ export function renderLayout(args: LayoutArgs): string {
 <meta name="color-scheme" content="light dark">
 ${meta}
 <title>${escape(args.title)} · ${escape(BRAND)}</title>
-<!-- Favicon: mirrors hireadda.in's public stack so the tab icon matches.
-     Inline SVG monogram is listed last as a self-contained fallback for
-     when the public site is unreachable — kept tiny (~500 bytes). -->
-<link rel="icon" type="image/png" sizes="16x16" href="https://hireadda.in/favicon-16x16.png">
-<link rel="icon" type="image/png" sizes="32x32" href="https://hireadda.in/favicon-32x32.png">
-<link rel="icon" type="image/png" sizes="48x48" href="https://hireadda.in/favicon-48x48.png">
-<link rel="apple-touch-icon" sizes="180x180" href="https://hireadda.in/apple-icon.png">
+<!-- Inline SVG monogram — self-contained, no remote fetch (~500 bytes). -->
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,${encodeURIComponent(FAVICON_MARK)}">
 <style>
 ${BASE_CSS}
@@ -153,7 +141,7 @@ ${BASE_CSS}
 <body>
 <header class="site-header">
   <a class="brand" href="/">
-    <img class="logo" src="${PUBLIC_LOGO_URL}" alt="${escape(BRAND_SHORT)}" width="205" height="48" />
+    <span class="logo">${escape(BRAND_SHORT)}</span>
     <span class="brand-tag">API</span>
   </a>
   <nav class="site-nav" aria-label="API navigation">
@@ -162,7 +150,6 @@ ${BASE_CSS}
     <a href="/health/ready">Ready</a>
     <a href="/metrics">Metrics</a>
     <a href="/api-docs">API Docs</a>
-    <a href="https://hireadda.in" class="external">hireadda.in ↗</a>
   </nav>
 </header>
 
@@ -186,10 +173,6 @@ ${BASE_CSS}
       <a href="/api-docs">OpenAPI</a>
       <span>·</span>
       <a href="/metrics">Prometheus</a>
-      <span>·</span>
-      <a href="https://hireadda.in/site-map">Site Map</a>
-      <span>·</span>
-      <a href="https://hireadda.in/.well-known/security.txt">security.txt</a>
     </div>
   </div>
 </footer>
@@ -237,7 +220,7 @@ a:hover{text-decoration:underline}
 }
 .brand{display:flex;align-items:center;gap:10px;color:inherit}
 .brand:hover{text-decoration:none}
-.logo{height:36px;width:auto;flex:none;display:block}
+.logo{font-size:18px;font-weight:700;letter-spacing:-.01em;flex:none;display:block}
 .brand-tag{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;
   color:var(--text-muted);padding:3px 8px;border:1px solid var(--border);border-radius:6px;
   background:var(--muted-bg);line-height:1}
@@ -301,9 +284,8 @@ code{font-family:var(--mono);font-size:13px;background:var(--muted-bg);padding:2
 export function renderRootPage(): string {
   const body = `
 <p class="subtitle" style="margin-bottom:24px">
-  This is the ${escape(BRAND_SHORT)} backend service. Public product lives at
-  <a href="https://hireadda.in">hireadda.in</a>. Start with the OpenAPI docs or
-  check live health below.
+  This is the ${escape(BRAND_SHORT)} backend service. Start with the OpenAPI
+  docs or check live health below.
 </p>
 
 <h2>Quick Links</h2>
@@ -325,7 +307,7 @@ export function renderRootPage(): string {
   </a>
   <a class="link-card" href="/health/ready">
     <span class="link-card-label">Readiness Probe</span>
-    <span class="link-card-desc">Ready to serve traffic? DB + Redis + Kafka lag</span>
+    <span class="link-card-desc">Ready to serve traffic? DB + Redis</span>
     <span class="link-card-path">/health/ready</span>
   </a>
   <a class="link-card" href="/metrics">
@@ -362,7 +344,7 @@ export function renderRootPage(): string {
 `;
   return renderLayout({
     title: 'Welcome',
-    subtitle: `v${API_VERSION} · REST API & realtime backend for Hire Adda`,
+    subtitle: `v${API_VERSION} · REST API & realtime backend`,
     status: { tone: 'ok', label: 'Online' },
     bodyHtml: body,
   });
@@ -485,40 +467,19 @@ export function renderLivenessPage(data: { status: string; timestamp: string }):
   });
 }
 
-/** GET /health/ready — readiness + Kafka lag. */
+/** GET /health/ready — dependency readiness. (Kafka was removed with the
+ *  host platform's event bus; the probe reports database + redis only.) */
 interface ReadinessData {
   status: 'ready' | 'not_ready';
   checks: {
     database: string;
     redis: string;
-    kafka: {
-      connected: boolean;
-      lag: Record<string, number> | null;
-      totalLag: number;
-      healthy: boolean;
-    };
   };
   timestamp: string;
 }
 
 export function renderReadinessPage(data: ReadinessData): string {
   const overallTone: StatusTone = data.status === 'ready' ? 'ok' : 'warn';
-  const kafka = data.checks.kafka;
-  const kafkaTone: StatusTone = !kafka.connected ? 'muted' : kafka.healthy ? 'ok' : 'warn';
-  const kafkaLabel = !kafka.connected ? 'disconnected' : kafka.healthy ? 'healthy' : 'lagging';
-
-  const lagRows = kafka.lag
-    ? Object.entries(kafka.lag)
-        .map(
-          ([topic, count]) => `
-<div class="card">
-  <div class="card-title">${escape(topic)}</div>
-  <div class="card-value">${count.toLocaleString()}</div>
-  <div class="card-sub">consumer lag (messages)</div>
-</div>`
-        )
-        .join('')
-    : '<div class="card"><p style="margin:0;color:var(--text-muted)">No Kafka lag data available.</p></div>';
 
   const body = `
 <h2>Core Dependencies</h2>
@@ -533,15 +494,7 @@ export function renderReadinessPage(data: ReadinessData): string {
     <div class="card-value">${data.checks.redis === 'up' ? '✓' : '✕'}</div>
     <div class="card-sub">cache + BullMQ</div>
   </div>
-  <div class="card">
-    <div class="card-head"><div class="card-title">Kafka</div>${pill({ tone: kafkaTone, label: kafkaLabel })}</div>
-    <div class="card-value">${kafka.totalLag >= 0 ? kafka.totalLag.toLocaleString() : '—'}</div>
-    <div class="card-sub">total consumer lag across topics</div>
-  </div>
 </div>
-
-<h2>Per-Topic Kafka Lag</h2>
-<div class="grid">${lagRows}</div>
 
 <h2>Raw JSON</h2>
 <div class="card">
@@ -577,11 +530,6 @@ export function renderNotFoundPage(path: string): string {
     <span class="link-card-label">Check service health</span>
     <span class="link-card-desc">Dependency status + system metrics</span>
     <span class="link-card-path">/health</span>
-  </a>
-  <a class="link-card" href="https://hireadda.in">
-    <span class="link-card-label">Public website</span>
-    <span class="link-card-desc">This is the backend — humans probably want the app</span>
-    <span class="link-card-path">hireadda.in</span>
   </a>
 </div>
 `;

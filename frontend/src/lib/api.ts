@@ -1,6 +1,5 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
 import type { ApiError } from '@/types/api';
-import { useMaintenanceStore } from '@/store/maintenance.store';
 import { broadcastLogout } from '@/lib/auth-channel';
 
 /** Raw error body shape returned by the backend — supports both legacy and new formats */
@@ -111,20 +110,9 @@ api.interceptors.response.use(
       return api(originalRequest);
     }
 
-    // Handle 503 Service Unavailable — maintenance mode
-    if (error.response?.status === 503) {
-      const errorData = error.response.data as RawErrorBody;
-      if (errorData?.error?.code === 'MAINTENANCE_MODE') {
-        useMaintenanceStore
-          .getState()
-          .setMaintenanceMode(
-            true,
-            errorData?.error?.message,
-            errorData?.error?.estimatedReturnTime,
-          );
-      }
-      return Promise.reject(transformError(error));
-    }
+    // A 503 used to flip a maintenance store that swapped the whole app for a
+    // maintenance page. That was a public-product affordance; this is an
+    // internal operator tool, so a 503 surfaces like any other error.
 
     // 401 after BFF already tried refresh — retry once before giving up.
     // During rolling restarts, the first 401 may be transient (pod switchover).

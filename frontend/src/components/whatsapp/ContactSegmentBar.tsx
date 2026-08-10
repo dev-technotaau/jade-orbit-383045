@@ -14,15 +14,13 @@ import type { ApiError } from '@/types/api';
 /** The contact category currently selected on the contacts page. */
 export interface ContactCategory {
   optInStatus?: string;
-  role?: string;
-  onPlatform?: string; // '' | 'on' | 'off'
   tag?: string;
 }
 
 /**
  * Saved custom-set controls for the contacts page: apply a saved Segment as a
- * quick-filter, or save the current category (role + on/off-platform + tag +
- * opt-in) as a reusable Segment — which is the same segment a campaign targets.
+ * quick-filter, or save the current category (tag + opt-in) as a reusable
+ * Segment — which is the same segment a campaign targets.
  */
 export default function ContactSegmentBar({
   current,
@@ -37,7 +35,7 @@ export default function ContactSegmentBar({
   const [saveOpen, setSaveOpen] = useState(false);
   const [name, setName] = useState('');
 
-  const hasFilter = !!(current.optInStatus || current.role || current.onPlatform || current.tag);
+  const hasFilter = !!(current.optInStatus || current.tag);
 
   const applySegment = (id: string) => {
     const seg = segments.find((s) => s.id === id);
@@ -45,8 +43,6 @@ export default function ContactSegmentBar({
     const f = ((seg.filter ?? {}) as Record<string, unknown>) || {};
     onApply({
       optInStatus: typeof f.optInStatus === 'string' ? f.optInStatus : '',
-      role: typeof f.role === 'string' ? f.role : '',
-      onPlatform: f.onPlatform === true ? 'on' : f.onPlatform === false ? 'off' : '',
       tag: Array.isArray(f.tags) && f.tags.length ? String(f.tags[0]) : '',
     });
   };
@@ -57,9 +53,6 @@ export default function ContactSegmentBar({
         name: name.trim(),
         filter: {
           ...(current.optInStatus ? { optInStatus: current.optInStatus } : {}),
-          ...(current.role ? { role: current.role } : {}),
-          ...(current.onPlatform === 'on' ? { onPlatform: true } : {}),
-          ...(current.onPlatform === 'off' ? { onPlatform: false } : {}),
           ...(current.tag ? { tags: [current.tag] } : {}),
         },
       }),
@@ -120,7 +113,7 @@ export default function ContactSegmentBar({
       >
         <div className="space-y-2">
           <p className="text-xs text-[var(--text-muted)]">
-            Saves the current category (role, on/off-platform, tag, opt-in) as a reusable segment
+            Saves the current category (tag, opt-in) as a reusable segment
             you can re-apply here or target in a campaign.
           </p>
           <Input

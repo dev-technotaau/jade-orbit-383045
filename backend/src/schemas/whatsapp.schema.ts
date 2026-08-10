@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { WaConversationStatus, WaTemplateCategory, WaOptInStatus, Role } from '@prisma/client';
+import { WaConversationStatus, WaTemplateCategory, WaOptInStatus } from '@prisma/client';
 
 export const waSendMessageSchema = z.object({
   body: z.object({
@@ -9,7 +9,9 @@ export const waSendMessageSchema = z.object({
 
 export const waAssignSchema = z.object({
   body: z.object({
-    assignedTo: z.string().uuid().nullable().optional(),
+    // A free-text operator label, not a User FK — `uuid()` here would reject the
+    // module's own OPERATOR_LABEL (default: "operator").
+    assignedTo: z.string().max(120).nullable().optional(),
   }),
 });
 
@@ -256,15 +258,14 @@ export const waBulkConversationsSchema = z.object({
     filters: z
       .object({
         status: z.nativeEnum(WaConversationStatus).optional(),
-        assignedTo: z.string().uuid().optional(),
+        assignedTo: z.string().max(120).optional(),
         q: z.string().optional(),
         unreadOnly: z.boolean().optional(),
-        onPlatform: z.boolean().optional(),
         searchMessages: z.boolean().optional(),
         includeArchived: z.boolean().optional(),
       })
       .optional(),
-    assignedTo: z.string().uuid().nullable().optional(),
+    assignedTo: z.string().max(120).nullable().optional(),
     snoozedUntil: z.string().datetime().nullable().optional(),
     label: z.string().max(40).optional(),
   }),
@@ -289,8 +290,6 @@ export const waBulkContactsSchema = z.object({
         optInStatus: z.nativeEnum(WaOptInStatus).optional(),
         tag: z.string().optional(),
         blocked: z.boolean().optional(),
-        onPlatform: z.boolean().optional(),
-        role: z.nativeEnum(Role).optional(),
         q: z.string().optional(),
       })
       .optional(),
@@ -362,7 +361,7 @@ export const waSegmentSchema = z.object({
   body: z.object({
     name: z.string().min(1).max(120),
     description: z.string().max(500).optional(),
-    // Free-form audience filter: { tags?, optInStatus?, onPlatform? }.
+    // Free-form audience filter: { tags?, optInStatus? }.
     filter: z.record(z.string(), z.unknown()),
   }),
 });

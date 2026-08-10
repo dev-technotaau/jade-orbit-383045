@@ -1,7 +1,6 @@
 import { Queue } from 'bullmq';
 import { redis } from '../config/redis';
 import logger from '../config/logger';
-import { injectTraceContext } from '../utils/trace-propagation';
 
 export const WHATSAPP_INBOUND_QUEUE_NAME = 'whatsapp-inbound-queue';
 
@@ -30,7 +29,7 @@ logger.info(`WhatsApp Inbound Queue initialized: ${WHATSAPP_INBOUND_QUEUE_NAME}`
 export async function addWhatsappInboundJob(data: { eventRowId: string }) {
   return whatsappInboundQueue.add(
     'process-webhook-event',
-    { ...data, _traceContext: injectTraceContext() },
+    { ...data },
     { jobId: data.eventRowId } // dedup at the queue layer (one job per event row)
   );
 }

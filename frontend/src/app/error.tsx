@@ -3,7 +3,6 @@
 import { useEffect } from 'react';
 import { AlertTriangle, RefreshCw, Home } from 'lucide-react';
 import Button from '@/components/ui/Button';
-import { trackEvent } from '@/lib/analytics';
 
 export default function Error({
   error,
@@ -13,8 +12,9 @@ export default function Error({
   reset: () => void;
 }) {
   useEffect(() => {
+    // The error-reporting stack (Sentry) was removed with the rest of the
+    // monitoring tooling, so this logs. Wire a reporter in here if one is added.
     console.error('Application error:', error);
-    trackEvent('page_error', 'error', error.message);
   }, [error]);
 
   return (

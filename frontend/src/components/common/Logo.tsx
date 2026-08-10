@@ -10,18 +10,21 @@ import { cn } from '@/lib/utils';
  *
  * This module is meant to be re-skinned per client, so the logo cannot be
  * assumed to exist. Resolution order:
- *   1. NEXT_PUBLIC_BRAND_LOGO (or /icons/logo.svg by default)
- *   2. NEXT_PUBLIC_BRAND_NAME rendered as a wordmark, if the image is absent
- *      or fails to load
+ *   1. NEXT_PUBLIC_BRAND_LOGO, when set to a path
+ *   2. NEXT_PUBLIC_BRAND_NAME rendered as a wordmark
  *   3. 'WhatsApp Module'
  *
- * The fallback is driven by the image's own onError, not just a missing env var,
- * so a client who deletes public/icons/logo.svg without touching config still
- * gets a readable wordmark instead of a broken-image icon.
+ * Ships with NO bundled logo — the host platform's mark was removed so no
+ * client deploys under another's branding. The wordmark is therefore the
+ * out-of-the-box default; drop a file in public/ and point BRAND_LOGO at it.
+ *
+ * Two layers of fallback: an unset/empty BRAND_LOGO skips the <Image> entirely
+ * (no 404 round-trip), and if a configured path fails to load, the image's own
+ * onError swaps in the wordmark rather than a broken-image icon.
  */
 
-const BRAND_NAME = process.env.NEXT_PUBLIC_BRAND_NAME || 'WhatsApp Module';
-const BRAND_LOGO = process.env.NEXT_PUBLIC_BRAND_LOGO || '/icons/logo.svg';
+const BRAND_NAME = process.env.NEXT_PUBLIC_BRAND_NAME || 'TechnoTaau';
+const BRAND_LOGO = process.env.NEXT_PUBLIC_BRAND_LOGO ?? '/logo.svg';
 
 interface LogoProps {
   href?: string;
@@ -44,7 +47,7 @@ const textSize = {
 export default function Logo({ href = '/whatsapp', className, size = 'md' }: LogoProps) {
   const [failed, setFailed] = useState(false);
 
-  const content = failed ? (
+  const content = failed || !BRAND_LOGO ? (
     <span
       className={cn('font-semibold tracking-tight text-[var(--text)]', textSize[size], className)}
     >

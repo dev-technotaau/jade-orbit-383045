@@ -2,11 +2,8 @@
 
 import { useEffect, useSyncExternalStore, useCallback, useRef } from 'react';
 import { io, type Socket } from 'socket.io-client';
-import { useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '@/store/auth.store';
-import { QUERY_KEYS } from '@/constants/config';
 import { APP_CONFIG } from '@/constants/config';
-import { showToast } from '@/components/ui/Toast';
 
 let globalSocket: Socket | null = null;
 let socketState: 'disconnected' | 'connecting' | 'connected' = 'disconnected';
@@ -44,7 +41,6 @@ async function fetchSocketToken(): Promise<string | null> {
 }
 
 export function useSocket() {
-  const queryClient = useQueryClient();
   const socket = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const tokenRef = useRef<string | null>(null);
@@ -130,16 +126,11 @@ export function useSocket() {
         }
       });
 
-      newSocket.on('notification', (data: { title: string; message: string }) => {
-        showToast.info(`${data.title}: ${data.message}`);
-        queryClient.invalidateQueries({ queryKey: QUERY_KEYS.NOTIFICATIONS.UNREAD_COUNT });
-        queryClient.invalidateQueries({ queryKey: QUERY_KEYS.NOTIFICATIONS.LIST });
-      });
-
-      newSocket.on('application_update', () => {
-        queryClient.invalidateQueries({ queryKey: QUERY_KEYS.JOBS.APPLIED });
-        queryClient.invalidateQueries({ queryKey: QUERY_KEYS.JOBS.LIST });
-      });
+      // The host platform also listened for `notification` and
+      // `application_update` here. This backend emits exactly four events —
+      // wa:message, wa:status, wa:conversation, wa:campaign — so both were dead
+      // listeners for events that can never fire. WhatsApp events are consumed
+      // by the components that need them (see Sidebar, inbox).
 
       globalSocket = newSocket;
       notifyListeners();
@@ -155,7 +146,7 @@ export function useSocket() {
       }
       // Don't disconnect existing sockets on unmount — keep alive for app lifecycle
     };
-  }, [isAuthenticated, queryClient]);
+  }, [isAuthenticated]);
 
   const emit = useCallback((event: string, data?: unknown) => {
     globalSocket?.emit(event, data);

@@ -5,7 +5,7 @@ import { env } from '../config/env';
 import logger from '../config/logger';
 import { WHATSAPP_QUEUE_NAME } from './whatsapp.queue';
 import { sendWhatsAppMessage } from '../services/whatsapp.service';
-import { withExtractedContext, SpanKind } from '../utils/trace-propagation';
+import { oneLineParam } from '../utils/whatsapp-template-params';
 
 interface WhatsAppJobData {
   to: string;
@@ -15,12 +15,18 @@ interface WhatsAppJobData {
   params?: string[];
 }
 
-/** Convert a flat params array to Meta WhatsApp components format */
+/**
+ * Convert a flat params array to Meta WhatsApp components format.
+ *
+ * Values go through `oneLineParam` because Meta rejects the whole send if any
+ * parameter carries a newline, tab, or 4+ consecutive spaces — see
+ * utils/whatsapp-template-params.ts.
+ */
 function paramsToComponents(params: string[]): any[] {
   return [
     {
       type: 'body',
-      parameters: params.map((text) => ({ type: 'text', text })),
+      parameters: params.map((text) => ({ type: 'text', text: oneLineParam(text) })),
     },
   ];
 }
@@ -29,12 +35,7 @@ export function createWhatsappWorker(): Worker<WhatsAppJobData> {
   const worker = new Worker<WhatsAppJobData>(
     WHATSAPP_QUEUE_NAME,
     async (job: Job<WhatsAppJobData>) => {
-      const traceCtx = (job.data as Record<string, any>)?._traceContext || {};
-      return withExtractedContext(
-        traceCtx,
-        `bullmq.process ${job.name}`,
-        SpanKind.CONSUMER,
-        async () => {
+      return (async () => {
           const TIMEOUT_MS = 30_000;
           const timeoutId = setTimeout(() => {
             /* safety net */
@@ -77,8 +78,7 @@ export function createWhatsappWorker(): Worker<WhatsAppJobData> {
           } finally {
             clearTimeout(timeoutId);
           }
-        }
-      );
+        })();
     },
     {
       connection: redis,

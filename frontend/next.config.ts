@@ -1,4 +1,3 @@
-import { withSentryConfig } from '@sentry/nextjs';
 import type { NextConfig } from 'next';
 
 /**
@@ -18,15 +17,43 @@ import type { NextConfig } from 'next';
  */
 const STATIC_ASSET_CACHE = 'public, max-age=86400, stale-while-revalidate=604800';
 
+/**
+ * Where browsers send CSP / NEL violation reports.
+ *
+ * These were hardcoded to `https://api.hireadda.in/api/csp-report`, so a client
+ * deploying this module would have shipped its users' CSP and network-error
+ * reports to a third party. Now it points at this app's own origin, which
+ * serves the collector at src/app/api/csp-report/route.ts.
+ *
+ * The Reporting-Endpoints header requires absolute URLs, so this is derived
+ * from NEXT_PUBLIC_APP_URL at build time.
+ */
+const REPORT_URI = `${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/csp-report`;
+
+/**
+ * Remote image hosts allowed by next/image.
+ *
+ * The host platform hardcoded Cloudinary, its own R2 domain and Google avatar
+ * CDN. WhatsApp media is streamed through the backend on this origin, so the
+ * only external host a deployment might need is its own R2 bucket.
+ */
+const R2_PUBLIC_HOST = (() => {
+  try {
+    return process.env.NEXT_PUBLIC_R2_PUBLIC_URL
+      ? new URL(process.env.NEXT_PUBLIC_R2_PUBLIC_URL).hostname
+      : '';
+  } catch {
+    return '';
+  }
+})();
+
 const nextConfig: NextConfig = {
   reactCompiler: true,
   output: 'standalone',
   images: {
-    remotePatterns: [
-      { protocol: 'https', hostname: 'res.cloudinary.com' },
-      { protocol: 'https', hostname: 'assets.hireadda.in' },
-      { protocol: 'https', hostname: 'lh3.googleusercontent.com' },
-    ],
+    remotePatterns: R2_PUBLIC_HOST
+      ? [{ protocol: 'https' as const, hostname: R2_PUBLIC_HOST }]
+      : [],
     formats: ['image/avif', 'image/webp'],
     minimumCacheTTL: 60 * 60 * 24 * 30, // 30 days
   },
@@ -51,61 +78,38 @@ const nextConfig: NextConfig = {
           // the two path-scoped rules at the end of this array, so that a
           // given path never receives the header twice (duplicate CORP is
           // treated as invalid and fails closed).
-          // Cross-Origin-Opener-Policy — top-level browsing-context
-          // isolation. `same-origin-allow-popups` because the OAuth
-          // flow opens Google/LinkedIn windows that we re-attach via
-          // postMessage; strict same-origin would break that flow.
+          // Cross-Origin-Opener-Policy — top-level browsing-context isolation.
+          // `same-origin-allow-popups` rather than plain `same-origin`: the
+          // host platform needed it for Google/LinkedIn OAuth popups, and it is
+          // kept because strict same-origin severs `window.opener` for any
+          // popup, which would break a future OAuth or payment window.
           { key: 'Cross-Origin-Opener-Policy', value: 'same-origin-allow-popups' },
-          // NOT setting COEP — `require-corp` would break Cloudinary
-          // images, Firebase auth iframes, and Stripe-hosted forms,
-          // none of which ship CORP headers we control. Re-evaluate
-          // when SharedArrayBuffer / cross-origin isolated APIs are
-          // actually needed.
+          // NOT setting COEP — `require-corp` would require CORP headers on
+          // every cross-origin subresource (an R2 bucket, if one is configured).
+          // Re-evaluate if cross-origin isolated APIs are ever needed.
           {
             key: 'Permissions-Policy',
-            // Delegations to cross-origin iframes:
-            //   - challenges.cloudflare.com → picture-in-picture +
-            //     xr-spatial-tracking. Turnstile probes these on load
-            //     and the console floods with denial warnings otherwise;
-            //     the widget doesn't actually use them.
-            //   - api.razorpay.com → payment + accelerometer + gyroscope.
-            //     Razorpay's risk-detection bundle (`loader.min.js`) runs
-            //     device-motion biometrics inside the checkout iframe and
-            //     the Payment Request API is needed for UPI / card flows.
-            //     Without these the overlay still works but emits red
-            //     "Permissions policy violation" entries on every checkout.
-            // Both origins are already in `frame-src` of the CSP, so no
-            // new security surface — we're just letting the iframes use
-            // features they need.
+            // Razorpay and Turnstile delegations went with the billing system
+            // and the CAPTCHA layer; nothing here needs a cross-origin grant.
             value:
-              'camera=(), microphone=(self), geolocation=(self), payment=(self "https://api.razorpay.com"), usb=(), serial=(), bluetooth=(), accelerometer=(self "https://api.razorpay.com"), gyroscope=(self "https://api.razorpay.com"), magnetometer=(), midi=(), publickey-credentials-get=(self), publickey-credentials-create=(self), interest-cohort=(), browsing-topics=(), clipboard-read=(self), clipboard-write=(self), display-capture=(), fullscreen=(self), picture-in-picture=(self "https://challenges.cloudflare.com"), screen-wake-lock=(self), web-share=(self), xr-spatial-tracking=(self "https://challenges.cloudflare.com"), gamepad=(), hid=(), idle-detection=(), local-fonts=(), storage-access=(self)',
+              'camera=(), microphone=(self), geolocation=(), payment=(), usb=(), serial=(), bluetooth=(), accelerometer=(), gyroscope=(), magnetometer=(), midi=(), publickey-credentials-get=(self), publickey-credentials-create=(self), interest-cohort=(), browsing-topics=(), clipboard-read=(self), clipboard-write=(self), display-capture=(), fullscreen=(self), picture-in-picture=(self), screen-wake-lock=(self), web-share=(self), xr-spatial-tracking=(self), gamepad=(), hid=(), idle-detection=(), local-fonts=(), storage-access=(self)',
           },
           {
             key: 'Strict-Transport-Security',
             value: 'max-age=63072000; includeSubDomains; preload',
           },
-          // Reporting endpoint signal — browsers send CSP / NEL reports
-          // to this group. `default` is the standard group name.
-          //
-          // Targets the API origin, matching CSP's own report-uri and the
-          // runtime override in proxy.ts. These previously pointed at the app
-          // origin while CSP pointed at the API origin — both endpoints exist
-          // and return 204, so nothing was lost, but the split made reports
-          // land in two different places. For NEL specifically the API origin
-          // is also the better target: a network error reaching hireadda.in is
-          // likelier to be reportable via a different host.
+          // Reporting endpoint signal — browsers send CSP / NEL reports to this
+          // group. `default` is the standard group name. See REPORT_URI above.
           {
             key: 'Reporting-Endpoints',
-            value:
-              'default="https://api.hireadda.in/api/csp-report", csp-endpoint="https://api.hireadda.in/api/csp-report", nel-endpoint="https://api.hireadda.in/api/csp-report"',
+            value: `default="${REPORT_URI}", csp-endpoint="${REPORT_URI}", nel-endpoint="${REPORT_URI}"`,
           },
           // Report-To — older Reporting v0 header. Older Chromium /
           // Safari only consume Report-To; both ship together for
           // maximum browser coverage.
           {
             key: 'Report-To',
-            value:
-              '{"group":"default","max_age":10886400,"endpoints":[{"url":"https://api.hireadda.in/api/csp-report"}],"include_subdomains":true}',
+            value: `{"group":"default","max_age":10886400,"endpoints":[{"url":"${REPORT_URI}"}],"include_subdomains":true}`,
           },
           // Network Error Logging — when a request fails (DNS, TCP, TLS,
           // 5xx), browsers send a structured report to the reporting
@@ -120,8 +124,10 @@ const nextConfig: NextConfig = {
           // browser DevTools Network panel. The CORS allow-list lets
           // client-side WebVitals read the values.
           { key: 'Timing-Allow-Origin', value: '*' },
-          // Tk — Tracking Status. We don't track DNT users (see
-          // /.well-known/dnt-policy.txt), so `N` = not tracking.
+          // Tk — Tracking Status. `N` = not tracking. (The host platform paired
+          // this with a /.well-known/dnt-policy.txt; that file was a
+          // site-operator artifact and is gone, but the signal is still true —
+          // this module has no analytics or advertising trackers at all.)
           { key: 'Tk', value: 'N' },
           // X-Robots-Tag — HTTP-layer counterpart to the page-level
           // `<meta name="robots">`. Same directives we already declare
@@ -426,77 +432,12 @@ const nextConfig: NextConfig = {
       //   permanent: true,
       // },
 
-      // ── WWW → apex normalization ───────────────────────────────────────
-      // Cloudflare handles this at the edge when proxying, but keep a
-      // fallback in case CF is bypassed (direct origin access, misconfig).
-      // 308 preserves the request method (unlike 301 which downgrades to GET).
-      {
-        source: '/:path*',
-        has: [{ type: 'host', value: 'www.hireadda.in' }],
-        destination: 'https://hireadda.in/:path*',
-        permanent: true,
-      },
-
-      // ── HTTP → HTTPS fallback ──────────────────────────────────────────
-      // HSTS + Cloudflare handle this. This is a safety net for the first
-      // request from a fresh browser that hasn't seen the HSTS header yet.
-      // (Next.js middleware can't do protocol-based redirects directly;
-      // this relies on the `x-forwarded-proto` header from the proxy.)
-      //
-      // Left commented because Cloudflare already enforces — enabling here
-      // would cause redirect loops. Uncomment only if CF is ever removed.
-      //
-      // {
-      //   source: '/:path*',
-      //   has: [{ type: 'header', key: 'x-forwarded-proto', value: 'http' }],
-      //   destination: 'https://hireadda.in/:path*',
-      //   permanent: true,
-      // },
+      // The host platform's www→apex and http→https normalizations lived here,
+      // both hardcoded to hireadda.in. Host normalization belongs to whatever
+      // edge/platform a deployment sits behind (Vercel, Cloudflare, a load
+      // balancer), not to a module that ships to many domains.
     ];
   },
 };
 
-export default withSentryConfig(nextConfig, {
-  // For all available options, see:
-  // https://www.npmjs.com/package/@sentry/webpack-plugin#options
-
-  org: 'technotaau-rn',
-
-  project: 'hire-adda-web',
-
-  // Only print logs for uploading source maps in CI
-  silent: !process.env.CI,
-
-  // Don't fail the build when sourcemap upload errors (expired/invalid
-  // SENTRY_AUTH_TOKEN, transient API failure). Sourcemaps are an
-  // observability enhancement — the deploy itself shouldn't block on them.
-  errorHandler: (err) => {
-    console.warn('[sentry] sourcemap upload failed (non-fatal):', err.message);
-  },
-
-  // For all available options, see:
-  // https://docs.sentry.io/platforms/javascript/guides/nextjs/manual-setup/
-
-  // Upload a larger set of source maps for prettier stack traces (increases build time)
-  widenClientFileUpload: true,
-
-  // Route browser requests to Sentry through a Next.js rewrite to circumvent ad-blockers.
-  // This can increase your server load as well as your hosting bill.
-  // Note: Check that the configured route will not match with your Next.js middleware, otherwise reporting of client-
-  // side errors will fail.
-  tunnelRoute: '/monitoring',
-
-  webpack: {
-    // Enables automatic instrumentation of Vercel Cron Monitors. (Does not yet work with App Router route handlers.)
-    // See the following for more information:
-    // https://docs.sentry.io/product/crons/
-    // https://vercel.com/docs/cron-jobs
-    automaticVercelMonitors: true,
-
-    // Tree-shaking options for reducing bundle size
-    treeshake: {
-      // Automatically tree-shake Sentry logger statements to reduce bundle size
-      removeDebugLogging: true,
-    },
-  },
-});
+export default nextConfig;

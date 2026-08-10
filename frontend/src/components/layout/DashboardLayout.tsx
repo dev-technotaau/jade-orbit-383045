@@ -18,6 +18,15 @@ interface DashboardLayoutProps {
    * @deprecated no longer has any effect
    */
   requiredRole?: string[];
+  /**
+   * Accepted and ignored, for the same reason as `requiredRole` — the PBAC
+   * layer this named is gone and `usePermissions` answers yes to everything.
+   * Twelve call sites still pass it; declaring it here beats editing all of
+   * them to remove a prop that costs nothing.
+   *
+   * @deprecated no longer has any effect
+   */
+  requiredPermission?: string;
 }
 
 /**

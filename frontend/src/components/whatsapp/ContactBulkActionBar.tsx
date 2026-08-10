@@ -42,8 +42,6 @@ interface ContactBulkActionBarProps {
   filters: {
     q?: string;
     optInStatus?: string;
-    role?: string;
-    onPlatform?: boolean;
     tag?: string;
   };
   onSelectAllMatching: () => void;

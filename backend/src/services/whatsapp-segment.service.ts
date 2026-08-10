@@ -4,7 +4,7 @@ import { Prisma } from '@prisma/client';
 
 /**
  * Saved, reusable audience segments — a named, persisted audience filter
- * ({ tags?, optInStatus?, onPlatform? }) that a campaign can reference instead
+ * ({ tags?, optInStatus? }) that a campaign can reference instead
  * of re-specifying its filter inline.
  */
 export async function listSegments() {

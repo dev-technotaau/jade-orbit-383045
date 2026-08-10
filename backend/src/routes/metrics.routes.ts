@@ -60,104 +60,10 @@ export const bullmqQueueFailed = new client.Gauge({
 // Billing metrics (Phase 14)
 // ──────────────────────────────────────────────────────────
 
-/**
- * `billing_payments_total` — every payment row write keyed by status + method.
- * Used to compute success rate, method mix, and failure-cause dashboards.
- */
-export const billingPaymentsTotal = new client.Counter({
-  name: 'billing_payments_total',
-  help: 'Razorpay payments by status + method',
-  labelNames: ['status', 'method'] as const,
-});
-
-/**
- * `billing_orders_total` — every order state transition keyed by plan + status.
- * Source of truth for funnel + plan-mix dashboards.
- */
-export const billingOrdersTotal = new client.Counter({
-  name: 'billing_orders_total',
-  help: 'Order state transitions by plan + status',
-  labelNames: ['plan', 'status'] as const,
-});
-
-/**
- * `billing_webhooks_total` — every Razorpay webhook delivery by event + status.
- * Catches webhook delivery failures + signature mismatches.
- */
-export const billingWebhooksTotal = new client.Counter({
-  name: 'billing_webhooks_total',
-  help: 'Razorpay webhook deliveries by event + status',
-  labelNames: ['event', 'status'] as const,
-});
-
-/**
- * `billing_revenue_paise_total` — running total of captured revenue keyed by plan.
- * Matches the dashboard `total revenue (30d)` metric over time.
- */
-export const billingRevenuePaiseTotal = new client.Counter({
-  name: 'billing_revenue_paise_total',
-  help: 'Captured revenue in paise by plan',
-  labelNames: ['plan', 'currency'] as const,
-});
-
-/**
- * `billing_subscription_renewals_total` — subscription cycles keyed by outcome.
- * outcome = succeeded | failed | retried | halted
- */
-export const billingSubscriptionRenewalsTotal = new client.Counter({
-  name: 'billing_subscription_renewals_total',
-  help: 'Subscription cycle outcomes',
-  labelNames: ['plan', 'outcome'] as const,
-});
-
-/**
- * `billing_refunds_total` — refunds keyed by reason + status.
- */
-export const billingRefundsTotal = new client.Counter({
-  name: 'billing_refunds_total',
-  help: 'Refunds by reason + status',
-  labelNames: ['reason', 'status'] as const,
-});
-
-/**
- * `billing_fraud_signals_total` — fraud detector firings keyed by signal + severity.
- */
-export const billingFraudSignalsTotal = new client.Counter({
-  name: 'billing_fraud_signals_total',
-  help: 'Fraud signals fired by detector + severity',
-  labelNames: ['signal', 'severity', 'action'] as const,
-});
-
-/**
- * `billing_entitlement_consumptions_total` — every quota consumption keyed by unit.
- * Visualises hot-spots: are users burning CV unlocks faster than expected?
- */
-export const billingEntitlementConsumptionsTotal = new client.Counter({
-  name: 'billing_entitlement_consumptions_total',
-  help: 'Resource consumptions by unit',
-  labelNames: ['unit', 'plan'] as const,
-});
-
-/**
- * `billing_active_subscriptions` — gauge of currently-active subscriptions.
- * Periodically refreshed alongside BullMQ queue gauges.
- */
-export const billingActiveSubscriptions = new client.Gauge({
-  name: 'billing_active_subscriptions',
-  help: 'Number of currently-active Razorpay subscriptions',
-  labelNames: ['plan'] as const,
-});
-
-/**
- * `billing_payment_duration_seconds` — histogram of order-create → payment.captured latency.
- * Used to detect Razorpay degradation.
- */
-export const billingPaymentDurationSeconds = new client.Histogram({
-  name: 'billing_payment_duration_seconds',
-  help: 'Latency from order creation to payment capture',
-  labelNames: ['method'] as const,
-  buckets: [1, 5, 10, 30, 60, 120, 300, 600, 1800],
-});
+// Ten billing_* counters/gauges/histograms (payments, orders, Razorpay webhook
+// deliveries, revenue, renewals, refunds, fraud signals, entitlement
+// consumption, active subscriptions, payment latency) were declared here and
+// never incremented — the billing system they measured is gone.
 
 // GET /metrics — Prometheus scrape endpoint
 router.get('/', async (_req: Request, res: Response) => {

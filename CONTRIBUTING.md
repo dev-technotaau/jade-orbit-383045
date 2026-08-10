@@ -1,6 +1,6 @@
-# Contributing to Hire Adda (Internal)
+# Contributing to the WhatsApp Cloud Module (Internal)
 
-Hire Adda is **proprietary, closed-source software**. This document is for
+This module is **proprietary, closed-source software** owned by TechnoTaau. This document is for
 authorized team members — employees, contractors, and approved collaborators
 who already have access to the private repository. Public pull requests and
 forks are not accepted; the codebase is not licensed for redistribution.
@@ -14,8 +14,8 @@ If you are not on the team and arrived here by mistake, please see the
 
 Repository access is granted by the tech lead. New team members should:
 
-1. Send your GitHub username to the tech lead at `support@hireadda.in`.
-2. Accept the GitHub invitation to the `dev-technotaau/hire-adda` org.
+1. Send your GitHub username to the tech lead at `send@technotaau.com`.
+2. Accept the GitHub invitation to the `dev-technotaau/whatsapp-cloud-module` org.
 3. Generate an SSH key and add it to your GitHub account.
 
 Do **not** mirror, clone to public hosting, or share the repository URL
@@ -26,13 +26,13 @@ outside the team.
 ## Local Setup
 
 ```bash
-git clone git@github.com:dev-technotaau/hire-adda.git
-cd hire-adda
+git clone git@github.com:dev-technotaau/whatsapp-cloud-module.git
+cd whatsapp-cloud-module
 npm install      # installs root + backend + frontend (npm workspaces)
 ```
 
-Required tooling: Node 18+, Docker, kubectl, Make. See [README.md](README.md)
-for full prerequisites and `make help` for available targets.
+Required tooling: Node 20+, plus a local PostgreSQL and Redis. See
+[README.md](README.md) for full setup.
 
 ---
 
@@ -92,15 +92,16 @@ by `@commitlint/config-conventional`. Format:
 Allowed types: `feat`, `fix`, `chore`, `docs`, `refactor`, `test`, `perf`,
 `build`, `ci`, `revert`, `style`.
 
-Allowed scopes (configured in `commitlint.config.cjs`): `backend`,
-`frontend`, `api`, `auth`, `jobs`, `candidate`, `employer`, `admin`, `db`,
-`infra`, `ci`, `deps`, `config`, `ui`, `seo`, `a11y`, `perf`, `security`.
+Allowed scopes (configured in `commitlint.config.js`): `backend`, `frontend`,
+`api`, `db`, `ci`, `deps`, `config`, `ui`, `a11y`, `perf`, `security`,
+`whatsapp`, `inbox`, `campaigns`, `templates`, `contacts`, `analytics`,
+`webhook`, `jobs` (BullMQ queues and workers — not a job board).
 
 Examples:
 
 ```
-feat(jobs): add radius filter to candidate search
-fix(auth): refresh-token leak on logout race
+feat(campaigns): add per-variant throttling to A/B sends
+fix(inbox): 24h window not reopening on inbound media
 chore(deps): bump prisma to 7.4
 ```
 
@@ -117,11 +118,11 @@ underlying lint/test failure.
   flow through the central error middleware.
 - Frontend network calls go through the typed axios client + React Query
   hooks; do not hand-roll `fetch` in components.
-- Secrets never go in committed files. Sealed via `kubeseal` for K8s, or
-  injected via env at runtime. Run `git secrets --scan` if unsure.
-- Database migrations: edit `schema.prisma`, then
-  `npm run db:migrate --workspace=backend`. Review the generated SQL
-  before merging — destructive migrations must be reviewed by tech lead.
+- Secrets never go in committed files. Inject them via environment variables
+  at runtime; `backend/.env` and `frontend/.env` are gitignored.
+- Database: this module ships no migration history and is meant to be pointed
+  at a fresh database. Create the schema with `npx prisma db push`; if you
+  later adopt migrations, generate them from that baseline.
 
 ---
 
@@ -135,7 +136,7 @@ infrastructure secrets. Do **not**:
 - Push WIP branches to public mirrors.
 - Share screen recordings of the codebase outside the team.
 
-Report a suspected leak or vulnerability to `security@hireadda.in`
+Report a suspected leak or vulnerability to `send@technotaau.com`
 immediately — do not file it as a public issue.
 
 ---

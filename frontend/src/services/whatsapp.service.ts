@@ -19,7 +19,6 @@ import type {
   WaInteractiveInput,
   WaContact,
   WaContactsPage,
-  WaPlatformUsersPage,
   WaConversation,
   WaConversationsPage,
   WaKeywordRule,
@@ -51,7 +50,6 @@ export interface WaConversationFilters {
   assignedTo?: string;
   q?: string;
   unread?: boolean;
-  onPlatform?: boolean;
   searchMessages?: boolean;
   includeArchived?: boolean;
   page?: number;
@@ -72,7 +70,6 @@ export const whatsappService = {
         assignedTo: f.assignedTo,
         q: f.q || undefined,
         unread: f.unread ? 'true' : undefined,
-        onPlatform: f.onPlatform === undefined ? undefined : f.onPlatform ? 'true' : 'false',
         searchMessages: f.searchMessages ? 'true' : undefined,
         includeArchived: f.includeArchived ? 'true' : undefined,
         page: f.page,
@@ -251,8 +248,6 @@ export const whatsappService = {
       optInStatus?: string;
       tag?: string;
       blocked?: boolean;
-      onPlatform?: boolean;
-      role?: string;
       q?: string;
       page?: number;
       limit?: number;
@@ -275,14 +270,6 @@ export const whatsappService = {
     contacts: Array<{ phone: string; name?: string; tags?: string[] }>;
   }): Promise<ApiResponse<{ created: number; updated: number; skipped: number; total: number }>> {
     const res = await api.post(API.SUPER_ADMIN.WA_CONTACT_IMPORT, body);
-    return res.data;
-  },
-
-  /** Platform User accounts reachable on WhatsApp (whatsappNumber ?? mobileNumber). */
-  async listPlatformUsers(
-    filters: { q?: string; role?: string; page?: number; limit?: number } = {},
-  ): Promise<ApiResponse<WaPlatformUsersPage>> {
-    const res = await api.get(API.SUPER_ADMIN.WA_PLATFORM_USERS, { params: filters });
     return res.data;
   },
 
@@ -530,8 +517,6 @@ export const whatsappService = {
       q?: string;
       tag?: string;
       blocked?: boolean;
-      onPlatform?: boolean;
-      role?: string;
       ids?: string[];
     } = {},
   ): Promise<void> {

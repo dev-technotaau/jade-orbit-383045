@@ -6,8 +6,8 @@
  *   - `Reporting-Endpoints` header (next.config.ts)
  *   - `report-uri` directive in CSP (proxy.ts)
  *
- * Reports are funnelled to Sentry via the standard Sentry reporting
- * API ingestion path. The shape Chromium/Firefox send is `application/
+ * Reports are logged. The Sentry pipeline they used to feed was removed with
+ * the rest of the monitoring stack. The shape Chromium/Firefox send is `application/
  * reports+json` (W3C Reporting v1) — we accept both that and the older
  * `application/csp-report` MIME for compatibility.
  *
@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Log to console — Cloud Logging / journald picks this up. In a
-    // future enhancement, forward to Sentry's reporting ingestor.
+    // future enhancement, forward these to whatever collector a deployment uses.
     if (body) {
       console.warn('[csp-report]', JSON.stringify(body).slice(0, 4_000));
     }

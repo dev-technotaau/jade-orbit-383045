@@ -18,7 +18,6 @@ import type {
   WaContact,
   WaOptInStatus,
   WaTemplateCategory,
-  Role,
 } from '@prisma/client';
 
 /** Estimated per-message cost (paise) by template category, for cost previews. */
@@ -365,19 +364,15 @@ async function resolveUploadedContacts(campaign: WaCampaign): Promise<AudienceCo
   return out;
 }
 
-/** Build the WHERE clause for a 'segment' audience filter. Supports categorizing
- *  by opt-in status, custom tags, on/off-platform, and on-platform user role. */
+/** Build the WHERE clause for a 'segment' audience filter. Categorizes by
+ *  opt-in status and custom tags. (The host platform also filtered on
+ *  on/off-platform and the linked User's role; neither exists here.) */
 function segmentWhere(campaign: WaCampaign): Prisma.WaContactWhereInput {
   const f = (campaign.audienceFilter as any) ?? {};
   return {
     isBlocked: false,
     ...(f.optInStatus ? { optInStatus: f.optInStatus as WaOptInStatus } : {}),
     ...(Array.isArray(f.tags) && f.tags.length ? { tags: { hasSome: f.tags } } : {}),
-    // On/off-platform (previously ignored here) + on-platform user role. A role
-    // filter implies on-platform (it matches via the linked User relation).
-    ...(f.onPlatform === true ? { userId: { not: null } } : {}),
-    ...(f.onPlatform === false ? { userId: null } : {}),
-    ...(f.role ? { user: { role: f.role as Role } } : {}),
   };
 }
 

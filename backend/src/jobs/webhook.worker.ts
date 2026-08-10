@@ -6,7 +6,6 @@ import logger from '../config/logger';
 import prisma from '../config/prisma';
 import { WEBHOOK_QUEUE_NAME } from './webhook.queue';
 import { webhookService } from '../services/webhook.service';
-import { withExtractedContext, SpanKind } from '../utils/trace-propagation';
 
 interface WebhookJobData {
   webhookId: string;
@@ -22,12 +21,7 @@ export function createWebhookWorker(): Worker<WebhookJobData> {
   const worker = new Worker<WebhookJobData>(
     WEBHOOK_QUEUE_NAME,
     async (job: Job<WebhookJobData>) => {
-      const traceCtx = (job.data as Record<string, any>)?._traceContext || {};
-      return withExtractedContext(
-        traceCtx,
-        `bullmq.process ${job.name}`,
-        SpanKind.CONSUMER,
-        async () => {
+      return (async () => {
           const { webhookId, url, secret, event, payload } = job.data;
 
           logger.info(`Processing webhook delivery ${job.id} to ${url} for event ${event}`);
@@ -128,8 +122,7 @@ export function createWebhookWorker(): Worker<WebhookJobData> {
           }
 
           return { success, statusCode };
-        }
-      );
+        })();
     },
     {
       connection: redis,

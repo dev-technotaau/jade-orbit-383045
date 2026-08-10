@@ -1,7 +1,7 @@
 import { prisma } from '../config/prisma';
 import { env } from '../config/env';
 import { Prisma } from '@prisma/client';
-import type { WaOptInStatus, Role } from '@prisma/client';
+import type { WaOptInStatus } from '@prisma/client';
 import { deleteFileFromR2 } from './storage.service';
 import { encryptJson, decryptJson } from '../utils/encryption';
 
@@ -53,47 +53,12 @@ export function isOptOutMessage(text: string | null | undefined): boolean {
 }
 
 /**
- * Find a platform User whose WhatsApp number (falling back to mobile number)
- * matches `phone` by digits — i.e. COALESCE(whatsappNumber, mobileNumber) = phone.
- * Only returns the user id when it is safe to link: the user must not already be
- * linked to a different contact (WaContact.userId is @unique). `excludeContactId`
- * lets the caller treat its own contact as a non-conflict during relink.
- */
-async function resolveLinkableUserId(
-  normalizedPhone: string,
-  excludeContactId?: string
-): Promise<string | null> {
-  const digits = normalizedPhone.replace(/[^\d]/g, '');
-  if (!digits) return null;
-  // Candidates whose whatsappNumber OR mobileNumber could match (E.164 stored,
-  // but compare on digits to tolerate stray formatting).
-  const candidates = await prisma.user
-    .findMany({
-      where: { OR: [{ whatsappNumber: normalizedPhone }, { mobileNumber: normalizedPhone }] },
-      select: { id: true, whatsappNumber: true, mobileNumber: true },
-    })
-    .catch(
-      () => [] as { id: string; whatsappNumber: string | null; mobileNumber: string | null }[]
-    );
-  // Apply COALESCE(whatsappNumber, mobileNumber) semantics on digits.
-  const match = candidates.find((u) => {
-    const effective = (u.whatsappNumber ?? u.mobileNumber ?? '').replace(/[^\d]/g, '');
-    return effective && effective === digits;
-  });
-  if (!match) return null;
-  // Guard the @unique userId: skip if that user already links another contact.
-  const taken = await prisma.waContact
-    .findUnique({ where: { userId: match.id }, select: { id: true } })
-    .catch(() => null);
-  if (taken && taken.id !== excludeContactId) return null;
-  return match.id;
-}
-
-/**
- * Upsert a contact by phone; best-effort link to a platform User by
- * COALESCE(whatsappNumber, mobileNumber) = phone (only if that user isn't
- * already linked to another contact). Relinks on update when the existing
- * contact has no userId yet.
+ * Upsert a contact by phone.
+ *
+ * The host platform's version also tried to link each contact to a platform
+ * `User` row by COALESCE(whatsappNumber, mobileNumber), guarding a @unique
+ * userId. There is no user table in this module — every contact is simply a
+ * phone number we talk to — so the phone IS the identity.
  */
 export async function upsertContactByPhone(
   phone: string,
@@ -102,62 +67,34 @@ export async function upsertContactByPhone(
   const normalized = normalizeWaPhone(phone);
   const existing = await prisma.waContact.findUnique({ where: { phone: normalized } });
   if (existing) {
-    // Attempt a (re)link only when the contact is currently unlinked.
-    const relinkUserId =
-      existing.userId == null ? await resolveLinkableUserId(normalized, existing.id) : null;
     const needsUpdate =
-      (!!data.name && data.name !== existing.name) ||
-      (!!data.waId && data.waId !== existing.waId) ||
-      relinkUserId != null;
+      (!!data.name && data.name !== existing.name) || (!!data.waId && data.waId !== existing.waId);
     if (!needsUpdate) return existing;
     return prisma.waContact.update({
       where: { id: existing.id },
       data: {
         ...(data.name ? { name: data.name } : {}),
         ...(data.waId ? { waId: data.waId } : {}),
-        ...(relinkUserId != null ? { userId: relinkUserId } : {}),
       },
     });
   }
 
-  const userId = await resolveLinkableUserId(normalized);
-
   return prisma.waContact.create({
-    data: { phone: normalized, name: data.name ?? null, waId: data.waId ?? null, userId },
+    data: { phone: normalized, name: data.name ?? null, waId: data.waId ?? null },
   });
-}
-
-/**
- * Best-effort: propagate a WhatsApp opt-out to the linked platform User. The
- * `User` model has no `notificationPreferences` JSON (those live on
- * CandidateProfile/CompanyProfile), so the documented WhatsApp consent marker on
- * the user is `isWhatsappVerified` — clear it so the platform stops treating the
- * number as a usable WhatsApp channel. Never throws (opt-out must not break).
- */
-async function disableUserWhatsappConsent(userId: string): Promise<void> {
-  await prisma.user
-    .update({ where: { id: userId }, data: { isWhatsappVerified: false } })
-    .catch(() => {});
 }
 
 export async function optOutContact(contactId: string) {
-  const updated = await prisma.waContact.update({
+  return prisma.waContact.update({
     where: { id: contactId },
     data: { optInStatus: 'OPTED_OUT', optOutAt: new Date() },
   });
-  // Propagate the opt-out to the linked platform User's WhatsApp consent flag.
-  if (updated.userId) {
-    await disableUserWhatsappConsent(updated.userId).catch(() => {});
-  }
-  return updated;
 }
 
 export interface ContactListFilters {
   optInStatus?: WaOptInStatus;
   tag?: string;
   blocked?: boolean;
-  onPlatform?: boolean;
-  role?: Role; // on-platform user role (candidate/employer/admin) — implies on-platform
   q?: string;
 }
 
@@ -167,9 +104,6 @@ function buildContactListWhere(filters: ContactListFilters): Prisma.WaContactWhe
     ...(filters.optInStatus ? { optInStatus: filters.optInStatus } : {}),
     ...(filters.tag ? { tags: { has: filters.tag } } : {}),
     ...(filters.blocked !== undefined ? { isBlocked: filters.blocked } : {}),
-    ...(filters.onPlatform === true ? { userId: { not: null } } : {}),
-    ...(filters.onPlatform === false ? { userId: null } : {}),
-    ...(filters.role ? { user: { role: filters.role } } : {}),
     ...(filters.q
       ? {
           OR: [
@@ -220,118 +154,6 @@ export async function listContacts(
     limit,
     totalPages: Math.ceil(total / limit),
   };
-}
-
-/** A platform User reachable on WhatsApp (has a whatsapp/mobile number), with any linked contact/conversation. */
-export interface WaPlatformUser {
-  id: string;
-  firstName: string | null;
-  lastName: string | null;
-  email: string;
-  role: Role;
-  mobileNumber: string | null;
-  whatsappNumber: string | null;
-  isWhatsappVerified: boolean;
-  resolvedNumber: string;
-  numberSource: 'whatsapp' | 'mobile';
-  contactId: string | null;
-  conversationId: string | null;
-}
-
-/**
- * List platform User accounts that have at least one number (whatsappNumber or
- * mobileNumber) — i.e. are reachable on WhatsApp. Enriches each with its linked
- * WaContact id and most-recent conversation id (when on-platform via WaContact).
- */
-export async function listPlatformUsers(opts: {
-  q?: string;
-  role?: Role;
-  page?: number;
-  limit?: number;
-}): Promise<{
-  items: WaPlatformUser[];
-  total: number;
-  page: number;
-  limit: number;
-  totalPages: number;
-}> {
-  const page = Math.max(1, opts.page ?? 1);
-  const limit = Math.min(100, opts.limit ?? 50);
-  const where: Prisma.UserWhereInput = {
-    AND: [{ OR: [{ whatsappNumber: { not: null } }, { mobileNumber: { not: null } }] }],
-    ...(opts.role ? { role: opts.role } : {}),
-    ...(opts.q
-      ? {
-          OR: [
-            { firstName: { contains: opts.q, mode: 'insensitive' } },
-            { lastName: { contains: opts.q, mode: 'insensitive' } },
-            { email: { contains: opts.q, mode: 'insensitive' } },
-            { mobileNumber: { contains: opts.q, mode: 'insensitive' } },
-            { whatsappNumber: { contains: opts.q, mode: 'insensitive' } },
-          ],
-        }
-      : {}),
-  };
-  const [total, users] = await Promise.all([
-    prisma.user.count({ where }),
-    prisma.user.findMany({
-      where,
-      select: {
-        id: true,
-        firstName: true,
-        lastName: true,
-        email: true,
-        role: true,
-        mobileNumber: true,
-        whatsappNumber: true,
-        isWhatsappVerified: true,
-      },
-      orderBy: { createdAt: 'desc' },
-      skip: (page - 1) * limit,
-      take: limit,
-    }),
-  ]);
-
-  // Enrich with linked WaContact + most-recent conversation (keyed by userId @unique).
-  const userIds = users.map((u) => u.id);
-  const contacts = userIds.length
-    ? await prisma.waContact.findMany({
-        where: { userId: { in: userIds } },
-        select: {
-          id: true,
-          userId: true,
-          conversations: { select: { id: true }, orderBy: { lastMessageAt: 'desc' }, take: 1 },
-        },
-      })
-    : [];
-  const linkByUserId = new Map<string, { contactId: string; conversationId: string | null }>();
-  for (const c of contacts) {
-    if (!c.userId) continue;
-    linkByUserId.set(c.userId, {
-      contactId: c.id,
-      conversationId: c.conversations[0]?.id ?? null,
-    });
-  }
-
-  const items: WaPlatformUser[] = users.map((u) => {
-    const link = linkByUserId.get(u.id);
-    return {
-      id: u.id,
-      firstName: u.firstName,
-      lastName: u.lastName,
-      email: u.email,
-      role: u.role,
-      mobileNumber: u.mobileNumber,
-      whatsappNumber: u.whatsappNumber,
-      isWhatsappVerified: u.isWhatsappVerified,
-      resolvedNumber: (u.whatsappNumber ?? u.mobileNumber) as string,
-      numberSource: u.whatsappNumber ? 'whatsapp' : 'mobile',
-      contactId: link?.contactId ?? null,
-      conversationId: link?.conversationId ?? null,
-    };
-  });
-
-  return { items, total, page, limit, totalPages: Math.ceil(total / limit) };
 }
 
 export type BulkContactAction =
@@ -592,7 +414,7 @@ export async function eraseContactData(
   // (d) Anonymize the contact tombstone + block any future contact. Rewriting the
   // phone to a `erased:<id>` sentinel keeps the @unique constraint satisfied and
   // guarantees the original number can never be matched/re-contacted again.
-  const erased = await prisma.waContact.update({
+  await prisma.waContact.update({
     where: { id: contactId },
     data: {
       name: null,
@@ -605,11 +427,6 @@ export async function eraseContactData(
       phone: `erased:${contactId}`,
     },
   });
-
-  // Propagate the opt-out to the linked platform User's WhatsApp consent flag.
-  if (erased.userId) {
-    await disableUserWhatsappConsent(erased.userId).catch(() => {});
-  }
 
   return { messagesScrubbed: scrubbed.count, mediaDeleted };
 }

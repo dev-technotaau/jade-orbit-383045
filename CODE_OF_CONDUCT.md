@@ -1,25 +1,25 @@
 # Code of Conduct
 
 This document defines the professional conduct expected of everyone with
-access to the Hire Adda codebase, infrastructure, and internal communication
+access to this codebase, TechnoTaau infrastructure, and internal communication
 channels — employees, contractors, and authorized collaborators.
 
 It complements (and is subordinate to) the company's internal policies
 and any employment, contractor, or NDA agreements you have signed with
-Hire Adda.
+TechnoTaau.
 
 ---
 
 ## Scope
 
-This Code applies whenever you are acting in connection with Hire Adda:
+This Code applies whenever you are acting in connection with TechnoTaau:
 
 - Contributing to the codebase or infrastructure (commits, PRs, code
   review, deployments, on-call work).
 - Internal communication — team chat, email, video calls, in-person
   meetings, ticket systems, design tools, dashboards.
 - Representing the company externally — conferences, customer support,
-  social media when identified as a Hire Adda team member.
+  social media when identified as a TechnoTaau team member.
 
 It applies regardless of role, seniority, or location.
 
@@ -73,7 +73,7 @@ through one of these channels — pick whichever you are most comfortable
 with:
 
 1. **Tech Lead** — direct message via email.
-2. **Founder / leadership** — `legal@hireadda.in` for serious issues
+2. **Founder / leadership** — `send@technotaau.com` for serious issues
    involving leadership, financial misconduct, or legal exposure.
 
 Reports are treated confidentially. Reasonable steps will be taken to
@@ -81,7 +81,7 @@ protect the reporter's identity from anyone other than those who need to
 know to investigate and respond.
 
 For security incidents specifically (vulnerabilities, suspected breaches,
-leaked credentials), use `security@hireadda.in` instead — those follow a
+leaked credentials), use `send@technotaau.com` instead — those follow a
 separate incident-response track.
 
 ---
@@ -105,7 +105,7 @@ Decisions take into account severity, prior history, intent, and impact.
 
 ## Acknowledgement
 
-By accessing the Hire Adda repository or infrastructure, you acknowledge
+By accessing this repository or TechnoTaau infrastructure, you acknowledge
 that you have read and agree to follow this Code of Conduct.
 
-For questions about this document, contact `legal@hireadda.in`.
+For questions about this document, contact `send@technotaau.com`.

@@ -207,24 +207,16 @@ export async function getAgentProductivity(): Promise<WaAgentProductivity[]> {
   );
   if (userIds.length === 0) return [];
 
-  const users = await prisma.user.findMany({
-    where: { id: { in: userIds } },
-    select: { id: true, firstName: true, lastName: true, email: true },
-  });
-  const userById = new Map(users.map((u) => [u.id, u]));
-
+  // `sentByUserId` and `assignedTo` used to be User FKs, resolved here to a
+  // display name. They are free-text operator labels now, so the id IS the name
+  // — no lookup, and nothing can be "Unknown".
   return userIds
-    .map((id) => {
-      const u = userById.get(id);
-      const name =
-        [u?.firstName, u?.lastName].filter(Boolean).join(' ').trim() || u?.email || 'Unknown';
-      return {
-        userId: id,
-        name,
-        messagesSent: messagesByUser.get(id) ?? 0,
-        conversationsAssigned: convosByUser.get(id) ?? 0,
-      };
-    })
+    .map((id) => ({
+      userId: id,
+      name: id,
+      messagesSent: messagesByUser.get(id) ?? 0,
+      conversationsAssigned: convosByUser.get(id) ?? 0,
+    }))
     .sort((a, b) => b.messagesSent - a.messagesSent);
 }
 

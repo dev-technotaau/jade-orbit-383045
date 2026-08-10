@@ -51,13 +51,10 @@ async function proxyRequest(
   // the proxy drops them silently and the backend rejects with errors that look
   // like client bugs.
   //   - Idempotency-Key      — requireIdempotencyKey() → 400 if absent
-  //   - cf-turnstile-response — verifyTurnstile middleware
   //   - x-csrf-token          — CSRF middleware (bypassed via x-bff-secret,
   //                             forwarded anyway for defence in depth)
   const idempotencyKey = request.headers.get('idempotency-key');
   if (idempotencyKey) headers.set('Idempotency-Key', idempotencyKey);
-  const turnstile = request.headers.get('cf-turnstile-response');
-  if (turnstile) headers.set('cf-turnstile-response', turnstile);
   const csrfToken = request.headers.get('x-csrf-token');
   if (csrfToken) headers.set('x-csrf-token', csrfToken);
 

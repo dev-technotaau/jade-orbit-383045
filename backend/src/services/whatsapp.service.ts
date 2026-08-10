@@ -1,6 +1,5 @@
 import { env } from '../config/env';
 import logger from '../config/logger';
-import { isFeatureEnabled } from '../config/feature-flags';
 
 // Meta WhatsApp Cloud API
 // https://developers.facebook.com/docs/whatsapp/cloud-api/reference/messages
@@ -11,11 +10,6 @@ export const sendWhatsAppMessage = async (
   languageCode = 'en',
   components?: any[]
 ): Promise<boolean> => {
-  if (!(await isFeatureEnabled('enableWhatsApp'))) {
-    logger.debug('WhatsApp disabled via feature flag — skipping');
-    return false;
-  }
-
   const phoneId = env.META_WHATSAPP_PHONE_ID;
   const token = env.META_WHATSAPP_TOKEN;
 

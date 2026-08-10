@@ -13,7 +13,6 @@ import { whatsappService as svc } from '@/services/whatsapp.service';
 import type { ApiError } from '@/types/api';
 
 type OptInStatus = 'any' | 'OPTED_IN' | 'OPTED_OUT' | 'UNKNOWN';
-type OnPlatform = 'any' | 'on' | 'off';
 
 const OPT_IN_OPTIONS: { value: OptInStatus; label: string }[] = [
   { value: 'any', label: 'Any opt-in status' },
@@ -22,24 +21,10 @@ const OPT_IN_OPTIONS: { value: OptInStatus; label: string }[] = [
   { value: 'UNKNOWN', label: 'Unknown' },
 ];
 
-const ON_PLATFORM_OPTIONS: { value: OnPlatform; label: string }[] = [
-  { value: 'any', label: 'Any' },
-  { value: 'on', label: 'On platform (HireAdda user)' },
-  { value: 'off', label: 'Not on platform' },
-];
-
-const ROLE_OPTIONS = [
-  { value: 'any', label: 'Any role' },
-  { value: 'CANDIDATE', label: 'Candidate' },
-  { value: 'EMPLOYER', label: 'Employer' },
-  { value: 'ADMIN', label: 'Admin' },
-  { value: 'SUPER_ADMIN', label: 'Super Admin' },
-];
-
 /**
  * Create a saved segment — a reusable audience filter for campaigns. Captures
- * a name, optional description and a structured filter (tags, opt-in status,
- * on-platform). Backed by createSegment; invalidates `wa-segments`.
+ * a name, optional description and a structured filter (tags + opt-in status).
+ * Backed by createSegment; invalidates `wa-segments`.
  */
 export default function SegmentModal({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
@@ -49,8 +34,6 @@ export default function SegmentModal({ onClose }: { onClose: () => void }) {
   const [tags, setTags] = useState<string[]>([]);
   const [tagDraft, setTagDraft] = useState('');
   const [optInStatus, setOptInStatus] = useState<OptInStatus>('any');
-  const [onPlatform, setOnPlatform] = useState<OnPlatform>('any');
-  const [role, setRole] = useState('any');
 
   const addTag = () => {
     const t = tagDraft.trim();
@@ -80,13 +63,9 @@ export default function SegmentModal({ onClose }: { onClose: () => void }) {
       const filter: {
         tags?: string[];
         optInStatus?: string;
-        onPlatform?: boolean;
-        role?: string;
       } = {};
       if (tags.length > 0) filter.tags = tags;
       if (optInStatus !== 'any') filter.optInStatus = optInStatus;
-      if (onPlatform !== 'any') filter.onPlatform = onPlatform === 'on';
-      if (role !== 'any') filter.role = role;
       return svc.createSegment({
         name: name.trim(),
         description: description.trim() || undefined,
@@ -189,20 +168,9 @@ export default function SegmentModal({ onClose }: { onClose: () => void }) {
             onChange={(v) => setOptInStatus(v as OptInStatus)}
             clearable={false}
           />
-          <Select
-            label="On platform"
-            options={ON_PLATFORM_OPTIONS}
-            value={onPlatform}
-            onChange={(v) => setOnPlatform(v as OnPlatform)}
-            clearable={false}
-          />
-          <Select
-            label="On-platform role"
-            options={ROLE_OPTIONS}
-            value={role}
-            onChange={(v) => setRole(v as string)}
-            clearable={false}
-          />
+          {/* "On platform" and "On-platform role" were removed with the linked
+              -account feature: they filtered on WaContact.userId and the User
+              role, neither of which exists now. */}
         </div>
       </div>
     </Modal>

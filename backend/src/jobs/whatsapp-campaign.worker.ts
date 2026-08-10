@@ -5,7 +5,6 @@ import { env } from '../config/env';
 import { prisma } from '../config/prisma';
 import logger from '../config/logger';
 import { WHATSAPP_CAMPAIGN_QUEUE_NAME } from './whatsapp-campaign.queue';
-import { withExtractedContext, SpanKind } from '../utils/trace-propagation';
 import { getOrCreateConversation } from '../services/whatsapp-conversation.service';
 import { sendTemplateToConversation } from '../services/whatsapp-send.service';
 import {
@@ -56,12 +55,7 @@ export function createWhatsappCampaignWorker(): Worker<CampaignBatchJobData> {
   const worker = new Worker<CampaignBatchJobData>(
     WHATSAPP_CAMPAIGN_QUEUE_NAME,
     async (job: Job<CampaignBatchJobData>) => {
-      const traceCtx = (job.data as any)?._traceContext || {};
-      return withExtractedContext(
-        traceCtx,
-        `bullmq.process ${job.name}`,
-        SpanKind.CONSUMER,
-        async () => {
+      return (async () => {
           const campaign = await prisma.waCampaign.findUnique({
             where: { id: job.data.campaignId },
           });
@@ -243,8 +237,7 @@ export function createWhatsappCampaignWorker(): Worker<CampaignBatchJobData> {
             failedCount: progress?.failedCount ?? 0,
             skippedCount: progress?.skippedCount ?? 0,
           };
-        }
-      );
+        })();
     },
     {
       connection: redis,

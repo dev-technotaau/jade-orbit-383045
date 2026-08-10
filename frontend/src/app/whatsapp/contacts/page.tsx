@@ -2,7 +2,7 @@
 
 import { useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Users, Upload, Download, X, Search, Ban, BadgeCheck, Pencil, FileUp } from 'lucide-react';
+import { Users, Upload, Download, X, Search, Ban, Pencil, FileUp } from 'lucide-react';
 import DashboardLayout from '@/components/layout/DashboardLayout';
 import Input from '@/components/ui/Input';
 import Button from '@/components/ui/Button';
@@ -17,7 +17,6 @@ import ContactDpdpActions from '@/components/whatsapp/ContactDpdpActions';
 import ContactBulkActionBar from '@/components/whatsapp/ContactBulkActionBar';
 import ContactSegmentBar from '@/components/whatsapp/ContactSegmentBar';
 import Pagination from '@/components/ui/Pagination';
-import { ROLE_LABELS } from '@/constants/enums';
 import type { WaContact } from '@/types/whatsapp';
 import type { ApiError } from '@/types/api';
 
@@ -26,18 +25,6 @@ const OPT_IN_OPTIONS = [
   { value: 'OPTED_IN', label: 'Opted in' },
   { value: 'OPTED_OUT', label: 'Opted out' },
   { value: 'UNKNOWN', label: 'Unknown' },
-];
-const ROLE_OPTIONS = [
-  { value: '', label: 'All roles' },
-  { value: 'CANDIDATE', label: ROLE_LABELS.CANDIDATE },
-  { value: 'EMPLOYER', label: ROLE_LABELS.EMPLOYER },
-  { value: 'ADMIN', label: ROLE_LABELS.ADMIN },
-  { value: 'SUPER_ADMIN', label: ROLE_LABELS.SUPER_ADMIN },
-];
-const PLATFORM_OPTIONS = [
-  { value: '', label: 'On & off-platform' },
-  { value: 'on', label: 'On-platform' },
-  { value: 'off', label: 'Off-platform' },
 ];
 const OPT_IN_STYLE: Record<string, string> = {
   OPTED_IN: 'bg-emerald-100 text-emerald-700',
@@ -247,8 +234,6 @@ export default function SuperAdminWhatsappContactsPage() {
   const qc = useQueryClient();
   const [search, setSearch] = useState('');
   const [optInStatus, setOptInStatus] = useState('');
-  const [role, setRole] = useState(''); // on-platform user role (implies on-platform)
-  const [onPlatform, setOnPlatform] = useState(''); // '' | 'on' | 'off'
   const [tag, setTag] = useState('');
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(50);
@@ -258,15 +243,12 @@ export default function SuperAdminWhatsappContactsPage() {
   // "Select all N matching the filter" (acts via backend filters, not the id list).
   const [allMatchingContacts, setAllMatchingContacts] = useState(false);
 
-  const onPlatformBool = onPlatform === 'on' ? true : onPlatform === 'off' ? false : undefined;
   const { data, isLoading } = useQuery({
-    queryKey: ['wa-contacts', { search, optInStatus, role, onPlatform, tag, page, limit }],
+    queryKey: ['wa-contacts', { search, optInStatus, tag, page, limit }],
     queryFn: () =>
       svc.listContacts({
         q: search,
         optInStatus: optInStatus || undefined,
-        role: role || undefined,
-        onPlatform: onPlatformBool,
         tag: tag || undefined,
         page,
         limit,
@@ -277,7 +259,7 @@ export default function SuperAdminWhatsappContactsPage() {
   const totalMatching = data?.data?.total ?? contacts.length;
 
   // Reset all-matching when the filter (not the page) changes.
-  const contactFilterKey = `${search}|${optInStatus}|${role}|${onPlatform}|${tag}`;
+  const contactFilterKey = `${search}|${optInStatus}|${tag}`;
   const [prevContactFilterKey, setPrevContactFilterKey] = useState(contactFilterKey);
   if (contactFilterKey !== prevContactFilterKey) {
     setPrevContactFilterKey(contactFilterKey);
@@ -347,8 +329,6 @@ export default function SuperAdminWhatsappContactsPage() {
               onClick={() =>
                 svc.exportContacts({
                   optInStatus: optInStatus || undefined,
-                  role: role || undefined,
-                  onPlatform: onPlatformBool,
                   tag: tag || undefined,
                   q: search || undefined,
                 })
@@ -386,28 +366,6 @@ export default function SuperAdminWhatsappContactsPage() {
             />
           </div>
           <div className="min-w-[150px]">
-            <Select
-              options={ROLE_OPTIONS}
-              value={role}
-              clearable={false}
-              onChange={(v) => {
-                setRole(v);
-                setPage(1);
-              }}
-            />
-          </div>
-          <div className="min-w-[150px]">
-            <Select
-              options={PLATFORM_OPTIONS}
-              value={onPlatform}
-              clearable={false}
-              onChange={(v) => {
-                setOnPlatform(v);
-                setPage(1);
-              }}
-            />
-          </div>
-          <div className="min-w-[150px]">
             <Input
               value={tag}
               onChange={(e) => {
@@ -418,11 +376,9 @@ export default function SuperAdminWhatsappContactsPage() {
             />
           </div>
           <ContactSegmentBar
-            current={{ optInStatus, role, onPlatform, tag }}
+            current={{ optInStatus, tag }}
             onApply={(c) => {
               setOptInStatus(c.optInStatus ?? '');
-              setRole(c.role ?? '');
-              setOnPlatform(c.onPlatform ?? '');
               setTag(c.tag ?? '');
               setPage(1);
             }}
@@ -472,11 +428,10 @@ export default function SuperAdminWhatsappContactsPage() {
                     <span className="truncate font-medium text-[var(--text)]">
                       {c.name || c.phone}
                     </span>
-                    {c.userId && <BadgeCheck className="h-3.5 w-3.5 text-[var(--primary)]" />}
                     {c.isBlocked && <Ban className="h-3.5 w-3.5 text-[var(--error)]" />}
                   </div>
                   <p className="text-xs text-[var(--text-muted)]">
-                    {c.phone} · {c.userId ? 'on-platform' : 'off-platform'}
+                    {c.phone}
                     {c.tags.length > 0 && ` · ${c.tags.join(', ')}`}
                   </p>
                 </div>
@@ -533,8 +488,6 @@ export default function SuperAdminWhatsappContactsPage() {
             filters={{
               q: search || undefined,
               optInStatus: optInStatus || undefined,
-              role: role || undefined,
-              onPlatform: onPlatformBool,
               tag: tag || undefined,
             }}
             onSelectAllMatching={() => setAllMatchingContacts(true)}

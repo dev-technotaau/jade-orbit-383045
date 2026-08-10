@@ -1,7 +1,7 @@
 module.exports = {
   apps: [
     {
-      name: 'hire-adda-api',
+      name: 'whatsapp-module-api',
       script: './dist/server.js',
       instances: 'max',
       exec_mode: 'cluster',

@@ -188,9 +188,6 @@ router.post(
   audit('WA_BULK_CONTACTS', 'WaContact'),
   contactCtrl.bulkContacts
 );
-// Platform User accounts reachable on WhatsApp. Declared before `/contacts/:id`
-// GET so "platform-users" isn't matched as a contact :id.
-router.get('/contacts/platform-users', contactCtrl.listPlatformUsers);
 // DPDP data-subject access — single-contact data bundle (JSON download). Declared
 // before `/contacts/:id` GET so it is matched as a distinct, more-specific route.
 router.get(

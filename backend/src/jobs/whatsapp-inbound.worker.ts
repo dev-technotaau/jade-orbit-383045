@@ -5,7 +5,6 @@ import { env } from '../config/env';
 import { prisma } from '../config/prisma';
 import logger from '../config/logger';
 import { WHATSAPP_INBOUND_QUEUE_NAME } from './whatsapp-inbound.queue';
-import { withExtractedContext, SpanKind } from '../utils/trace-propagation';
 import { getOrCreateChannel } from '../services/whatsapp-channel.service';
 import { getTemplateByName } from '../services/whatsapp-template.service';
 import {
@@ -677,13 +676,7 @@ export function createWhatsappInboundWorker(): Worker<WhatsappInboundJobData> {
   const worker = new Worker<WhatsappInboundJobData>(
     WHATSAPP_INBOUND_QUEUE_NAME,
     async (job: Job<WhatsappInboundJobData>) => {
-      const traceCtx = (job.data as Record<string, any>)?._traceContext || {};
-      return withExtractedContext(
-        traceCtx,
-        `bullmq.process ${job.name}`,
-        SpanKind.CONSUMER,
-        async () => processInboundEvent(job.data.eventRowId)
-      );
+      return processInboundEvent(job.data.eventRowId);
     },
     {
       connection: redis,

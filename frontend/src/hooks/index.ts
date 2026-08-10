@@ -1,33 +1,14 @@
+/**
+ * Hook barrel.
+ *
+ * The host platform's version re-exported job, notification and search hook
+ * families (`useJobSearch`, `useAppliedJobs`, `useAutocomplete`, …) from
+ * `./use-jobs`, `./use-notifications` and `./use-search`. Those modules are gone
+ * with the job board; every hook below is one that actually exists here.
+ */
 export { useAuth } from './use-auth';
-export { useFeatureFlags, useFeatureFlag, useAllFeatureFlags } from './use-feature-flags';
-export {
-  useJobSearch,
-  useJob,
-  useAppliedJobs,
-  useSavedJobs,
-  useMyJobs,
-  useJobApplications,
-  useApplyJob,
-  useToggleSaveJob,
-  useWithdrawApplication,
-  useUpdateApplicationStatus,
-export {
-  useNotifications,
-  useUnreadCount,
-  useMarkAsRead,
-  useMarkAllAsRead,
+export { useBulkSelect, downloadBlob } from './use-bulk-select';
+export type { BulkSelect } from './use-bulk-select';
+export { useClickOutside } from './use-click-outside';
 export { usePopoverPlacement } from './use-popover-placement';
-export { usePresence } from './use-presence';
-export { usePresenceTracker } from './use-presence-tracker';
-export {
-  useAutocomplete,
-  useSuggestSkills,
-  useSuggestLocations,
-  useSuggestCompanies,
-  useSuggestJobTitles,
-  useDidYouMean,
-  useSearchHistory,
-  usePopularSearches,
-  useAddToSearchHistory,
-  useClearSearchHistory,
 export { useSocket } from './use-socket';

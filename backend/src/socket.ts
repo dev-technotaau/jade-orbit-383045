@@ -3,10 +3,10 @@ import type { Socket } from 'socket.io';
 import { Server } from 'socket.io';
 import crypto from 'crypto';
 import { env } from './config/env';
+import { unlockToken } from './middleware/app-password';
 import logger from './config/logger';
 import { redis } from './config/redis';
 import { createAdapter } from '@socket.io/redis-adapter';
-import { markUserOnline, markUserOffline } from './utils/online-users';
 
 let io: Server;
 
@@ -35,9 +35,14 @@ export const initSocket = (httpServer: HttpServer) => {
    * App-password authentication.
    *
    * Was a JWT handshake decoding userId / email / role. There are no accounts or
-   * tokens now, so the client presents the same shared secret the HTTP routes
-   * use, compared in constant time. Fails closed when APP_PASSWORD is unset,
-   * matching requireAppPassword — an unset password must never mean "allow".
+   * tokens now, so the client presents the same credential the HTTP routes use,
+   * compared in constant time. Fails closed when APP_PASSWORD is unset, matching
+   * requireAppPassword — an unset password must never mean "allow".
+   *
+   * Accepts EITHER the unlock token (the HMAC held in the httpOnly `wa_unlock`
+   * cookie, handed to the browser by the BFF's /api/auth/socket-token) OR the
+   * raw password (for scripts). The browser therefore never holds the password
+   * itself — same split as requireAppPassword's cookie-or-header.
    */
   io.use((socket, next) => {
     const token = socket.handshake.auth?.token || socket.handshake.query?.token;
@@ -47,9 +52,12 @@ export const initSocket = (httpServer: HttpServer) => {
     if (!env.APP_PASSWORD) {
       return next(new Error('APP_PASSWORD is not configured'));
     }
-    const a = Buffer.from(token);
-    const b = Buffer.from(env.APP_PASSWORD);
-    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    const equals = (a: string, b: string): boolean => {
+      const ab = Buffer.from(a);
+      const bb = Buffer.from(b);
+      return ab.length === bb.length && crypto.timingSafeEqual(ab, bb);
+    };
+    if (!equals(token, unlockToken()) && !equals(token, env.APP_PASSWORD)) {
       return next(new Error('Invalid app password'));
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -63,7 +71,9 @@ export const initSocket = (httpServer: HttpServer) => {
     logger.info(`Client connected: ${socket.id} (operator: ${userId})`);
 
     socket.join(`user:${userId}`);
-    markUserOnline(userId).catch(() => {});
+    // Presence tracking removed: markUserOnline/Offline wrote an online set to
+    // Redis that nothing ever read — no endpoint and no UI consumed it, and with
+    // a single operator there is nobody to be present to.
 
     // Every authenticated connection is the operator — there are no roles left
     // to branch on, so the inbox room is joined unconditionally. Opening a
@@ -86,7 +96,6 @@ export const initSocket = (httpServer: HttpServer) => {
 
     socket.on('disconnect', () => {
       logger.info(`Client disconnected: ${socket.id}`);
-      markUserOffline(userId).catch(() => {});
     });
   });
 
