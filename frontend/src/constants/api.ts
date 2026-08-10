@@ -11,12 +11,6 @@
  * password (see backend/src/middleware/app-password.ts).
  */
 export const API = {
-  AUTH: {
-    UI_PREFERENCES: '/auth/me/ui-preferences',
-  },
-  WHATSAPP: {
-    OPTIN: '/whatsapp-optin',
-  },
   SUPER_ADMIN: {
     WA_CHANNELS: '/whatsapp/channels',
     WA_CONVERSATIONS: '/whatsapp/conversations',

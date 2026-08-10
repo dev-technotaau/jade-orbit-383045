@@ -814,15 +814,6 @@ export const whatsappService = {
   },
 };
 
-/**
- * User-facing self-serve WhatsApp marketing opt-in toggle. Targets the
- * non-super-admin path `/whatsapp-optin` (authenticated end-user).
- */
-export async function selfServeWhatsappOptIn(optIn: boolean): Promise<ApiResponse<unknown>> {
-  const res = await api.post(API.WHATSAPP.OPTIN, { optIn });
-  return res.data;
-}
-
 function downloadBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
