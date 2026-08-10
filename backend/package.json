@@ -1,7 +1,7 @@
 {
   "name": "backend",
   "version": "1.0.0",
-  "description": "WhatsApp Cloud Module \u2014 backend API",
+  "description": "WhatsApp Cloud Module — backend API",
   "private": true,
   "engines": {
     "node": ">=20.0.0"

@@ -80,5 +80,5 @@
     "lightningcss-linux-x64-gnu": "^1.30.2",
     "lightningcss-linux-x64-musl": "^1.30.2"
   },
-  "description": "WhatsApp Cloud Module \u2014 operator UI"
+  "description": "WhatsApp Cloud Module — operator UI"
 }

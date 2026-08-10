@@ -1,7 +1,7 @@
 {
   "name": "whatsapp-cloud-module",
   "version": "1.0.0",
-  "description": "Reusable WhatsApp Business Cloud API module \u2014 inbox, templates and campaigns.",
+  "description": "Reusable WhatsApp Business Cloud API module — inbox, templates and campaigns.",
   "private": true,
   "scripts": {
     "dev": "npx -y concurrently \"npm run dev:backend\" \"npm run dev:frontend\" --kill-others",
