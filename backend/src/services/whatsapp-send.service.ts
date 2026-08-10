@@ -8,6 +8,8 @@ import {
   getOrCreateConversation,
 } from './whatsapp-conversation.service';
 import { getDefaultChannel } from './whatsapp-channel.service';
+import { isSuppressed } from './whatsapp-suppression.service';
+import { getWaSettings } from './whatsapp-settings.service';
 import { upsertContactByPhone } from './whatsapp-contact.service';
 import {
   getTemplate,
@@ -38,6 +40,35 @@ interface DispatchParams {
 
 /** Persist an outbound WaMessage, call the Cloud API, reconcile WAMID + status, emit. */
 async function dispatchOutbound(p: DispatchParams) {
+  // Do-not-contact, checked at the send rather than only when a campaign
+  // audience was built. Every outbound path — session reply, template, drip
+  // step, scheduled message, campaign batch, Chatwoot bridge — funnels through
+  // here, so this is the one place that can actually make the list mean what it
+  // says. Recorded as a FAILED row (not silently dropped) so the operator can
+  // see why nothing was sent.
+  if (await isSuppressed(p.contactPhone)) {
+    logger.warn(
+      `WhatsApp outbound blocked: ${p.contactPhone} is on the suppression list ` +
+        `(conversation ${p.conversationId})`
+    );
+    return prisma.waMessage.create({
+      data: {
+        channelId: p.channelId,
+        conversationId: p.conversationId,
+        contactId: p.contactId,
+        direction: 'OUTBOUND',
+        type: p.type,
+        status: 'FAILED',
+        text: p.text,
+        templateName: p.templateName ?? null,
+        sentByUserId: p.actorUserId,
+        campaignId: p.campaignId ?? null,
+        errorCode: '131050',
+        errorTitle: 'Recipient is on the do-not-contact (suppression) list',
+      },
+    });
+  }
+
   const row = await prisma.waMessage.create({
     data: {
       channelId: p.channelId,
@@ -70,7 +101,15 @@ async function dispatchOutbound(p: DispatchParams) {
     where: { id: row.id },
     data: result.ok
       ? { status: 'SENT', wamid: result.wamid, sentAt: new Date() }
-      : { status: 'FAILED', errorCode: result.error?.code, errorTitle: result.error?.title },
+      : {
+          status: 'FAILED',
+          // Fall back to the title. Transient failures (circuit_open,
+          // network_error, request_timeout, credentials_missing) never carry a
+          // Meta code, and this column is what the campaign worker reads to
+          // decide FAILED vs roll-back-to-PENDING — a null read as "permanent".
+          errorCode: result.error?.code ?? result.error?.title,
+          errorTitle: result.error?.title,
+        },
   });
 
   await prisma.waContact
@@ -96,6 +135,19 @@ async function dispatchOutbound(p: DispatchParams) {
     logger.warn(
       `WhatsApp outbound failed conv=${p.conversationId} err=${result.error?.title ?? 'unknown'}`
     );
+  }
+
+  // Surface the backoff hint alongside the persisted row. `sendWhatsappRaw`
+  // computes `retryAfterMs` from Meta's Retry-After header and it was being
+  // dropped on the floor here — nothing in the system ever slept on a throttle,
+  // so a rate-limited campaign just kept pushing at its configured rate and
+  // collecting 429s. Attached as a non-enumerable property so it rides along
+  // without changing the shape of the WaMessage rows callers serialize.
+  if (result.retryAfterMs != null) {
+    Object.defineProperty(updated, 'retryAfterMs', {
+      value: result.retryAfterMs,
+      enumerable: false,
+    });
   }
   return updated;
 }
@@ -181,9 +233,43 @@ export async function sendTemplateToConversation(
   if (tpl.category === 'MARKETING' && conv.contact.optInStatus === 'OPTED_OUT') {
     throw new AppError('Contact has opted out of marketing messages', 409, 'WA_OPTED_OUT');
   }
-  // Single chokepoint (campaign + manual) for the per-contact marketing cap:
-  // stamp lastMarketingAt whenever a MARKETING template is sent from here.
+  // Single chokepoint (campaign + manual + drip + scheduled) for the per-contact
+  // marketing frequency cap.
+  //
+  // The cap used to be evaluated only when a campaign audience was materialized,
+  // and only as "has this contact had ANY marketing in 24h" — so `cap: 2` made
+  // the condition false and removed the cap entirely, `cap: 0` (documented and
+  // labelled in the UI as unlimited) still enforced one per day, and manual,
+  // drip and scheduled template sends bypassed it completely. Count the actual
+  // marketing sends in the window instead.
   if (tpl.category === 'MARKETING') {
+    const { marketingCapPer24h } = await getWaSettings();
+    if (marketingCapPer24h > 0) {
+      const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      // WaMessage records the template NAME, not its category, so resolve the
+      // marketing template names once and count against those.
+      const marketingTemplates = await prisma.waTemplate.findMany({
+        where: { category: 'MARKETING' },
+        select: { name: true },
+      });
+      const sentInWindow = await prisma.waMessage.count({
+        where: {
+          contactId: conv.contactId,
+          direction: 'OUTBOUND',
+          type: 'TEMPLATE',
+          status: { not: 'FAILED' },
+          createdAt: { gte: since },
+          templateName: { in: marketingTemplates.map((t) => t.name) },
+        },
+      });
+      if (sentInWindow >= marketingCapPer24h) {
+        throw new AppError(
+          `Contact has reached the marketing limit of ${marketingCapPer24h} message(s) per 24 hours`,
+          409,
+          'WA_MARKETING_CAP'
+        );
+      }
+    }
     await prisma.waContact
       .update({ where: { id: conv.contactId }, data: { lastMarketingAt: new Date() } })
       .catch(() => {});

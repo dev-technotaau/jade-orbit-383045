@@ -1,7 +1,7 @@
 {
   "name": "backend",
   "version": "1.0.0",
-  "description": "WhatsApp Cloud Module — backend API",
+  "description": "WhatsApp Cloud Module \u2014 backend API",
   "private": true,
   "engines": {
     "node": ">=20.0.0"
@@ -12,10 +12,11 @@
     "dev:debug": "cross-env DEBUG=* nodemon",
     "build": "prisma generate && tsc -p tsconfig.build.json && tsc-alias -p tsconfig.build.json",
     "start": "cross-env NODE_ENV=production node dist/index.js",
+    "start:migrate": "npm run db:deploy && npm run start",
     "start:dev": "concurrently \"npm run dev\" \"npm run db:studio\"",
     "clean": "rimraf dist",
     "type-check": "tsc --noEmit",
-    "lint": "eslint \"src/**/*.{ts,js}\"",
+    "lint": "eslint \"src/**/*.{ts,js}\" --max-warnings 23",
     "lint:fix": "eslint \"src/**/*.{ts,js}\" --fix",
     "format": "prettier --write \"src/**/*.{ts,js,json,md}\"",
     "test": "cross-env NODE_ENV=test jest",
@@ -23,9 +24,9 @@
     "test:cov": "cross-env NODE_ENV=test jest --coverage",
     "db:generate": "dotenv -- prisma generate",
     "db:push": "dotenv -- prisma db push",
+    "db:deploy": "prisma db push --skip-generate",
     "db:studio": "dotenv -- prisma studio",
-    "postinstall": "prisma generate",
-    "prepare": "husky"
+    "postinstall": "prisma generate"
   },
   "keywords": [],
   "author": "",
@@ -69,7 +70,6 @@
     "socket.io": "^4.8.3",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
-    "uuid": "^14.0.0",
     "winston": "^3.19.0",
     "xss-clean": "^0.1.4",
     "zod": "^4.3.6"
@@ -89,7 +89,6 @@
     "@types/supertest": "^6.0.3",
     "@types/swagger-jsdoc": "^6.0.4",
     "@types/swagger-ui-express": "^4.1.8",
-    "@types/uuid": "^10.0.0",
     "@typescript-eslint/eslint-plugin": "^8.54.0",
     "@typescript-eslint/parser": "^8.54.0",
     "concurrently": "^10.0.3",

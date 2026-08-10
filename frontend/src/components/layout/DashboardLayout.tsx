@@ -41,7 +41,7 @@ interface DashboardLayoutProps {
  */
 export default function DashboardLayout({ children }: DashboardLayoutProps) {
   return (
-    <div className="flex min-h-screen bg-[var(--bg-secondary)]">
+    <div className="flex min-h-dvh bg-[var(--bg-secondary)]">
       <Sidebar />
       {/* pt-14 on mobile clears the fixed hamburger the sidebar renders.
           Extra bottom padding keeps the last row — pagination especially —

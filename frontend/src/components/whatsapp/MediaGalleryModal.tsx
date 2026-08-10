@@ -20,9 +20,13 @@ function typeIcon(type: WaMessageType) {
 
 /** One media tile: lazily fetches an auth'd object URL; images render inline. */
 function MediaTile({ message }: { message: WaMessage }) {
-  const [url, setUrl] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
   const isImage = message.type === 'IMAGE' || message.type === 'STICKER';
+  const [url, setUrl] = useState<string | null>(null);
+  // Seeded from `isImage` rather than set inside the effect below. Calling
+  // setState synchronously in an effect body triggers a second render pass
+  // before paint for every tile in the gallery; an image tile is loading from
+  // its first render anyway, so the initial value already says so.
+  const [loading, setLoading] = useState(isImage && Boolean(message.mediaId));
 
   // Auto-load image previews; other types load on click. Revoke object URLs on
   // unmount to avoid leaks.
@@ -30,7 +34,6 @@ function MediaTile({ message }: { message: WaMessage }) {
     let active = true;
     let created: string | null = null;
     if (isImage && message.mediaId) {
-      setLoading(true);
       svc
         .fetchMediaObjectUrl(message.mediaId)
         .then((u) => {
@@ -86,7 +89,7 @@ function MediaTile({ message }: { message: WaMessage }) {
             <span>{message.type.toLowerCase()}</span>
           </div>
         )}
-        <span className="absolute top-1 right-1 rounded bg-black/40 p-1 text-white opacity-0 transition-opacity group-hover:opacity-100">
+        <span className="absolute top-1 right-1 rounded bg-black/40 p-1 text-white opacity-100 transition-opacity lg:opacity-0 lg:group-focus-within:opacity-100 lg:group-hover:opacity-100 lg:focus-visible:opacity-100">
           <Download className="h-3 w-3" />
         </span>
       </button>

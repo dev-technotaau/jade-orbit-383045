@@ -28,7 +28,11 @@ export const authLimiter = rateLimit({
     status: 'fail',
     message: 'Too many login attempts, please try again later.',
   },
-  skipSuccessfulRequests: false, // Count successful logins too to prevent enumeration
+  // Only FAILED attempts count. With successes counted too, a busy team
+  // sharing one egress IP could exhaust the window through normal use and
+  // lock themselves out of the console — and counting successes buys nothing
+  // here: there is one password and no account to enumerate.
+  skipSuccessfulRequests: true,
 });
 
 /**
@@ -164,4 +168,29 @@ export const vendorRevealLimiter = rateLimit({
   legacyHeaders: false,
   store: createRedisStore('vendor-reveal'),
   message: { status: 'fail', message: 'Too many contact reveals. Please slow down.' },
+});
+
+/**
+ * Ceiling for the public Meta webhook.
+ *
+ * The webhook is mounted ahead of `apiLimiter` on purpose — Meta bursts status
+ * callbacks during a campaign and a 429 makes it retry, back off, and
+ * eventually disable the subscription. That left the one unauthenticated,
+ * write-capable endpoint in the system completely unmetered, with only
+ * ddosProtection's 100 req/s per-IP floor above it.
+ *
+ * So: a limit high enough that real Meta traffic will never reach it (a 50k
+ * campaign generates ~150k callbacks spread over minutes, and Meta batches up
+ * to 100 entries per POST), but finite. Sized per minute so a burst is absorbed
+ * rather than smoothed.
+ */
+export const webhookLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 3000,
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: createRedisStore('wh'),
+  // Meta must never see a JSON error body it might interpret as a failure to
+  // deliver; the 429 status alone is the signal.
+  message: { ok: false },
 });

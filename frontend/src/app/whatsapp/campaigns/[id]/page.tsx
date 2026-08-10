@@ -30,6 +30,7 @@ import {
   Cell,
 } from 'recharts';
 import DashboardLayout from '@/components/layout/DashboardLayout';
+import Pagination from '@/components/ui/Pagination';
 import Button from '@/components/ui/Button';
 import Input from '@/components/ui/Input';
 import Select from '@/components/ui/Select';
@@ -122,13 +123,28 @@ export default function CampaignDetailPage() {
   });
   const preview = previewData?.data ?? null;
 
+  // Page + status filter. The list was pinned to the first 50 recipients with
+  // no way to move or filter, so on any real campaign the one question this
+  // panel exists to answer — "which recipients failed?" — was unanswerable
+  // unless the failures happened to be in the first 50 rows. Both parameters
+  // were already supported by the service and the backend.
+  const [recipPage, setRecipPage] = useState(1);
+  const [recipStatus, setRecipStatus] = useState('');
+
   const { data: recipData } = useQuery({
-    queryKey: ['wa-recipients', id],
-    queryFn: () => svc.getRecipients(id, { limit: 50 }),
+    queryKey: ['wa-recipients', id, recipPage, recipStatus],
+    queryFn: () =>
+      svc.getRecipients(id, {
+        page: recipPage,
+        limit: 50,
+        status: recipStatus || undefined,
+      }),
     refetchInterval: 8_000,
     enabled: !!c && c.status !== 'DRAFT',
   });
   const recipients = recipData?.data?.items ?? [];
+  const recipTotal = recipData?.data?.total ?? 0;
+  const recipTotalPages = recipData?.data?.totalPages ?? 1;
 
   // Live campaign progress: the backend emits `wa:campaign` with the
   // campaign `id` on each counter change. Invalidate the campaign query so
@@ -948,18 +964,47 @@ export default function CampaignDetailPage() {
         {/* Recipients */}
         {c.status !== 'DRAFT' && (
           <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-white">
-            <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
-              <h2 className="text-sm font-semibold text-[var(--text)]">Recipients</h2>
-              <button
-                type="button"
-                onClick={() => svc.exportRecipients(id)}
-                className="inline-flex items-center gap-1 text-xs text-[var(--text-secondary)] hover:text-[var(--text)]"
-              >
-                <Download className="h-3.5 w-3.5" /> Export CSV
-              </button>
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] px-4 py-3">
+              <h2 className="text-sm font-semibold text-[var(--text)]">
+                Recipients
+                {recipTotal > 0 && (
+                  <span className="ml-2 text-xs font-normal text-[var(--text-muted)]">
+                    {recipTotal.toLocaleString('en-IN')}
+                    {recipStatus ? ` ${recipStatus.toLowerCase()}` : ''}
+                  </span>
+                )}
+              </h2>
+              <div className="flex items-center gap-2">
+                <select
+                  aria-label="Filter recipients by status"
+                  value={recipStatus}
+                  onChange={(e) => {
+                    setRecipStatus(e.target.value);
+                    setRecipPage(1);
+                  }}
+                  className="rounded-lg border border-[var(--border)] bg-white px-2 py-1 text-xs text-[var(--text)]"
+                >
+                  <option value="">All statuses</option>
+                  <option value="PENDING">Pending</option>
+                  <option value="SENT">Sent</option>
+                  <option value="DELIVERED">Delivered</option>
+                  <option value="READ">Read</option>
+                  <option value="FAILED">Failed</option>
+                  <option value="SKIPPED">Skipped</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={() => svc.exportRecipients(id)}
+                  className="inline-flex items-center gap-1 text-xs text-[var(--text-secondary)] hover:text-[var(--text)]"
+                >
+                  <Download className="h-3.5 w-3.5" /> Export CSV
+                </button>
+              </div>
             </div>
             {recipients.length === 0 && (
-              <p className="p-6 text-center text-sm text-[var(--text-muted)]">No recipients yet.</p>
+              <p className="p-6 text-center text-sm text-[var(--text-muted)]">
+                {recipStatus ? `No ${recipStatus.toLowerCase()} recipients.` : 'No recipients yet.'}
+              </p>
             )}
             {recipients.map((r) => (
               <div
@@ -985,6 +1030,17 @@ export default function CampaignDetailPage() {
                 </div>
               </div>
             ))}
+            {recipTotalPages > 1 && (
+              <div className="px-4 py-3">
+                <Pagination
+                  currentPage={recipPage}
+                  totalPages={recipTotalPages}
+                  onPageChange={setRecipPage}
+                  totalItems={recipTotal}
+                  pageSize={50}
+                />
+              </div>
+            )}
           </div>
         )}
       </div>

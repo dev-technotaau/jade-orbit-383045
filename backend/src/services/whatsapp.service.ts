@@ -1,57 +1,9 @@
 import { env } from '../config/env';
 import logger from '../config/logger';
+import { WA_RETRYABLE_ERROR_CODES, WA_SKIP_ERROR_CODES } from './whatsapp-error-codes';
 
 // Meta WhatsApp Cloud API
 // https://developers.facebook.com/docs/whatsapp/cloud-api/reference/messages
-
-export const sendWhatsAppMessage = async (
-  to: string,
-  templateName: string,
-  languageCode = 'en',
-  components?: any[]
-): Promise<boolean> => {
-  const phoneId = env.META_WHATSAPP_PHONE_ID;
-  const token = env.META_WHATSAPP_TOKEN;
-
-  if (!phoneId || !token) {
-    logger.warn('Meta WhatsApp credentials missing - Message not sent');
-    return false;
-  }
-
-  const url = `https://graph.facebook.com/${graphVersion()}/${phoneId}/messages`;
-
-  // Meta API requires digits only without '+' prefix (e.g., 919876543210)
-  const normalizedTo = to.replace(/[^\d]/g, '');
-
-  const payload = {
-    messaging_product: 'whatsapp',
-    to: normalizedTo,
-    type: 'template',
-    template: {
-      name: templateName,
-      language: { code: languageCode },
-      components: components || [],
-    },
-  };
-
-  // eslint-disable-next-line n/no-unsupported-features/node-builtins
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-  });
-
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
-    throw new Error(`WhatsApp API ${response.status}: ${JSON.stringify(data)}`);
-  }
-
-  logger.info(`WhatsApp message sent to ${to}`);
-  return true;
-};
 
 /** Pinned Graph API version (configurable; bumped from the legacy v17.0). */
 export const graphVersion = (): string => env.META_WHATSAPP_API_VERSION || 'v21.0';
@@ -81,13 +33,12 @@ const SEND_TIMEOUT_MS = 15_000;
  *   130429 — Cloud API rate limit hit
  *   368    — temporarily blocked for policy violations (throttle)
  */
-const RETRYABLE_META_CODES = new Set(['131056', '131048', '130429', '368']);
-/**
- * Meta error codes that mean "don't retry, just skip this recipient":
- *   131049 — per-user marketing message frequency cap
- *   131047 — re-engagement message (24h customer-service window closed)
- */
-const SKIP_META_CODES = new Set(['131049', '131047']);
+// Sourced from the shared table rather than restated here. These two sets had
+// drifted: this file skipped {131049, 131047} while the campaign path skipped
+// {131049, 131050}, so a closed-window 131047 was a SKIP on the send path and a
+// hard FAILED once the campaign worker classified it.
+const RETRYABLE_META_CODES = WA_RETRYABLE_ERROR_CODES;
+const SKIP_META_CODES = WA_SKIP_ERROR_CODES;
 
 /**
  * Turn a Meta send error into a clear, actionable message for the agent. Known
@@ -224,10 +175,15 @@ export async function sendWhatsappRaw(message: Record<string, any>): Promise<WaS
     const retryAfterMs = parseRetryAfter(response.headers.get('retry-after'));
 
     if (response.status === 429 || (code && RETRYABLE_META_CODES.has(code))) {
-      // Rate/throttle — retry later. Counts as transient, so reset the breaker.
+      // Rate/throttle — retry later, after the delay Meta asked for.
+      //
+      // This branch used to call recordSuccess(), which zeroes the consecutive
+      // failure count, so the circuit breaker could never open during a pure
+      // throttle storm: we kept hammering a Cloud API that was explicitly
+      // telling us to stop. A throttle is neither a success nor a hard failure —
+      // leave the counter alone and let the caller honour retryAfterMs.
       result.retryable = true;
       result.retryAfterMs = retryAfterMs ?? CB_COOLDOWN_MS;
-      recordSuccess();
     } else if (code && SKIP_META_CODES.has(code)) {
       // Marketing cap / outside re-engagement window — skip, never FAIL or retry.
       result.skip = true;

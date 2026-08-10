@@ -18,8 +18,11 @@ jest.mock('next/navigation', () => ({
 jest.mock('next/image', () => ({
   __esModule: true,
   default: (props: Record<string, unknown>) => {
-    // eslint-disable-next-line @next/next/no-img-element, jsx-a11y/alt-text
+    // `fill` and `priority` are next/image-only props; a bare <img> would warn
+    // about unknown DOM attributes, so strip them.
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { fill, priority, ...rest } = props;
+    // eslint-disable-next-line @next/next/no-img-element, jsx-a11y/alt-text
     return <img {...rest} />;
   },
 }));

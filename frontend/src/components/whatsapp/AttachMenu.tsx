@@ -2,6 +2,8 @@
 
 import { useRef, useState } from 'react';
 import { Paperclip, Image as ImageIcon, Music, FileText, Contact } from 'lucide-react';
+import { assertUploadSize } from '@/constants/config';
+import { showToast } from '@/components/ui/Toast';
 
 /**
  * Composer attach button + popup menu of attachment categories.
@@ -31,7 +33,17 @@ export default function AttachMenu({
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) onPickFile(file);
+    // Check the size HERE, not after a full upload. Without this a 30 MB video
+    // uploaded all the way to the BFF and came back as a generic "Something
+    // went wrong" — no size mentioned, nothing to act on.
+    if (file) {
+      try {
+        assertUploadSize(file);
+        onPickFile(file);
+      } catch (err) {
+        showToast.error(err instanceof Error ? err.message : 'File is too large');
+      }
+    }
     e.target.value = '';
   };
 

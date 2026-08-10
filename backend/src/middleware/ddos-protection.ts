@@ -15,7 +15,12 @@ const BLOCK_DURATION = 60; // seconds to block an IP after threshold breach
 export const ddosProtection = () => {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     // Exempt health checks
-    if (req.path.startsWith('/health')) {
+    // The Meta webhook is exempt for the same reason app.ts mounts it ahead of
+    // apiLimiter: Meta bursts delivery/read callbacks during a bulk campaign, and
+    // a 429 makes it retry, back off, and eventually disable the subscription.
+    // Its protection is the X-Hub-Signature-256 HMAC, which is verified before
+    // anything is written. (A generous webhookLimiter still applies.)
+    if (req.path.startsWith('/health') || req.path === '/api/v1/webhooks/whatsapp') {
       return next();
     }
 

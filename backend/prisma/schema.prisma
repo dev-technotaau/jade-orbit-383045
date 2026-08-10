@@ -149,7 +149,14 @@ model WaContact {
 
   @@index([optInStatus])
   @@index([lastInboundAt])
-  @@index([tags])
+  /// GIN, not btree. Every tag query uses array containment — `has` compiles to
+  /// `ARRAY[$1] <@ tags` and `hasSome` (the campaign audience resolver) to
+  /// `tags && ARRAY[...]` — and only a GIN index can answer those. The default
+  /// btree was unusable by any query in the codebase.
+  ///
+  /// NOTE: `prisma db push` drops and recreates this index, taking an ACCESS
+  /// EXCLUSIVE lock. On a populated contacts table, run it in a quiet window.
+  @@index([tags], type: Gin)
 }
 
 model WaConversation {
@@ -183,9 +190,14 @@ model WaConversation {
   @@unique([channelId, contactId])
   @@index([status])
   @@index([assignedTo])
-  @@index([lastMessageAt])
-  @@index([status, lastMessageAt])
-  @@index([assignedTo, lastMessageAt])
+  /// Declared DESC to match the inbox's `ORDER BY lastMessageAt DESC NULLS LAST`.
+  /// An ASC index scanned backwards yields DESC NULLS FIRST, which does not
+  /// match, so Postgres sorted the whole filtered set on every page load.
+  @@index([lastMessageAt(sort: Desc)])
+  @@index([status, lastMessageAt(sort: Desc)])
+  @@index([assignedTo, lastMessageAt(sort: Desc)])
+  /// The default list filters archivedAt: null and sorts by lastMessageAt.
+  @@index([archivedAt, lastMessageAt(sort: Desc)])
   @@index([snoozedUntil])
 }
 
@@ -232,6 +244,13 @@ model WaMessage {
   @@index([campaignId])
   @@index([direction])
   @@index([templateName])
+  /// Time-window scans over the largest table: the analytics time-series,
+  /// hourly heatmap and keyword breakdown all filter on createdAt alone, and so
+  /// does the retention prune. The composite above leads on conversationId, so
+  /// none of them could use it — they seq-scanned, under a 30s statement_timeout.
+  @@index([createdAt])
+  /// Inbound-only time windows (keyword breakdown, response-time analytics).
+  @@index([direction, createdAt])
 }
 
 /// Mirror of a Meta message template + lifecycle/quality/analytics.
@@ -335,26 +354,35 @@ model WaCampaignTemplate {
 }
 
 model WaCampaignRecipient {
-  id          String                    @id @default(uuid())
-  campaignId  String
-  campaign    WaCampaign                @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  contactId   String
-  contact     WaContact                 @relation(fields: [contactId], references: [id], onDelete: Cascade)
-  status      WaCampaignRecipientStatus @default(PENDING)
-  wamid       String? // resolved message id for status reconciliation
-  variantId   String? // A/B variant assigned to this recipient
-  variables   Json? // resolved template variables for this recipient
-  errorCode   String?
-  sentAt      DateTime?
-  repliedAt   DateTime? // for drip branch + reply funnel
-  currentStep Int                       @default(0) // drip sequence progress
-  nextStepAt  DateTime? // when the next drip step is due
-  createdAt   DateTime                  @default(now())
+  id            String                    @id @default(uuid())
+  campaignId    String
+  campaign      WaCampaign                @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contactId     String
+  contact       WaContact                 @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  status        WaCampaignRecipientStatus @default(PENDING)
+  wamid         String? // resolved message id for status reconciliation
+  variantId     String? // A/B variant assigned to this recipient
+  variables     Json? // resolved template variables for this recipient
+  errorCode     String?
+  sentAt        DateTime?
+  /// Last time a worker actually attempted this recipient. Unlike `sentAt` it is
+  /// never cleared by the retryable-error rollback, so the recovery cron can tell
+  /// "being rate-limited, in progress" apart from "stalled, nobody is working on
+  /// it" — otherwise a rate-limited campaign looked stalled and got re-batched.
+  lastAttemptAt DateTime?
+  repliedAt     DateTime? // for drip branch + reply funnel
+  currentStep   Int                       @default(0) // drip sequence progress
+  nextStepAt    DateTime? // when the next drip step is due
+  createdAt     DateTime                  @default(now())
 
   @@unique([campaignId, contactId])
   @@index([campaignId, status])
   @@index([wamid])
   @@index([nextStepAt])
+  /// `recordCampaignReply` runs for EVERY inbound message and looks up by
+  /// contactId + repliedAt. The unique index above leads on campaignId, so that
+  /// lookup seq-scanned the recipient table — on the hot inbound path.
+  @@index([contactId, repliedAt])
 }
 
 /// Raw webhook envelope log for replay/debug + at-least-once dedup audit.
@@ -370,6 +398,13 @@ model WaWebhookEvent {
 
   @@index([wamid])
   @@index([createdAt])
+  /// The stuck-event recovery cron looks for `processedAt IS NULL` rows older
+  /// than 2 minutes, every 5 minutes. The createdAt index alone is useless as a
+  /// filter there — the age predicate matches essentially every row — so it
+  /// scanned all 14 days of events to find the handful still unprocessed.
+  /// (A partial index WHERE processedAt IS NULL would be tighter still, but
+  /// Prisma cannot express one; this composite is the best it can declare.)
+  @@index([processedAt, createdAt])
 }
 
 /// Reusable quick-reply snippets for the super-admin inbox composer.

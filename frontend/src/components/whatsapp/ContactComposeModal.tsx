@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { X, Plus, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import DialogShell from '@/components/ui/DialogShell';
 import Input from '@/components/ui/Input';
 import Button from '@/components/ui/Button';
 import PhoneInput from '@/components/ui/PhoneInput';
@@ -85,7 +86,7 @@ export default function ContactComposeModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+    <DialogShell onClose={onClose} label="Send a contact">
       <div className="flex max-h-[90vh] w-full max-w-md flex-col rounded-xl bg-white shadow-xl">
         <div className="flex items-center justify-between border-b border-[var(--border)] p-6 pb-4">
           <h2 className="text-lg font-bold text-[var(--text)]">Send a contact</h2>
@@ -171,6 +172,6 @@ export default function ContactComposeModal({
           </Button>
         </div>
       </div>
-    </div>
+    </DialogShell>
   );
 }

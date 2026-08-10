@@ -29,7 +29,29 @@ function sendDualFormat(
 }
 
 /**
- * Full health check — database, Redis, Elasticsearch + system metrics
+ * Redis health, as the probes should read it.
+ *
+ * `REDIS_ENABLED=false` is a supported, documented configuration (.env.example)
+ * and config/redis.ts answers it with a mock client whose `status` is the string
+ * `'disabled'`. Both probes compared against `'ready'` only, so that supported
+ * configuration made /health and /health/ready return 503 forever — an
+ * orchestrator would never route traffic to a perfectly functional instance.
+ * Disabled-on-purpose is not the same as down.
+ */
+function redisHealth(): 'up' | 'disabled' | 'down' {
+  try {
+    // The mock client reports the literal 'disabled', which is outside ioredis's
+    // RedisStatus union — hence the widening cast.
+    const status = redis.status as string;
+    if (status === 'disabled') return 'disabled';
+    return status === 'ready' ? 'up' : 'down';
+  } catch {
+    return 'down';
+  }
+}
+
+/**
+ * Full health check — database, Redis + system metrics
  * GET /health
  */
 export const checkHealth = async (req: Request, res: Response) => {
@@ -46,14 +68,7 @@ export const checkHealth = async (req: Request, res: Response) => {
     // Database is down
   }
 
-  // Check Redis
-  try {
-    if (redis.status === 'ready') {
-      checks.redis = 'up';
-    }
-  } catch {
-    // Redis is down
-  }
+  checks.redis = redisHealth();
 
   // Elasticsearch was checked here. This module does not search — it went with
   // the host platform's job/candidate indexes.
@@ -84,6 +99,10 @@ export const checkHealth = async (req: Request, res: Response) => {
 /**
  * Liveness probe — is the process alive and responding?
  * GET /health/live
+ *
+ * This is the one to point a platform health check at: it reflects the process,
+ * not its dependencies, so a transient database blip restarts nothing. Use
+ * /health/ready for load-balancer routing and /health for a human look.
  */
 export const checkLiveness = (req: Request, res: Response) => {
   const payload = { status: 'alive', timestamp: new Date().toISOString() };
@@ -105,11 +124,8 @@ export const checkReadiness = async (req: Request, res: Response) => {
     // DB not ready
   }
 
-  try {
-    redisReady = redis.status === 'ready';
-  } catch {
-    // Redis not ready
-  }
+  const redisState = redisHealth();
+  redisReady = redisState !== 'down';
 
   // Kafka consumer-lag reporting lived here. Kafka was removed with the host
   // platform's event backbone, so readiness is database + Redis only.
@@ -120,7 +136,7 @@ export const checkReadiness = async (req: Request, res: Response) => {
     status: (ready ? 'ready' : 'not_ready') as 'ready' | 'not_ready',
     checks: {
       database: dbReady ? 'up' : 'down',
-      redis: redisReady ? 'up' : 'down',
+      redis: redisState,
     },
     timestamp: new Date().toISOString(),
   };

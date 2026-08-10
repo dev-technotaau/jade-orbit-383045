@@ -5,6 +5,7 @@ import {
   useRef,
   useCallback,
   useEffect,
+  useMemo,
   useId,
   type KeyboardEvent,
   type ChangeEvent,
@@ -158,9 +159,25 @@ const AutoSuggest = forwardRef<AutoSuggestRef, AutoSuggestProps>(
     const dropdownPlacement = usePopoverPlacement(containerRef, isOpen, 260);
 
     /* ---- derived ---- */
-    const selectedValues: string[] = Array.isArray(value) ? value : value ? [value] : [];
+    // Memoized: the ternary built a fresh array every render, so every
+    // useCallback below that closes over it lost its memoization.
+    const selectedValues: string[] = useMemo(
+      () => (Array.isArray(value) ? value : value ? [value] : []),
+      [value],
+    );
 
     const isMaxReached = maxSelections ? selectedValues.length >= maxSelections : false;
+
+    /* ---- helpers ---- */
+    // Declared BEFORE the imperative handle below, which calls it. The other
+    // order compiled but tripped react-hooks: `clear` closed over `handleChange`
+    // in its TDZ, and the compiler had to give up preserving the memoization.
+    const handleChange = useCallback(
+      (newValue: string | string[]) => {
+        onChange?.(newValue);
+      },
+      [onChange],
+    );
 
     /* ---- imperative handle ---- */
     useImperativeHandle(ref, () => ({
@@ -170,14 +187,6 @@ const AutoSuggest = forwardRef<AutoSuggestRef, AutoSuggestProps>(
         handleChange(multiple ? [] : '');
       },
     }));
-
-    /* ---- helpers ---- */
-    const handleChange = useCallback(
-      (newValue: string | string[]) => {
-        onChange?.(newValue);
-      },
-      [onChange],
-    );
 
     const handleSelect = useCallback(
       (optionValue: string) => {

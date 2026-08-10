@@ -56,8 +56,9 @@ const prismaMock = {
 };
 jest.mock('../../config/prisma', () => ({ prisma: prismaMock }));
 
-// Redis stub — `set(... NX)` returns 'OK' for a fresh wamid, null for a dupe.
-const redisMock = { set: jest.fn() };
+// Redis stub. `get` is the short-circuit dedup read (null = not seen yet) and
+// `set` is the post-persist mark; the durable dedup is WaMessage.wamid @unique.
+const redisMock = { get: jest.fn(), set: jest.fn() };
 jest.mock('../../config/redis', () => ({ redis: redisMock }));
 
 jest.mock('../../config/logger', () => ({
@@ -75,7 +76,6 @@ jest.mock('../../utils/whatsapp-metrics', () => {
     captureWaException: jest.fn(),
   };
 });
-
 
 // ── queue stubs ─────────────────────────────────────────────────────────────
 // Mock the inbound queue module so importing the worker doesn't build a real
@@ -104,11 +104,15 @@ jest.mock('../../services/whatsapp-template.service', () => ({
 const upsertContactByPhoneMock = jest.fn();
 const normalizeWaPhoneMock = jest.fn();
 const isOptOutMessageMock = jest.fn();
+// The worker uses the async variant so operator-configured WaSettings keywords
+// are honoured; keep both mocked from the same fn so tests set one value.
+const isOptOutMessageAsyncMock = jest.fn();
 const optOutContactMock = jest.fn();
 jest.mock('../../services/whatsapp-contact.service', () => ({
   upsertContactByPhone: upsertContactByPhoneMock,
   normalizeWaPhone: normalizeWaPhoneMock,
   isOptOutMessage: isOptOutMessageMock,
+  isOptOutMessageAsync: isOptOutMessageAsyncMock,
   optOutContact: optOutContactMock,
 }));
 
@@ -230,6 +234,7 @@ beforeEach(() => {
   getOrCreateConversationMock.mockResolvedValue(CONVERSATION);
   normalizeWaPhoneMock.mockImplementation((p: string) => `+${String(p).replace(/\D/g, '')}`);
   isOptOutMessageMock.mockReturnValue(false);
+  isOptOutMessageAsyncMock.mockResolvedValue(false);
   optOutContactMock.mockResolvedValue(undefined);
   touchOnMessageMock.mockResolvedValue(undefined);
   reconcileRecipientStatusMock.mockResolvedValue(undefined);
@@ -237,7 +242,8 @@ beforeEach(() => {
   emitWaEventMock.mockResolvedValue(undefined);
   addWhatsappMediaJobMock.mockResolvedValue(undefined);
 
-  // Redis NX dedup: fresh by default.
+  // Redis dedup: nothing seen by default.
+  redisMock.get.mockResolvedValue(null);
   redisMock.set.mockResolvedValue('OK');
   // No existing message by default (so create() runs).
   prismaMock.waMessage.findUnique.mockResolvedValue(null);
@@ -300,9 +306,9 @@ describe('processInboundEvent — inbound messages', () => {
     expect(res).toMatchObject({ processed: true });
   });
 
-  it('does NOT create a second WaMessage when Redis NX reports a duplicate wamid', async () => {
-    // Redis dedup wins: NX returns null → message skipped before any DB write.
-    redisMock.set.mockResolvedValue(null);
+  it('does NOT create a second WaMessage when Redis reports the wamid already seen', async () => {
+    // Redis short-circuit: the key exists (set by whoever persisted the row).
+    redisMock.get.mockResolvedValue('1');
     prismaMock.waWebhookEvent.findUnique.mockResolvedValue(
       eventWithValue(textMessageValue('wamid.MSG1'))
     );
@@ -315,8 +321,10 @@ describe('processInboundEvent — inbound messages', () => {
   });
 
   it('does NOT create a second WaMessage when the DB dedup finds an existing row', async () => {
-    // Redis says fresh, but the durable WaMessage.wamid @unique backstop hits.
-    redisMock.set.mockResolvedValue('OK');
+    // Redis has no key (e.g. TTL expired, or Redis was flushed), but the durable
+    // WaMessage.wamid @unique backstop hits. The DB is checked FIRST, so this
+    // holds even if Redis is entirely unavailable.
+    redisMock.get.mockResolvedValue(null);
     prismaMock.waMessage.findUnique.mockResolvedValue({ id: 'existing-msg' });
     prismaMock.waWebhookEvent.findUnique.mockResolvedValue(
       eventWithValue(textMessageValue('wamid.MSG1'))
@@ -326,6 +334,54 @@ describe('processInboundEvent — inbound messages', () => {
 
     expect(prismaMock.waMessage.create).not.toHaveBeenCalled();
     expect(prismaMock.waWebhookEvent.update).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks the wamid seen in Redis only AFTER the message row is persisted', async () => {
+    // Regression guard. The mark used to be written up front, before the row
+    // existed, so any failure in between (contact upsert, conversation upsert, a
+    // pool timeout) left the wamid marked seen with no row — and the queue retry
+    // then skipped it forever. Order matters: create() must resolve first.
+    const order: string[] = [];
+    prismaMock.waMessage.create.mockImplementation((args: any) => {
+      order.push('create');
+      return Promise.resolve({ id: 'msg1', conversationId: CONVERSATION.id, ...args.data });
+    });
+    redisMock.set.mockImplementation(() => {
+      order.push('mark');
+      return Promise.resolve('OK');
+    });
+    prismaMock.waWebhookEvent.findUnique.mockResolvedValue(
+      eventWithValue(textMessageValue('wamid.MSG1'))
+    );
+
+    await processInboundEvent('evt1');
+
+    expect(order).toEqual(['create', 'mark']);
+    expect(redisMock.set).toHaveBeenCalledWith('wa:seen:wamid.MSG1', '1', 'EX', 259200, 'NX');
+  });
+
+  it('does NOT mark the wamid seen when persisting the message throws', async () => {
+    // The whole point of the reordering: a transient DB failure must leave the
+    // wamid unmarked so the BullMQ retry can actually reprocess it.
+    prismaMock.waMessage.create.mockRejectedValue(new Error('pool timeout'));
+    prismaMock.waWebhookEvent.findUnique.mockResolvedValue(
+      eventWithValue(textMessageValue('wamid.MSG1'))
+    );
+
+    await expect(processInboundEvent('evt1')).rejects.toThrow('pool timeout');
+
+    expect(redisMock.set).not.toHaveBeenCalled();
+  });
+
+  it('still processes the message when Redis is down (DB dedup is authoritative)', async () => {
+    redisMock.get.mockRejectedValue(new Error('ECONNREFUSED'));
+    prismaMock.waWebhookEvent.findUnique.mockResolvedValue(
+      eventWithValue(textMessageValue('wamid.MSG1'))
+    );
+
+    await processInboundEvent('evt1');
+
+    expect(prismaMock.waMessage.create).toHaveBeenCalledTimes(1);
   });
 
   it('a text message does NOT enqueue a media job', async () => {
@@ -379,7 +435,11 @@ describe('processInboundEvent — forward-only status state machine', () => {
     const upd = prismaMock.waMessage.update.mock.calls[0][0];
     expect(upd.where).toEqual({ wamid: 'wamid.OUT1' });
     expect(upd.data).toMatchObject({ status: 'DELIVERED', deliveredAt: expect.any(Date) });
-    expect(reconcileRecipientStatusMock).toHaveBeenCalledWith('wamid.OUT1', 'DELIVERED');
+    // The Meta error code now rides along so campaign recipients can tell a
+    // permanent rejection from a transient one; null on a non-failure status.
+    expect(reconcileRecipientStatusMock).toHaveBeenCalledWith('wamid.OUT1', 'DELIVERED', {
+      errorCode: null,
+    });
   });
 
   it('ignores a stale/backward status (READ → DELIVERED is not regressed)', async () => {
@@ -402,15 +462,22 @@ describe('processInboundEvent — forward-only status state machine', () => {
     expect(prismaMock.waWebhookEvent.update).toHaveBeenCalledTimes(1);
   });
 
-  it('drops a status whose wamid has no matching message row', async () => {
+  it('DEFERS a status whose wamid has no matching message row yet', async () => {
+    // Not a drop — a race. The send path writes the WAMID after the Graph POST
+    // returns, and Meta's `sent` callback regularly beats it. Leaving the event
+    // unprocessed is what lets the recovery pass replay it two minutes later;
+    // marking it processed (the old behaviour) lost the status permanently and
+    // the message showed as "sent" forever despite being delivered and read.
     prismaMock.waMessage.findUnique.mockResolvedValue(null);
     prismaMock.waWebhookEvent.findUnique.mockResolvedValue(
       eventWithValue(statusValue('wamid.UNKNOWN', 'delivered'), { eventType: 'status' })
     );
 
-    await processInboundEvent('evt1');
+    const res = await processInboundEvent('evt1');
 
     expect(prismaMock.waMessage.update).not.toHaveBeenCalled();
-    expect(prismaMock.waWebhookEvent.update).toHaveBeenCalledTimes(1);
+    expect(res).toMatchObject({ deferred: true });
+    // Crucially NOT stamped processed, so handleWaEventRecovery re-enqueues it.
+    expect(prismaMock.waWebhookEvent.update).not.toHaveBeenCalled();
   });
 });

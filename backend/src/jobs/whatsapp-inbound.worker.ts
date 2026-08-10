@@ -9,7 +9,7 @@ import { getOrCreateChannel } from '../services/whatsapp-channel.service';
 import { getTemplateByName } from '../services/whatsapp-template.service';
 import {
   upsertContactByPhone,
-  isOptOutMessage,
+  isOptOutMessageAsync,
   optOutContact,
   normalizeWaPhone,
 } from '../services/whatsapp-contact.service';
@@ -190,18 +190,35 @@ async function processMessages(value: any): Promise<void> {
 
   for (const msg of value.messages ?? []) {
     if (!msg?.id || !msg?.from) continue;
-    // Fast Redis dedup (NX + ~3d TTL); the WaMessage.wamid @unique is the durable backstop.
-    try {
-      const fresh = await redis.set(`wa:seen:${msg.id}`, '1', 'EX', 259200, 'NX');
-      if (fresh === null) continue;
-    } catch {
-      /* Redis unavailable — fall through to DB dedup */
-    }
+
+    // Dedup is DB-first on purpose. The Redis key used to be written here, up
+    // front, and a `null` reply (key already present) short-circuited with
+    // `continue` — without ever consulting the database.
+    //
+    // That silently lost messages. The WaMessage row is not created until much
+    // further down, and everything in between can throw (contact upsert,
+    // conversation upsert, a P2024 pool timeout). The queue retries the whole
+    // batch, but on the retry the WAMID was already marked seen, so the message
+    // was skipped forever — no row, no error, and a 3-day TTL before the key
+    // even expired. For a product that IS the inbox, that is the worst
+    // available failure.
+    //
+    // `WaMessage.wamid` is @unique, so the DB is the authority; Redis is only a
+    // cheap short-circuit for the common duplicate-webhook case and is written
+    // AFTER the row exists (see below).
     const dup = await prisma.waMessage.findUnique({
       where: { wamid: msg.id },
       select: { id: true },
     });
     if (dup) continue;
+
+    try {
+      // Already handled by a concurrent worker that got as far as persisting.
+      const seen = await redis.get(`wa:seen:${msg.id}`);
+      if (seen) continue;
+    } catch {
+      /* Redis unavailable — the @unique constraint below still protects us */
+    }
 
     const profileName = contacts.find((c) => c.wa_id === msg.from)?.profile?.name ?? null;
     // Detect a brand-new contact BEFORE the upsert so we can persist CTWA
@@ -301,6 +318,12 @@ async function processMessages(value: any): Promise<void> {
       throw e;
     }
 
+    // Mark seen only now that the row is durable. Written after the create (not
+    // before it) so a failure anywhere above leaves the WAMID unmarked and the
+    // queue's retry can still process it. ~3d TTL; fire-and-forget because the
+    // @unique constraint above is the real guarantee.
+    redis.set(`wa:seen:${msg.id}`, '1', 'EX', 259200, 'NX').catch(() => {});
+
     // Inbound messages are delivered-to-us by definition.
     waMessagesTotal.inc({ direction: 'inbound', type, status: 'delivered' });
 
@@ -384,7 +407,11 @@ async function processMessages(value: any): Promise<void> {
       }
     }
     let justOptedOut = false;
-    if (optOutCandidates.some((c) => isOptOutMessage(c))) {
+    // Async so the operator's own WaSettings keywords are honoured, not just the
+    // built-in and env lists (the settings editor saved them and nothing read
+    // them).
+    const optOutHits = await Promise.all(optOutCandidates.map((c) => isOptOutMessageAsync(c)));
+    if (optOutHits.some(Boolean)) {
       await optOutContact(contact.id).catch(() => {});
       justOptedOut = true;
       emitWaEvent('whatsapp.contact.opted_out', {
@@ -479,7 +506,12 @@ async function recordCampaignReply(contactId: string, at: Date): Promise<void> {
   }
 }
 
-async function processStatuses(value: any): Promise<void> {
+/**
+ * @returns true when at least one status referenced a WAMID we have not
+ * persisted yet — the caller leaves the event unprocessed so it is replayed.
+ */
+async function processStatuses(value: any): Promise<boolean> {
+  let unmatched = false;
   for (const st of value.statuses ?? []) {
     const wamid = st?.id;
     const status = mapStatus(st?.status);
@@ -487,7 +519,16 @@ async function processStatuses(value: any): Promise<void> {
     const ts = st.timestamp ? new Date(Number(st.timestamp) * 1000) : new Date();
 
     const msg = await prisma.waMessage.findUnique({ where: { wamid } });
-    if (!msg) continue;
+    if (!msg) {
+      // The WAMID isn't ours yet. This is a genuine race, not junk: the send
+      // path creates the row as QUEUED, awaits the Graph POST, and only then
+      // writes the WAMID — and for campaigns the recipient's wamid lands later
+      // still. Meta's `sent` callback regularly beats both. Dropping it meant a
+      // message that was delivered and read displayed as "sent" forever, and
+      // its campaign counters never moved.
+      unmatched = true;
+      continue;
+    }
     // Forward-only: never regress the status.
     if (STATUS_RANK[status] <= STATUS_RANK[msg.status]) continue;
 
@@ -523,10 +564,15 @@ async function processStatuses(value: any): Promise<void> {
 
     emitWa('wa:status', { wamid, status, conversationId: msg.conversationId }, msg.conversationId);
     // Campaign-recipient reconciliation (status-by-wamid → campaign counters).
-    await reconcileRecipientStatus(wamid, status as unknown as WaCampaignRecipientStatus).catch(
-      () => {}
-    );
+    // The Meta error code rides along: without it every webhook-delivered
+    // failure landed as `status: FAILED, errorCode: null`, which is
+    // indistinguishable from a transient network failure — so "retry failed"
+    // happily re-sent to numbers Meta had permanently rejected.
+    await reconcileRecipientStatus(wamid, status as unknown as WaCampaignRecipientStatus, {
+      errorCode: err?.code != null ? String(err.code) : null,
+    }).catch(() => {});
   }
+  return unmatched;
 }
 
 // Map a Meta template-status-update `event` string to our WaTemplateStatus.
@@ -626,9 +672,13 @@ async function processChangeField(field: string, value: any): Promise<void> {
  * export so it can be invoked directly (e.g. in tests) without standing up the
  * BullMQ worker / Redis connection. The worker simply forwards to it.
  */
-export async function processInboundEvent(
-  eventRowId: string
-): Promise<{ processed: boolean; duplicate?: boolean; eventType?: string }> {
+export async function processInboundEvent(eventRowId: string): Promise<{
+  processed: boolean;
+  duplicate?: boolean;
+  eventType?: string;
+  /** Left unprocessed on purpose — a status arrived before its message. */
+  deferred?: boolean;
+}> {
   const event = await prisma.waWebhookEvent.findUnique({
     where: { id: eventRowId },
   });
@@ -639,6 +689,7 @@ export async function processInboundEvent(
   if (event.processedAt) return { processed: true, duplicate: true };
 
   const payload: any = event.payload;
+  let sawUnmatchedStatus = false;
   for (const entry of payload?.entry ?? []) {
     for (const change of entry?.changes ?? []) {
       const value = change?.value;
@@ -649,7 +700,7 @@ export async function processInboundEvent(
         await processMessages(value);
       }
       if (hasStatuses) {
-        await processStatuses(value);
+        if (await processStatuses(value)) sawUnmatchedStatus = true;
       }
       // Other webhook fields (template status, phone-number quality,
       // account alerts/updates) — best-effort, never aborts the job.
@@ -657,6 +708,20 @@ export async function processInboundEvent(
         await processChangeField(change.field, value);
       }
     }
+  }
+
+  // Leave the event UNPROCESSED when a status referenced a message we have not
+  // written yet: `handleWaEventRecovery` re-enqueues unprocessed events older
+  // than two minutes, by which time the outbound write has certainly landed.
+  // Everything in this handler is idempotent (forward-only status ranking,
+  // WAMID dedup), so the replay is free — and it is bounded, because the same
+  // recovery pass gives up once the event ages out of the 14-day retention.
+  if (sawUnmatchedStatus) {
+    logger.info(
+      `WhatsApp inbound: event ${event.id} has status(es) for unknown WAMIDs — ` +
+        'left unprocessed for the recovery pass to replay'
+    );
+    return { processed: true, eventType: event.eventType, deferred: true };
   }
 
   await prisma.waWebhookEvent.update({

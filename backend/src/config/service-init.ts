@@ -39,6 +39,21 @@ export const initializeServices = async (): Promise<void> => {
   registerService('Rate Limiting', 'ready');
   registerService('DDoS Protection', 'ready');
   registerService('WAF (Web App Firewall)', 'ready');
+  {
+    // Field encryption is optional by construction (encryptField passes the
+    // value through without a key). Surface it in the banner rather than
+    // letting a deployment quietly store PII in the clear.
+    const { isEncryptionEnabled, warnIfEncryptionDisabled } = await import('../utils/encryption');
+    warnIfEncryptionDisabled('boot');
+    registerService(
+      'Field Encryption',
+      isEncryptionEnabled() ? 'ready' : 'not_configured',
+      isEncryptionEnabled()
+        ? 'AES-256-GCM (consent evidence, notes)'
+        : 'FIELD_ENCRYPTION_KEY unset - consent evidence + notes stored in plaintext'
+    );
+  }
+
   registerService(
     'App Password',
     env.APP_PASSWORD ? 'ready' : 'not_configured',
@@ -49,7 +64,31 @@ export const initializeServices = async (): Promise<void> => {
   try {
     const { prisma } = await import('./prisma');
     await prisma.$queryRawUnsafe('SELECT 1');
-    registerService('PostgreSQL (Prisma)', 'ready');
+
+    // The module ships no migration history — the schema is applied with
+    // `prisma db push`, which is a manual step nothing enforces. A deployment
+    // that skips it connects fine, boots green, and then fails on the first
+    // query with a raw Postgres "relation does not exist". Check once, here,
+    // and say exactly what to run.
+    const tables = await prisma.$queryRawUnsafe<Array<{ count: bigint }>>(
+      `SELECT COUNT(*)::bigint AS count FROM information_schema.tables
+        WHERE table_schema = current_schema() AND table_name LIKE 'Wa%'`
+    );
+    const waTables = Number(tables?.[0]?.count ?? 0);
+    if (waTables === 0) {
+      registerService(
+        'PostgreSQL (Prisma)',
+        'error',
+        'connected, but the schema has never been applied — run: npm --prefix backend run db:deploy'
+      );
+      logger.error(
+        'Database has no Wa* tables. The schema has not been applied to this ' +
+          'database. Run `npm --prefix backend run db:deploy` (prisma db push) ' +
+          'before starting the server.'
+      );
+    } else {
+      registerService('PostgreSQL (Prisma)', 'ready', `${waTables} WhatsApp tables`);
+    }
   } catch (error) {
     registerService('PostgreSQL (Prisma)', 'error', (error as Error).message);
   }
@@ -73,11 +112,7 @@ export const initializeServices = async (): Promise<void> => {
   /* ── Media storage (WhatsApp inbound/outbound attachments) ── */
   try {
     const r2 = await import('./r2');
-    registerService(
-      'Cloudflare R2',
-      r2 ? 'ready' : 'not_configured',
-      'WhatsApp media storage'
-    );
+    registerService('Cloudflare R2', r2 ? 'ready' : 'not_configured', 'WhatsApp media storage');
   } catch {
     registerService('Cloudflare R2', 'not_configured');
   }
@@ -101,12 +136,21 @@ export const initializeServices = async (): Promise<void> => {
 
   registerService('Swagger API Docs', 'ready', '/api-docs');
 
-
   displayStartupStatus();
 };
 
 export const shutdownServices = async (): Promise<void> => {
   displayShutdownStatus();
+
+  // Campaign counter recomputes are coalesced behind a short timer; flush them
+  // before the database goes away, or the last few status webhooks of a run are
+  // never reflected in the campaign's totals.
+  try {
+    const { flushPendingCounterRecomputes } = await import('../services/whatsapp-campaign.service');
+    await flushPendingCounterRecomputes();
+  } catch (error) {
+    logger.error('Error flushing campaign counter recomputes:', error);
+  }
 
   try {
     const { disconnectPrisma } = await import('./prisma');

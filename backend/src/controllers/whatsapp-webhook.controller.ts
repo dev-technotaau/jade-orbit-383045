@@ -50,9 +50,10 @@ export function verifyWhatsappWebhook(req: Request, res: Response): void {
  * Mounted on `app` directly (NOT `apiV1Router`) BEFORE the global JSON parser,
  * with `whatsappWebhookRawBody()` capturing the raw bytes for HMAC. Returns
  * 200 fast (Meta retries non-2xx — a non-2xx on bad signature would cause a
- * retry storm and can disable the webhook); signature is verified, a minimal
- * audit stub is persisted on mismatch (real payload only when verified), and
- * valid events are enqueued for async processing by the inbound worker.
+ * retry storm and can disable the webhook); the signature is verified before
+ * anything is written, an unverified request is counted + logged and dropped
+ * without a database row, and valid events are enqueued for async processing by
+ * the inbound worker.
  */
 export async function handleWhatsappWebhook(req: Request, res: Response): Promise<void> {
   const signature = req.get('x-hub-signature-256') ?? undefined;
@@ -78,16 +79,16 @@ export async function handleWhatsappWebhook(req: Request, res: Response): Promis
       // 2xx — a non-2xx makes Meta retry the same payload (retry storm) and can
       // disable the webhook. Only a minimal audit stub was persisted (no
       // attacker-controlled payload), and nothing is enqueued.
-      logger.warn('WhatsApp webhook signature invalid/unconfigured — dropped (stub persisted)', {
-        eventRowId: result.id,
-      });
+      logger.warn('WhatsApp webhook signature invalid/unconfigured — dropped (nothing persisted)');
       res.status(200).json({ ok: false, dropped: 'invalid signature' });
       return;
     }
 
-    await addWhatsappInboundJob({ eventRowId: result.id }).catch((err) => {
-      logger.error('Failed to enqueue WhatsApp inbound job', { err });
-    });
+    if (result.id) {
+      await addWhatsappInboundJob({ eventRowId: result.id }).catch((err) => {
+        logger.error('Failed to enqueue WhatsApp inbound job', { err });
+      });
+    }
     void fanOutInboundToChatwoot(rawBody); // optional Chatwoot mirror (no-op if disabled)
 
     res.status(200).json({ ok: true, enqueued: true });

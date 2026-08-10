@@ -1,13 +1,12 @@
+import { randomUUID } from 'crypto';
 import { r2Client, R2_BUCKET_NAME } from '../config/r2';
 import logger from '../config/logger';
 import { DeleteObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Upload } from '@aws-sdk/lib-storage';
-import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import { scanFile } from '../utils/file-scan';
 import { AppError } from '../middleware/error';
-
 
 /**
  * Uploads a file to Cloudflare R2
@@ -29,7 +28,7 @@ export const uploadFileToR2 = async (
   }
 
   const ext = path.extname(originalFilename);
-  const key = `${folder}/${uuidv4()}${ext}`;
+  const key = `${folder}/${randomUUID()}${ext}`;
 
   if (!r2Client) throw new Error('R2 storage is not configured');
 

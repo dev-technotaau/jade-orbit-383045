@@ -27,6 +27,7 @@ import {
   ChevronUp,
   ChevronDown,
 } from 'lucide-react';
+import DialogShell from '@/components/ui/DialogShell';
 import Input from '@/components/ui/Input';
 import Button from '@/components/ui/Button';
 import Select from '@/components/ui/Select';
@@ -607,7 +608,7 @@ export default function TemplateBuilder({ onClose }: TemplateBuilderProps) {
   }, [buttons, isMarketing, marketingAddOns]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+    <DialogShell onClose={onClose} label="Template builder">
       <div className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl bg-white shadow-xl">
         <div className="flex shrink-0 items-center justify-between border-b border-[var(--border)] px-6 py-4">
           <h2 className="text-lg font-bold text-[var(--text)]">New Template</h2>
@@ -1204,6 +1205,6 @@ export default function TemplateBuilder({ onClose }: TemplateBuilderProps) {
           </Button>
         </div>
       </div>
-    </div>
+    </DialogShell>
   );
 }

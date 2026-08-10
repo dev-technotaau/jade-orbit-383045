@@ -1,6 +1,8 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
 import type { ApiError } from '@/types/api';
 import { broadcastLogout } from '@/lib/auth-channel';
+import { getQueryClient } from '@/lib/query-client';
+import { useAuthStore } from '@/store/auth.store';
 
 /** Raw error body shape returned by the backend — supports both legacy and new formats */
 interface RawErrorBody {
@@ -124,7 +126,13 @@ api.interceptors.response.use(
       }
       // Second 401 → session is truly dead
       axios.post('/api/auth/logout', {}, { withCredentials: true }).catch(() => {});
+      // Tell the other tabs...
       broadcastLogout();
+      // ...and this one. BroadcastChannel never delivers to the context that
+      // posted, so AuthSyncListener (which clears the query cache and the auth
+      // store) does not fire in the tab that actually hit the 401 — leaving a
+      // dead session's data rendered behind the redirect.
+      clearLocalSession();
       redirectToLogin();
     }
 
@@ -173,10 +181,31 @@ function transformError(error: AxiosError<ApiError>): ApiError {
   };
 }
 
-const protectedPrefixes = ['/candidate', '/employer', '/admin', '/super-admin', '/notifications'];
-const adminPrefixes = ['/admin', '/super-admin'];
+/**
+ * Routes that require an unlocked session.
+ *
+ * These were the host platform's five role portals — none of which exist here.
+ * `path.startsWith(...)` therefore never matched, so `redirectToLogin` returned
+ * without navigating and an expired session left the operator sitting on a
+ * fully-rendered inbox where every action failed silently. The two login URLs it
+ * would have used ('/portal/login', '/auth/login') don't exist either.
+ *
+ * This app has exactly one gated area, and the gate is /unlock — the same one
+ * proxy.ts redirects to, with the same `redirect` param, so the two agree.
+ */
+const protectedPrefixes = ['/whatsapp'];
 
 let redirectPending = false;
+
+/** Drop this tab's cached session state. Mirrors what AuthSyncListener does. */
+function clearLocalSession() {
+  try {
+    getQueryClient().clear();
+    useAuthStore.getState().logout();
+  } catch {
+    // Never let cleanup failures mask the original error.
+  }
+}
 
 // Reset redirect guard when page is restored from bfcache (browser back button)
 if (typeof window !== 'undefined') {
@@ -189,14 +218,11 @@ function redirectToLogin() {
   if (typeof window === 'undefined' || redirectPending) return;
 
   const path = window.location.pathname;
-  const isProtected = protectedPrefixes.some((p) => path.startsWith(p));
-  const isAdminRoute = adminPrefixes.some((p) => path.startsWith(p));
+  if (path.startsWith('/unlock')) return; // already there
+  if (!protectedPrefixes.some((prefix) => path.startsWith(prefix))) return;
 
-  if (isProtected && !path.startsWith('/auth/') && !path.startsWith('/portal/')) {
-    redirectPending = true;
-    const loginUrl = isAdminRoute ? '/portal/login' : '/auth/login';
-    window.location.href = `${loginUrl}?redirect=${encodeURIComponent(path)}`;
-  }
+  redirectPending = true;
+  window.location.href = `/unlock?redirect=${encodeURIComponent(path)}`;
 }
 
 export default api;

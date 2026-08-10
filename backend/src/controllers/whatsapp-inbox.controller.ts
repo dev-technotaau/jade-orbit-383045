@@ -164,12 +164,31 @@ export const sendMessage = async (
   }
 };
 
+/**
+ * Per-kind size ceilings Meta enforces on the Cloud API. Exceeding one is
+ * rejected at upload with an opaque error, so check before spending the round
+ * trip.
+ */
+const META_MEDIA_LIMITS: Record<'image' | 'video' | 'audio' | 'document' | 'sticker', number> = {
+  image: 5 * 1024 * 1024,
+  video: 16 * 1024 * 1024,
+  audio: 16 * 1024 * 1024,
+  sticker: 500 * 1024,
+  document: 100 * 1024 * 1024,
+};
+
 function mediaKindForMime(mime: string): 'image' | 'video' | 'audio' | 'document' {
   // Only mp4/3gpp ride as native WhatsApp video; every other video container
-  // (mkv/webm/mov/…) and any other non-image/non-audio type falls back to a
-  // downloadable document so it still sends, just like the WhatsApp app does.
+  // (mkv/webm/mov/…) falls back to a downloadable document so it still sends,
+  // just like the WhatsApp app does.
   if (mime === 'video/mp4' || mime === 'video/3gpp') return 'video';
-  if (mime.startsWith('image/')) return 'image';
+  // The Cloud API accepts ONLY jpeg and png as an `image` message. This branch
+  // used to take every `image/*`, so a GIF, WEBP or BMP — all completely
+  // ordinary things to attach — was sent as an image, rejected by Meta, and
+  // surfaced to the operator as a raw 500 with no message row. WEBP is a
+  // sticker to Meta, not an image; the rest ride as documents, which is exactly
+  // what the doc-comment below already promised.
+  if (mime === 'image/jpeg' || mime === 'image/png') return 'image';
   if (mime.startsWith('audio/')) return 'audio';
   return 'document';
 }
@@ -201,6 +220,17 @@ export const sendMedia = async (req: Request, res: Response, next: NextFunction)
       throw new AppError(scan.reason || 'File rejected by security scan', 400, 'WA_FILE_REJECTED');
     }
     const kind = mediaKindForMime(file.mimetype);
+    // Meta's per-kind ceiling, checked before the upload so the operator gets a
+    // clear limit rather than an opaque rejection from the Graph API.
+    const limit = META_MEDIA_LIMITS[kind];
+    if (file.size > limit) {
+      throw new AppError(
+        `${kind} files must be under ${Math.round(limit / (1024 * 1024))} MB ` +
+          `(this one is ${(file.size / (1024 * 1024)).toFixed(1)} MB)`,
+        400,
+        'WA_FILE_TOO_LARGE'
+      );
+    }
     const mediaId = await uploadMediaToMeta(file.buffer, file.mimetype, file.originalname);
     if (!mediaId) {
       throw new AppError(

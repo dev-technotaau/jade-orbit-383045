@@ -20,3 +20,37 @@ export const APP_CONFIG = {
   socketUrl: process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:5000',
   supportEmail: process.env.NEXT_PUBLIC_SUPPORT_EMAIL || '',
 } as const;
+
+/**
+ * Largest file the UI will attempt to upload, in bytes.
+ *
+ * The backend's multer accepts 16 MB, but the browser does not talk to the
+ * backend directly: every request goes through the Next.js BFF proxy, which
+ * buffers the whole body (`await request.arrayBuffer()`) before forwarding it.
+ * Serverless platforms cap that request body — Vercel at 4.5 MB — so anything
+ * larger dies inside the proxy with a platform error that never reaches our
+ * error handling, and the operator sees an upload that just fails.
+ *
+ * Refusing early with a clear message beats failing at the end of a 12 MB
+ * upload. Raise NEXT_PUBLIC_MAX_UPLOAD_MB on a self-hosted deployment where the
+ * proxy has no such cap (the backend's own 16 MB limit still applies).
+ */
+export const MAX_UPLOAD_BYTES =
+  Math.round(parseFloat(process.env.NEXT_PUBLIC_MAX_UPLOAD_MB || '4') * 1024 * 1024) ||
+  4 * 1024 * 1024;
+
+/** Human-readable form of {@link MAX_UPLOAD_BYTES}, for error copy. */
+export const MAX_UPLOAD_LABEL = `${(MAX_UPLOAD_BYTES / (1024 * 1024)).toFixed(1).replace(/\.0$/, '')} MB`;
+
+/**
+ * Throws a operator-readable error when a picked file is too large for the
+ * proxy to carry. Call before building the FormData, not after.
+ */
+export function assertUploadSize(file: File): void {
+  if (file.size > MAX_UPLOAD_BYTES) {
+    throw new Error(
+      `"${file.name}" is ${(file.size / (1024 * 1024)).toFixed(1)} MB. ` +
+        `The maximum upload size is ${MAX_UPLOAD_LABEL}.`,
+    );
+  }
+}

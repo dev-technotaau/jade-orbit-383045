@@ -51,6 +51,7 @@ import type {
 import type { ApiError } from '@/types/api';
 import TemplateComposeModal from '@/components/whatsapp/TemplateComposeModal';
 import InboxComposerTools from '@/components/whatsapp/InboxComposerTools';
+import Spinner from '@/components/ui/Spinner';
 import ThreadDetailsPanel from '@/components/whatsapp/ThreadDetailsPanel';
 import ScheduleMessageModal from '@/components/whatsapp/ScheduleMessageModal';
 import MediaGalleryModal from '@/components/whatsapp/MediaGalleryModal';
@@ -67,10 +68,7 @@ import VoiceRecorder from '@/components/whatsapp/VoiceRecorder';
 import ContactComposeModal from '@/components/whatsapp/ContactComposeModal';
 import { getOpenConv, setOpenConv, subscribeOpenConv } from '@/lib/wa-open-conv';
 import BulkActionBar from '@/components/whatsapp/BulkActionBar';
-import {
-  ensureNotificationPermission,
-  notifyInbound,
-} from '@/components/whatsapp/wa-notify';
+import { ensureNotificationPermission, notifyInbound } from '@/components/whatsapp/wa-notify';
 
 type StatusFilter = 'all' | WaConversationStatus;
 type AssigneeFilter = 'all' | 'me' | 'unassigned';
@@ -85,6 +83,8 @@ type AssigneeFilter = 'all' | 'me' | 'unassigned';
  * by the OPERATOR_LABEL env var. If the two drift, "Assigned to me" silently
  * matches nothing.
  */
+/** Backend sentinel for "has no assignee" (whatsapp-conversation.service.ts). */
+const UNASSIGNED = '__none__';
 const OPERATOR = process.env.NEXT_PUBLIC_OPERATOR_LABEL || 'operator';
 
 const EMOJIS = [
@@ -318,7 +318,7 @@ function MessageBubble({
             {/* Reply + react + actions affordances on the left of outbound bubbles */}
             {outbound && !selectionMode && (
               <div className="mb-1 flex shrink-0 items-center gap-0.5">
-                <div className="opacity-0 transition-opacity group-hover:opacity-100">
+                <div className="opacity-100 transition-opacity lg:opacity-0 lg:group-focus-within:opacity-100 lg:group-hover:opacity-100 lg:focus-visible:opacity-100">
                   <MessageActionsMenu
                     canCopy={!!message.text?.trim()}
                     onCopy={() => onCopy(message.text)}
@@ -333,7 +333,7 @@ function MessageBubble({
                       type="button"
                       onClick={() => onReply?.(message)}
                       aria-label="Reply to message"
-                      className="flex h-6 w-6 items-center justify-center rounded-full text-[var(--text-muted)] opacity-0 transition-opacity group-hover:opacity-100 hover:bg-[var(--bg-secondary)] hover:text-[var(--text)]"
+                      className="flex h-6 w-6 items-center justify-center rounded-full text-[var(--text-muted)] opacity-100 transition-opacity hover:bg-[var(--bg-secondary)] hover:text-[var(--text)] lg:opacity-0 lg:group-focus-within:opacity-100 lg:group-hover:opacity-100 lg:focus-visible:opacity-100"
                     >
                       <Reply className="h-3.5 w-3.5" />
                     </button>
@@ -341,7 +341,7 @@ function MessageBubble({
                 )}
                 {/* React to our own message (also shows on the customer's side). */}
                 {message.wamid && (
-                  <div className="opacity-0 transition-opacity group-hover:opacity-100">
+                  <div className="opacity-100 transition-opacity lg:opacity-0 lg:group-focus-within:opacity-100 lg:group-hover:opacity-100 lg:focus-visible:opacity-100">
                     <ReactionPicker conversationId={conversationId} wamid={message.wamid} />
                   </div>
                 )}
@@ -407,18 +407,18 @@ function MessageBubble({
                       type="button"
                       onClick={() => onReply?.(message)}
                       aria-label="Reply to message"
-                      className="flex h-6 w-6 items-center justify-center rounded-full text-[var(--text-muted)] opacity-0 transition-opacity group-hover:opacity-100 hover:bg-[var(--bg-secondary)] hover:text-[var(--text)]"
+                      className="flex h-6 w-6 items-center justify-center rounded-full text-[var(--text-muted)] opacity-100 transition-opacity hover:bg-[var(--bg-secondary)] hover:text-[var(--text)] lg:opacity-0 lg:group-focus-within:opacity-100 lg:group-hover:opacity-100 lg:focus-visible:opacity-100"
                     >
                       <Reply className="h-3.5 w-3.5" />
                     </button>
                   </Tooltip>
                 )}
                 {message.wamid && (
-                  <div className="opacity-0 transition-opacity group-hover:opacity-100">
+                  <div className="opacity-100 transition-opacity lg:opacity-0 lg:group-focus-within:opacity-100 lg:group-hover:opacity-100 lg:focus-visible:opacity-100">
                     <ReactionPicker conversationId={conversationId} wamid={message.wamid} />
                   </div>
                 )}
-                <div className="opacity-0 transition-opacity group-hover:opacity-100">
+                <div className="opacity-100 transition-opacity lg:opacity-0 lg:group-focus-within:opacity-100 lg:group-hover:opacity-100 lg:focus-visible:opacity-100">
                   <MessageActionsMenu
                     canCopy={!!message.text?.trim()}
                     onCopy={() => onCopy(message.text)}
@@ -675,7 +675,11 @@ export default function SuperAdminWhatsappInboxPage() {
   // "Assigned to me" maps to the operator label. With a single shared password
   // there is only one operator, so `assignedTo` is a free-text label rather than
   // a user id — see the WaConversation.assignedTo note in schema.prisma.
-  const assignedToParam = assigneeFilter === 'me' ? OPERATOR : undefined;
+  // 'unassigned' is a real backend filter now (the `__none__` sentinel), so it
+  // paginates and counts like every other filter instead of being applied to
+  // whatever happened to be on the loaded page.
+  const assignedToParam =
+    assigneeFilter === 'me' ? OPERATOR : assigneeFilter === 'unassigned' ? UNASSIGNED : undefined;
   const statusParam = statusFilter === 'all' ? undefined : statusFilter;
 
   const convQuery = useQuery({
@@ -729,11 +733,7 @@ export default function SuperAdminWhatsappInboxPage() {
     }
     return merged;
   }, [firstPage, extraConvPages]);
-  // "Unassigned" has no backend param — filter client-side.
-  const conversations =
-    assigneeFilter === 'unassigned'
-      ? allConversations.filter((c) => !c.assignedTo)
-      : allConversations;
+  const conversations = allConversations;
 
   // Load the next conversation-list page and append it.
   const loadMoreConvMut = useMutation({
@@ -789,13 +789,14 @@ export default function SuperAdminWhatsappInboxPage() {
       seen.add(m.id);
       merged.push(m);
     }
-    // Drop optimistic bubbles already reflected by a real outbound server
-    // message (same text), keeping the rest pinned to the bottom.
-    const realOutboundTexts = new Set(
-      merged.filter((m) => m.direction === 'OUTBOUND' && m.text).map((m) => m.text),
-    );
+    // Optimistic bubbles are reconciled by ID, in the send mutation's onSuccess
+    // (which merges the canonical server row and removes the bubble by its
+    // optimisticId). This used to ALSO drop any pending bubble whose text
+    // matched an existing outbound message anywhere in the thread — so sending
+    // "ok" a second time showed nothing at all until the server replied,
+    // because the first "ok" was already on screen. Short, repeated replies are
+    // the most common thing an operator types.
     for (const p of pendingMessages) {
-      if (p.status !== 'FAILED' && p.text && realOutboundTexts.has(p.text)) continue;
       merged.push(p);
     }
     return merged.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
@@ -958,17 +959,40 @@ export default function SuperAdminWhatsappInboxPage() {
         },
       );
     };
+    /**
+     * Reconnect resync.
+     *
+     * Everything above is push-only: the thread has no refetchInterval and
+     * inherits a 5-minute staleTime, so anything that arrived while the socket
+     * was down was simply never rendered. The operator sees a live-looking
+     * inbox that is quietly missing messages — and Socket.IO reconnects
+     * silently, so there was no moment at which anything was refetched.
+     * (`refetchOnReconnect` reacts to the browser's `online` event, not to a
+     * socket drop.) Rejoin the room and pull the state we may have missed.
+     */
+    const onConnect = () => {
+      qc.invalidateQueries({ queryKey: ['wa-conversations'] });
+      qc.invalidateQueries({ queryKey: ['wa-inbox-unread-total'] });
+      if (selectedId) {
+        emit('wa:open', selectedId);
+        qc.invalidateQueries({ queryKey: ['wa-messages', selectedId] });
+        qc.invalidateQueries({ queryKey: ['wa-conversation', selectedId] });
+      }
+    };
+
+    socket.on('connect', onConnect);
     socket.on('wa:message', onMessage);
     socket.on('wa:status', onStatus);
     socket.on('wa:conversation', onConversation);
     socket.on('wa:reaction', onReaction);
     return () => {
+      socket.off('connect', onConnect);
       socket.off('wa:message', onMessage);
       socket.off('wa:status', onStatus);
       socket.off('wa:conversation', onConversation);
       socket.off('wa:reaction', onReaction);
     };
-  }, [socket, selectedId, qc]);
+  }, [socket, selectedId, qc, emit]);
 
   // On select: join the thread room + mark read.
   useEffect(() => {
@@ -1146,9 +1170,18 @@ export default function SuperAdminWhatsappInboxPage() {
       showToast.error((e as unknown as ApiError).message || 'Failed to load older messages'),
   });
 
+  // Name of the file currently uploading, for the in-thread indicator. A media
+  // send used to have no visible state at all beyond a disabled attach button:
+  // no bubble, no spinner, no filename, so a large upload looked like nothing
+  // had happened.
+  const [uploadingName, setUploadingName] = useState<string | null>(null);
+
   const sendMediaMut = useMutation({
-    mutationFn: ({ file, voice }: { file: File; voice?: boolean }) =>
-      svc.sendMedia(selectedId as string, file, undefined, voice),
+    mutationFn: ({ file, voice }: { file: File; voice?: boolean }) => {
+      setUploadingName(file.name);
+      return svc.sendMedia(selectedId as string, file, undefined, voice);
+    },
+    onSettled: () => setUploadingName(null),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['wa-messages', selectedId] });
       qc.invalidateQueries({ queryKey: ['wa-conversations'] });
@@ -1226,9 +1259,7 @@ export default function SuperAdminWhatsappInboxPage() {
     includeArchived,
   };
   const totalMatchingConv = firstPage?.total ?? conversations.length;
-  // "Unassigned" is a client-only filter with no backend equivalent, so
-  // all-matching (which selects via backend filters) isn't offered there.
-  const canSelectAllMatchingConv = assigneeFilter !== 'unassigned';
+  const canSelectAllMatchingConv = true;
 
   const toggleSelect = (id: string, checked: boolean) =>
     setSelectedIds((prev) => {
@@ -1255,7 +1286,10 @@ export default function SuperAdminWhatsappInboxPage() {
 
   const onConvBulkDone = () => {
     qc.invalidateQueries({ queryKey: ['wa-conversations'] });
-    qc.invalidateQueries({ queryKey: ['wa-unread-total'] });
+    // ['wa-inbox-unread-total'] — the key the sidebar badge and this page
+    // actually query. The old ['wa-unread-total'] matched no query anywhere in
+    // the codebase, so bulk "Mark read" left the badge stale until a reload.
+    qc.invalidateQueries({ queryKey: ['wa-inbox-unread-total'] });
     clearConvSelection();
   };
 
@@ -1280,7 +1314,13 @@ export default function SuperAdminWhatsappInboxPage() {
       requiredRole={['ADMIN', 'SUPER_ADMIN']}
       requiredPermission="whatsapp.inbox.view"
     >
-      <div className="flex h-[calc(100vh-9rem)] overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg)]">
+      {/* dvh, not vh. On mobile `100vh` is the LARGE viewport — it ignores the
+          browser chrome — so a fixed-height, overflow-hidden box sized in vh
+          pushes its bottom-anchored child (the composer) off screen. The root
+          layout uses min-h-dvh for exactly this reason; the inbox was the one
+          page that reintroduced vh, and the only one with a composer pinned to
+          the bottom of a fixed-height box. */}
+      <div className="flex h-[calc(100dvh-9rem)] overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg)]">
         {/* Conversation list — full width on mobile; hidden once a pane other
             than "list" is active below lg. */}
         <aside
@@ -1439,7 +1479,7 @@ export default function SuperAdminWhatsappInboxPage() {
                 onToggleSelect={(checked) => toggleSelect(c.id, checked)}
               />
             ))}
-            {convHasMore && assigneeFilter !== 'unassigned' && (
+            {convHasMore && (
               <div className="p-3">
                 <button
                   type="button"
@@ -1820,6 +1860,17 @@ export default function SuperAdminWhatsappInboxPage() {
                       Preview
                     </p>
                     <MessageText text={draft} className="text-sm text-[var(--text)]" />
+                  </div>
+                )}
+                {/* Upload in flight. Without this a media send showed nothing at
+                    all while a large file went up — the operator could not tell
+                    whether their click had registered. */}
+                {uploadingName && (
+                  <div className="mb-2 flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5">
+                    <Spinner size="sm" />
+                    <span className="min-w-0 truncate text-xs text-[var(--text-secondary)]">
+                      Sending {uploadingName}…
+                    </span>
                   </div>
                 )}
                 {canReply ? (

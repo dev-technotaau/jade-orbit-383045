@@ -20,9 +20,17 @@ import { BACKEND_URL, BFF_SECRET, UNLOCK_COOKIE } from '../../_lib/config';
 
 async function proxyRequest(
   request: NextRequest,
-  { params }: { params: Promise<{ path: string[] }> }
+  { params }: { params: Promise<{ path: string[] }> },
 ) {
   const { path } = await params;
+
+  // No traversal. The `/health` prefix check below routes to a different backend
+  // base, and segments are joined verbatim — so `..` segments could walk out of
+  // the intended root. Reject them before anything is built.
+  if (path.some((seg) => seg === '..' || seg === '.' || seg.includes('..'))) {
+    return NextResponse.json({ error: 'Invalid path' }, { status: 400 });
+  }
+
   const backendPath = `/${path.join('/')}`;
   const searchParams = request.nextUrl.searchParams.toString();
   // Health endpoints live at the root, not under /api/v1.
@@ -34,11 +42,21 @@ async function proxyRequest(
   const cookieStore = await cookies();
   const unlockToken = cookieStore.get(UNLOCK_COOKIE)?.value;
 
+  // Locked means locked. This forwarded upstream regardless, which made the
+  // public deployment URL a door: anyone could call /api/proxy/... and reach the
+  // backend without a credential. It only ever failed because the BACKEND then
+  // rejected it — and the BFF secret this route attaches is precisely what
+  // bypasses CSRF there, so the door was being held open with a key in it.
+  // `src/proxy.ts` cannot cover this: it returns early for every /api/ path.
+  if (!unlockToken) {
+    return NextResponse.json({ error: 'Locked' }, { status: 401 });
+  }
+
   const headers = new Headers();
   const contentType = request.headers.get('content-type');
   if (contentType) headers.set('content-type', contentType);
   // The backend's requireAppPassword accepts this cookie by name.
-  if (unlockToken) headers.set('cookie', `${UNLOCK_COOKIE}=${unlockToken}`);
+  headers.set('cookie', `${UNLOCK_COOKIE}=${unlockToken}`);
   if (BFF_SECRET) headers.set('x-bff-secret', BFF_SECRET);
 
   // Client context the backend's rate limiters and logs use.
@@ -69,7 +87,7 @@ async function proxyRequest(
   } catch {
     return NextResponse.json(
       { success: false, error: { message: 'Cannot reach the API' } },
-      { status: 502 }
+      { status: 502 },
     );
   }
 

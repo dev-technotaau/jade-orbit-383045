@@ -61,25 +61,38 @@ const logger = winston.createLogger({
   level: process.env.LOG_LEVEL || (isProduction ? 'info' : 'debug'),
   defaultMeta: { service: 'whatsapp-module-api' },
   transports: [
-    // Console — human-readable in dev, JSON in prod
+    // Console — human-readable in dev, JSON in prod. In production this is the
+    // one that matters: managed platforms capture stdout, and the optional
+    // LOG_AGGREGATION_URL transport below ships logs off-box.
     new winston.transports.Console({
       format: isProduction ? prodFormat : devFormat,
     }),
-    // Error logs — JSON, max 20MB, 14 day rotation
-    new winston.transports.File({
-      filename: path.join(logDir, 'error.log'),
-      level: 'error',
-      format: fileFormat,
-      maxsize: 20 * 1024 * 1024,
-      maxFiles: 14,
-    }),
-    // Combined logs — JSON, max 20MB, 30 day rotation
-    new winston.transports.File({
-      filename: path.join(logDir, 'combined.log'),
-      format: fileFormat,
-      maxsize: 20 * 1024 * 1024,
-      maxFiles: 30,
-    }),
+    // File transports — DEVELOPMENT ONLY.
+    //
+    // These were unconditional: error.log at 20 MB × 14 plus combined.log at
+    // 20 MB × 30 is an 880 MB ceiling, written to a container's ephemeral disk
+    // where nobody can read it and it vanishes on every deploy — while
+    // competing for space with the running process. Every request writes an
+    // info line and every worker logs per job, so it fills. `logs/` is
+    // gitignored, so nothing reads it in development either, but locally it is
+    // at least occasionally useful and costs nothing.
+    ...(isProduction
+      ? []
+      : [
+          new winston.transports.File({
+            filename: path.join(logDir, 'error.log'),
+            level: 'error',
+            format: fileFormat,
+            maxsize: 20 * 1024 * 1024,
+            maxFiles: 14,
+          }),
+          new winston.transports.File({
+            filename: path.join(logDir, 'combined.log'),
+            format: fileFormat,
+            maxsize: 20 * 1024 * 1024,
+            maxFiles: 30,
+          }),
+        ]),
   ],
   // Don't exit on uncaught errors — let the process handler deal with it
   exitOnError: false,

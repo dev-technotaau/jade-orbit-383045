@@ -66,22 +66,37 @@ export async function ingestWhatsappWebhook(args: {
   rawBody: Buffer;
   signature: string | undefined;
   parsed: any;
-}): Promise<{ id: string; signatureOk: boolean; eventType: string; wamid: string | null }> {
+}): Promise<{
+  /** Row id, or null when the signature failed and nothing was persisted. */
+  id: string | null;
+  signatureOk: boolean;
+  eventType: string;
+  wamid: string | null;
+}> {
   const signatureOk = verifyWhatsappSignature(args.rawBody, args.signature);
 
-  // Only classify + retain the payload when the signature checks out. For
-  // unverified events we deliberately drop the body to avoid persisting
-  // attacker-controlled data; a minimal stub remains for audit.
-  const { eventType, wamid } = signatureOk
-    ? classifyWhatsappEvent(args.parsed)
-    : { eventType: 'unknown' as const, wamid: null };
+  // Verify BEFORE touching the database.
+  //
+  // A stub row used to be written for unverified requests too. The webhook is
+  // necessarily public, is mounted ahead of the API rate limiter (Meta must
+  // never be throttled), and always answers 200 — so anyone who found the URL
+  // could turn one unauthenticated POST into one row, indefinitely, and fill
+  // the disk. The stub carried nothing worth keeping: eventType 'unknown',
+  // wamid null, payload {}. The rejection is counted in the metric the caller
+  // increments (`wa_webhook_events_total{signature_ok="false"}`) and logged,
+  // which is the audit trail that was actually wanted.
+  if (!signatureOk) {
+    return { id: null, signatureOk: false, eventType: 'unknown', wamid: null };
+  }
+
+  const { eventType, wamid } = classifyWhatsappEvent(args.parsed);
 
   const row = await prisma.waWebhookEvent.create({
     data: {
       eventType,
       wamid,
-      payload: signatureOk ? (args.parsed ?? {}) : {},
-      signatureOk,
+      payload: args.parsed ?? {},
+      signatureOk: true,
     },
     select: { id: true },
   });

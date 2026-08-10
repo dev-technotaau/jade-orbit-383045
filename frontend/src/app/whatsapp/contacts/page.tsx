@@ -1,9 +1,10 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Users, Upload, Download, X, Search, Ban, Pencil, FileUp } from 'lucide-react';
 import DashboardLayout from '@/components/layout/DashboardLayout';
+import DialogShell from '@/components/ui/DialogShell';
 import Input from '@/components/ui/Input';
 import Button from '@/components/ui/Button';
 import Select from '@/components/ui/Select';
@@ -86,7 +87,7 @@ function ImportModal({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+    <DialogShell onClose={onClose} label="Import contacts">
       <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-xl bg-white p-6 shadow-xl">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-bold text-[var(--text)]">Import contacts</h2>
@@ -172,7 +173,7 @@ function ImportModal({ onClose }: { onClose: () => void }) {
           </div>
         </div>
       </div>
-    </div>
+    </DialogShell>
   );
 }
 
@@ -199,7 +200,7 @@ function EditModal({ contact, onClose }: { contact: WaContact; onClose: () => vo
   });
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+    <DialogShell onClose={onClose} label="Edit contact">
       <div className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-xl bg-white p-6 shadow-xl">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-bold text-[var(--text)]">Edit contact</h2>
@@ -226,7 +227,7 @@ function EditModal({ contact, onClose }: { contact: WaContact; onClose: () => vo
           </Button>
         </div>
       </div>
-    </div>
+    </DialogShell>
   );
 }
 
@@ -243,13 +244,32 @@ export default function SuperAdminWhatsappContactsPage() {
   // "Select all N matching the filter" (acts via backend filters, not the id list).
   const [allMatchingContacts, setAllMatchingContacts] = useState(false);
 
-  const { data, isLoading } = useQuery({
-    queryKey: ['wa-contacts', { search, optInStatus, tag, page, limit }],
+  // The inputs stay instant; the QUERY runs on a 300ms-settled value. Bound
+  // directly, every keystroke fired a request — and each one is a LIKE across
+  // the contacts table. The inbox already does exactly this for the same reason.
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [debouncedTag, setDebouncedTag] = useState('');
+  useEffect(() => {
+    const id = window.setTimeout(() => setDebouncedSearch(search), 300);
+    return () => window.clearTimeout(id);
+  }, [search]);
+  useEffect(() => {
+    const id = window.setTimeout(() => setDebouncedTag(tag), 300);
+    return () => window.clearTimeout(id);
+  }, [tag]);
+
+  const {
+    data,
+    isLoading,
+    isError,
+    refetch: refetchContacts,
+  } = useQuery({
+    queryKey: ['wa-contacts', { debouncedSearch, optInStatus, debouncedTag, page, limit }],
     queryFn: () =>
       svc.listContacts({
-        q: search,
+        q: debouncedSearch,
         optInStatus: optInStatus || undefined,
-        tag: tag || undefined,
+        tag: debouncedTag || undefined,
         page,
         limit,
       }),
@@ -259,7 +279,7 @@ export default function SuperAdminWhatsappContactsPage() {
   const totalMatching = data?.data?.total ?? contacts.length;
 
   // Reset all-matching when the filter (not the page) changes.
-  const contactFilterKey = `${search}|${optInStatus}|${tag}`;
+  const contactFilterKey = `${debouncedSearch}|${optInStatus}|${debouncedTag}`;
   const [prevContactFilterKey, setPrevContactFilterKey] = useState(contactFilterKey);
   if (contactFilterKey !== prevContactFilterKey) {
     setPrevContactFilterKey(contactFilterKey);
@@ -329,8 +349,8 @@ export default function SuperAdminWhatsappContactsPage() {
               onClick={() =>
                 svc.exportContacts({
                   optInStatus: optInStatus || undefined,
-                  tag: tag || undefined,
-                  q: search || undefined,
+                  tag: debouncedTag || undefined,
+                  q: debouncedSearch || undefined,
                 })
               }
             >
@@ -389,7 +409,23 @@ export default function SuperAdminWhatsappContactsPage() {
           {isLoading && (
             <p className="p-6 text-center text-sm text-[var(--text-muted)]">Loading…</p>
           )}
-          {!isLoading && contacts.length === 0 && (
+          {/* A failed request rendered the friendly empty state — "No contacts",
+              on an account with thousands. Say what actually happened and offer
+              a retry, the way the inbox and campaign detail already do. */}
+          {!isLoading && isError && (
+            <div className="p-8 text-center">
+              <p className="text-sm text-[var(--error)]">Could not load contacts.</p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-3"
+                onClick={() => void refetchContacts()}
+              >
+                Retry
+              </Button>
+            </div>
+          )}
+          {!isLoading && !isError && contacts.length === 0 && (
             <p className="p-8 text-center text-sm text-[var(--text-muted)]">
               No contacts. Import a list, or they appear automatically when people message you.
             </p>

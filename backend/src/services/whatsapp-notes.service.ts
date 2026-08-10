@@ -1,7 +1,7 @@
 import { prisma } from '../config/prisma';
 import { AppError } from '../middleware/error';
 import { Prisma } from '@prisma/client';
-import { encryptField, decryptField } from '../utils/encryption';
+import { encryptField, decryptField, warnIfEncryptionDisabled } from '../utils/encryption';
 
 // Internal notes are private agent commentary (never sent to Meta) — the most
 // candid free-text in the system. They're encrypted at rest (AES-256-GCM) and
@@ -18,7 +18,10 @@ export async function listNotes(conversationId: string) {
 }
 
 export async function createNote(conversationId: string, authorId: string | null, body: string) {
+  warnIfEncryptionDisabled('conversation note');
   const note = await prisma.waConversationNote.create({
+    // Operator free-text about a customer. Warn (once) if it is going in
+    // unencrypted rather than letting the fallback pass silently.
     data: { conversationId, authorId, body: encryptField(body) },
   });
   return { ...note, body }; // return the plaintext to the caller (don't leak ciphertext)

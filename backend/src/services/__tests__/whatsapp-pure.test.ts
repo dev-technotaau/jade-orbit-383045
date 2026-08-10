@@ -15,6 +15,10 @@ jest.mock('../../config/env', () => ({
     META_WHATSAPP_API_VERSION: 'v21.0',
     META_WHATSAPP_TOKEN: 'test_token',
     META_WHATSAPP_PHONE_ID: 'test_phone',
+    // Production defaults this to '91' (config/env.ts). Omitting it here left
+    // `cc` empty, which made the entire country-code branch of normalizeWaPhone
+    // dead under test — the function's whole reason for existing.
+    DEFAULT_COUNTRY_CODE: '91',
   },
 }));
 jest.mock('../../config/prisma', () => ({ prisma: {} }));
@@ -80,15 +84,34 @@ describe('classifyWhatsappEvent', () => {
 });
 
 describe('normalizeWaPhone', () => {
-  it('strips formatting to E.164', () => {
-    expect(normalizeWaPhone('+91 98765 43210')).toBe('+919876543210');
-    expect(normalizeWaPhone('(919) 876-543210')).toBe('+919876543210');
+  // This is the identity key of every contact row: two spellings of one number
+  // that normalize differently become two contacts, two conversations, and a
+  // duplicate send. DEFAULT_COUNTRY_CODE is '91' in the env mock above, as in
+  // production.
+  it.each([
+    // [input, expected, why]
+    ['+91 98765 43210', '+919876543210', 'explicit + with spaces'],
+    ['(919) 876-543210', '+919876543210', 'punctuation stripped'],
+    ['919876543210', '+919876543210', 'bare international digits'],
+    ['9876543210', '+919876543210', '10-digit national number gets the country code'],
+    ['09876543210', '+919876543210', 'leading 0 is a trunk prefix, not part of the number'],
+    ['00919876543210', '+919876543210', '00 is the international access prefix'],
+    ['+1 555 123 4567', '+15551234567', 'a non-default country code survives'],
+    ['+919876543210', '+919876543210', 'already normalized — idempotent'],
+  ])('normalizes %s to %s (%s)', (input, expected) => {
+    expect(normalizeWaPhone(input)).toBe(expected);
   });
-  it('prefixes a + onto a bare digit string', () => {
-    expect(normalizeWaPhone('919876543210')).toBe('+919876543210');
+
+  it('is idempotent — normalizing twice changes nothing', () => {
+    for (const input of ['9876543210', '09876543210', '00919876543210', '+91 98765 43210']) {
+      const once = normalizeWaPhone(input);
+      expect(normalizeWaPhone(once)).toBe(once);
+    }
   });
+
   it('returns the raw input when there are no digits', () => {
     expect(normalizeWaPhone('abc')).toBe('abc');
+    expect(normalizeWaPhone('')).toBe('');
   });
 });
 

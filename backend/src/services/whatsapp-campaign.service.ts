@@ -1,4 +1,5 @@
 import { prisma } from '../config/prisma';
+import logger from '../config/logger';
 import { env } from '../config/env';
 import { AppError } from '../middleware/error';
 import { getDefaultChannel } from './whatsapp-channel.service';
@@ -29,46 +30,16 @@ function ratePaise(category?: WaTemplateCategory): number {
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-/**
- * Meta error codes that mean "we should NOT count this as a hard failure" — the
- * message was intentionally not delivered (per-user marketing frequency cap /
- * recipient opted out of marketing). The worker maps these to SKIPPED instead of
- * FAILED so retries don't keep hammering a capped/opted-out contact.
- */
-export const WA_SKIP_ERROR_CODES = new Set<string>([
-  '131049', // marketing message frequency cap (per-user)
-  '131050', // recipient has opted out of marketing
-]);
-
-/** True when a send outcome's error code is a "skip" (not a real failure). */
-export function isSkipErrorCode(code?: string | null): boolean {
-  return code != null && WA_SKIP_ERROR_CODES.has(String(code));
-}
-
-/**
- * Transient Meta/transport error codes — the send can succeed on a later attempt.
- * The worker rolls these recipients back to PENDING (not FAILED) so the recovery
- * cron re-batches them, instead of permanently dropping a deliverable message.
- */
-export const WA_RETRYABLE_ERROR_CODES = new Set<string>([
-  '130429', // rate limit hit
-  '131056', // (business, recipient) pair rate limit
-  '131048', // spam rate limit hit
-  '80007', // rate-limit issues
-  '368', // temporarily blocked (often transient)
-  '500', // internal Meta error
-  '131000', // generic "something went wrong"
-  'circuit_open', // our in-process circuit breaker tripped
-  'SEND_ERROR', // generic network throw during send
-  'ECONNRESET',
-  'ETIMEDOUT',
-  'EAI_AGAIN',
-]);
-
-/** True when a send error code is transient and worth retrying (vs a hard fail). */
-export function isRetryableErrorCode(code?: string | null): boolean {
-  return code != null && WA_RETRYABLE_ERROR_CODES.has(String(code));
-}
+// Error-code classification lives in a dependency-free module so the campaign
+// worker (and its tests) can use the real tables without importing this service's
+// whole dependency tree. Re-exported here for existing callers.
+export {
+  WA_SKIP_ERROR_CODES,
+  WA_RETRYABLE_ERROR_CODES,
+  isSkipErrorCode,
+  isRetryableErrorCode,
+} from './whatsapp-error-codes';
+import { isSkipErrorCode, isRetryableErrorCode } from './whatsapp-error-codes';
 
 interface CreateCampaignInput {
   name: string;
@@ -422,8 +393,7 @@ function resolveVars(mapping: string[] | undefined, contact: AudienceContact): s
  *  - Never to blocked or suppressed (do-not-contact list) contacts.
  *  - MARKETING requires *positive* consent (OPTED_IN); non-marketing only needs
  *    "not opted out".
- *  - When the per-contact 24h marketing cap is <= 1, skip any contact messaged
- *    with marketing in the last 24h (coarse, cheap frequency cap).
+ *  - Per-contact 24h marketing frequency cap (see `overMarketingCap`).
  */
 function eligible(
   contacts: AudienceContact[],
@@ -437,13 +407,13 @@ function eligible(
     if (suppressed.has(c.phone)) return false;
     if (isMarketing) {
       if (c.optInStatus !== 'OPTED_IN') return false;
-      // Frequency cap: when cap<=1, one marketing message per rolling 24h.
-      if (
-        marketingCap <= 1 &&
-        c.lastMarketingAt &&
-        now - c.lastMarketingAt.getTime() < MARKETING_WINDOW_MS
-      ) {
-        return false;
+      // Frequency cap. This is the cheap pre-filter — `lastMarketingAt` alone
+      // cannot tell 1 from N in the window, so it only screens out contacts that
+      // are definitely over a cap of 1. The authoritative count runs at the send
+      // (whatsapp-send.service.ts), which is also what catches manual, drip and
+      // scheduled sends that never pass through here at all.
+      if (marketingCap === 1 && c.lastMarketingAt) {
+        if (now - c.lastMarketingAt.getTime() < MARKETING_WINDOW_MS) return false;
       }
       return true;
     }
@@ -516,6 +486,62 @@ async function materialize(campaign: WaCampaign, isMarketing: boolean): Promise<
   return prisma.waCampaignRecipient.count({ where: { campaignId: campaign.id } });
 }
 
+/**
+ * Enqueue every PENDING recipient of a campaign, in batches, without ever
+ * holding the whole id list in memory.
+ *
+ * The three call sites (launch, retry-failed, recovery cron) each did an
+ * unbounded `findMany` of every PENDING recipient and then sliced the array —
+ * so a 500k-recipient campaign materialized 500k rows in the Node heap before
+ * the first job was queued. The same file already pages its audience scan at
+ * 1000 with an explicit note about exactly this hazard (`forEachAudiencePage`);
+ * the pending scan simply never got the same treatment.
+ *
+ * Keyset pagination on the primary key: stable under concurrent writes, and no
+ * OFFSET growth.
+ */
+export async function enqueuePendingRecipients(
+  campaignId: string,
+  batchSize: number,
+  /** Stop after this many recipients (the recovery cron bounds its sweep). */
+  cap?: number
+): Promise<number> {
+  const PAGE = Math.max(batchSize, 1000);
+  let cursor: string | undefined;
+  let queued = 0;
+  let buffer: string[] = [];
+
+  const flush = async (all: boolean) => {
+    while (buffer.length >= batchSize || (all && buffer.length > 0)) {
+      const slice = buffer.slice(0, batchSize);
+      buffer = buffer.slice(batchSize);
+      await addCampaignBatchJob({ campaignId, recipientIds: slice });
+      queued += slice.length;
+    }
+  };
+
+  for (;;) {
+    const page: Array<{ id: string }> = await prisma.waCampaignRecipient.findMany({
+      where: { campaignId, status: 'PENDING' },
+      select: { id: true },
+      orderBy: { id: 'asc' },
+      take: PAGE,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+    });
+    if (page.length === 0) break;
+    buffer.push(...page.map((r) => r.id));
+    cursor = page[page.length - 1].id;
+    await flush(false);
+    if (page.length < PAGE) break;
+    if (cap != null && queued + buffer.length >= cap) break;
+  }
+  if (cap != null && queued + buffer.length > cap) {
+    buffer = buffer.slice(0, Math.max(0, cap - queued));
+  }
+  await flush(true);
+  return queued;
+}
+
 /** Launch (or resume) a campaign: materialize recipients + enqueue batches. */
 export async function launchCampaign(id: string) {
   const campaign = await prisma.waCampaign.findUnique({ where: { id } });
@@ -567,17 +593,7 @@ export async function launchCampaign(id: string) {
     return prisma.waCampaign.findUnique({ where: { id } });
   }
 
-  const pending = await prisma.waCampaignRecipient.findMany({
-    where: { campaignId: id, status: 'PENDING' },
-    select: { id: true },
-  });
-  const batchSize = campaign.batchSize || 100;
-  for (let i = 0; i < pending.length; i += batchSize) {
-    await addCampaignBatchJob({
-      campaignId: id,
-      recipientIds: pending.slice(i, i + batchSize).map((r) => r.id),
-    });
-  }
+  await enqueuePendingRecipients(id, campaign.batchSize || 100);
   return prisma.waCampaign.findUnique({ where: { id } });
 }
 
@@ -629,7 +645,13 @@ export async function cloneCampaign(
       batchSize: source.batchSize,
       throttlePerSec: source.throttlePerSec,
       isAbTest: source.isAbTest,
-      recurrenceDays: source.recurrenceDays,
+      // NOT copied: the clone must never carry the cadence. Only the source
+      // holds `recurrenceDays` and gets its `nextRunAt` advanced. When the clone
+      // inherited it, the clone armed its own `nextRunAt` on completion and the
+      // recurring tick (which does not distinguish parents from children) then
+      // cloned the clone — 2 campaigns after one cycle, 4 after two, 8 after
+      // three, each re-sending the same template to the same audience.
+      recurrenceDays: null,
       parentCampaignId: source.id,
       createdBy: source.createdBy,
     },
@@ -669,14 +691,29 @@ export async function cloneCampaign(
   // launch=true (recurrence cron): send immediately + push the source's next run
   // forward one cadence. launch=false (manual Duplicate): leave an editable DRAFT.
   if (opts.launch) {
-    await launchCampaign(clone.id);
-    if (source.recurrenceDays && source.recurrenceDays > 0) {
-      await prisma.waCampaign
-        .update({
-          where: { id: source.id },
-          data: { nextRunAt: addDays(new Date(), source.recurrenceDays) },
-        })
-        .catch(() => {});
+    try {
+      await launchCampaign(clone.id);
+    } catch (err) {
+      // Clean up after ourselves. `launchCampaign` throws WA_NO_RECIPIENTS
+      // whenever the audience materializes to zero — the NORMAL outcome when
+      // everyone is inside the 24h marketing cap or has been suppressed. The
+      // clone was created before the launch, so each failed run used to leave a
+      // fresh orphan DRAFT behind.
+      await prisma.waCampaign.delete({ where: { id: clone.id } }).catch(() => {});
+      throw err;
+    } finally {
+      // Advance the cadence whether or not the launch succeeded. Skipping this
+      // on failure left the source still due, so the recurring cron retried it
+      // on the very next tick — hourly, forever, minting an orphan every time.
+      // A failed run should cost one cycle.
+      if (source.recurrenceDays && source.recurrenceDays > 0) {
+        await prisma.waCampaign
+          .update({
+            where: { id: source.id },
+            data: { nextRunAt: addDays(new Date(), source.recurrenceDays) },
+          })
+          .catch(() => {});
+      }
     }
   }
 
@@ -696,12 +733,34 @@ export async function retryFailedRecipients(id: string) {
   // Idempotent: only FAILED rows reset (already-PENDING/SENT rows are untouched),
   // and we clear wamid/sentAt so the worker's per-recipient claim treats them as
   // brand-new sends.
-  const reset = await prisma.waCampaignRecipient.updateMany({
+  //
+  // Only failures that could plausibly succeed on a retry. This used to reset
+  // EVERY failed row and clear its error code, so a number Meta had permanently
+  // rejected (131026 — not a WhatsApp user) was re-sent on every retry, forever,
+  // spending a conversation credit each time and never succeeding. A null code
+  // counts as retryable: those rows predate error-code capture on the webhook
+  // path, so we cannot say they are permanent.
+  const failed = await prisma.waCampaignRecipient.findMany({
     where: { campaignId: id, status: 'FAILED' },
-    data: { status: 'PENDING', wamid: null, errorCode: null, sentAt: null },
+    select: { id: true, errorCode: true },
   });
+  const retryableIds = failed
+    .filter((r) => r.errorCode == null || isRetryableErrorCode(r.errorCode))
+    .map((r) => r.id);
+  const reset = retryableIds.length
+    ? await prisma.waCampaignRecipient.updateMany({
+        where: { id: { in: retryableIds } },
+        data: { status: 'PENDING', wamid: null, errorCode: null, sentAt: null },
+      })
+    : { count: 0 };
   if (reset.count === 0) {
-    throw new AppError('No failed recipients to retry', 400, 'WA_NO_FAILED_RECIPIENTS');
+    throw new AppError(
+      failed.length
+        ? 'No retryable failures — every failed recipient was permanently rejected by Meta'
+        : 'No failed recipients to retry',
+      400,
+      'WA_NO_FAILED_RECIPIENTS'
+    );
   }
 
   // Re-open the campaign and recompute counters from the recipient table (no
@@ -712,17 +771,7 @@ export async function retryFailedRecipients(id: string) {
   });
   await recomputeCampaignCounters(id);
 
-  const pending = await prisma.waCampaignRecipient.findMany({
-    where: { campaignId: id, status: 'PENDING' },
-    select: { id: true },
-  });
-  const batchSize = campaign.batchSize || 100;
-  for (let i = 0; i < pending.length; i += batchSize) {
-    await addCampaignBatchJob({
-      campaignId: id,
-      recipientIds: pending.slice(i, i + batchSize).map((r) => r.id),
-    });
-  }
+  await enqueuePendingRecipients(id, campaign.batchSize || 100);
   return prisma.waCampaign.findUnique({ where: { id } });
 }
 
@@ -861,13 +910,79 @@ async function recomputeVariantCounters(campaignId: string): Promise<void> {
  */
 export async function reconcileRecipientStatus(
   wamid: string,
-  status: WaCampaignRecipientStatus
+  status: WaCampaignRecipientStatus,
+  opts: { errorCode?: string | null } = {}
 ): Promise<void> {
   const recipient = await prisma.waCampaignRecipient.findFirst({ where: { wamid } });
   if (!recipient || !recipient.campaignId) return;
   if (RECIP_RANK[status] <= RECIP_RANK[recipient.status]) return;
 
-  await prisma.waCampaignRecipient.update({ where: { id: recipient.id }, data: { status } });
-  // Recompute (not increment) so counters can never drift past totalRecipients.
-  await recomputeCampaignCounters(recipient.campaignId);
+  // A cap / opted-out code is a SKIP, not a failure — same classification the
+  // synchronous send path uses, so the two agree about what a campaign's
+  // numbers mean.
+  const finalStatus =
+    status === 'FAILED' && isSkipErrorCode(opts.errorCode)
+      ? ('SKIPPED' as WaCampaignRecipientStatus)
+      : status;
+
+  await prisma.waCampaignRecipient.update({
+    where: { id: recipient.id },
+    data: {
+      status: finalStatus,
+      ...(opts.errorCode ? { errorCode: opts.errorCode } : {}),
+    },
+  });
+  // Coalesced, not awaited. The per-recipient row write above is the durable
+  // part; the campaign rollup can lag a few seconds.
+  scheduleCampaignCounterRecompute(recipient.campaignId);
+}
+
+/**
+ * Debounce window for campaign counter recomputes triggered by webhooks.
+ */
+const RECOMPUTE_DEBOUNCE_MS = 5000;
+const pendingRecomputes = new Map<string, NodeJS.Timeout>();
+
+/**
+ * Coalesce campaign counter recomputes.
+ *
+ * `recomputeCampaignCounters` is a full rebuild: two groupBys, an aggregate
+ * and three counts over every recipient and message of the campaign, plus two
+ * more groupBys for variants. That is the right shape for a periodic self-heal
+ * and the wrong shape for a hot path — and it was being run once per delivery
+ * status webhook. Meta sends `sent`, `delivered` and `read` for every single
+ * message, so a 50k campaign meant ~150k full rebuilds, from an inbound worker
+ * at concurrency 10 against a pool of 5 connections. The queue backs up, the
+ * pool starves, and inbound customer replies — sharing that worker — stall
+ * behind counter maintenance.
+ *
+ * One rebuild per campaign per window instead. Trailing edge, so the last
+ * status in a burst is always included. The campaign worker still recomputes
+ * at the end of every batch and the recovery cron still self-heals, so this
+ * only ever delays the number on screen.
+ */
+export function scheduleCampaignCounterRecompute(campaignId: string): void {
+  if (pendingRecomputes.has(campaignId)) return; // already queued for this window
+  const timer = setTimeout(() => {
+    pendingRecomputes.delete(campaignId);
+    recomputeCampaignCounters(campaignId).catch((e) => {
+      logger.warn(
+        `WhatsApp campaign counter recompute failed for ${campaignId}: ` +
+          `${e instanceof Error ? e.message : String(e)}`
+      );
+    });
+  }, RECOMPUTE_DEBOUNCE_MS);
+  timer.unref?.(); // never hold the process open during shutdown
+  pendingRecomputes.set(campaignId, timer);
+}
+
+/** Flush every pending recompute now — called during graceful shutdown. */
+export async function flushPendingCounterRecomputes(): Promise<void> {
+  const ids = [...pendingRecomputes.keys()];
+  for (const id of ids) {
+    const t = pendingRecomputes.get(id);
+    if (t) clearTimeout(t);
+    pendingRecomputes.delete(id);
+  }
+  await Promise.allSettled(ids.map((id) => recomputeCampaignCounters(id)));
 }

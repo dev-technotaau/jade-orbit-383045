@@ -2,22 +2,11 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import {
-  X,
-  Tag,
-  Plus,
-  Clock,
-  StickyNote,
-  Trash2,
-  UserCircle2,
-  Images,
-} from 'lucide-react';
-import Link from 'next/link';
+import { X, Tag, Plus, Clock, StickyNote, Trash2, UserCircle2, Images } from 'lucide-react';
 import Input from '@/components/ui/Input';
 import Textarea from '@/components/ui/Textarea';
 import Button from '@/components/ui/Button';
 import Select from '@/components/ui/Select';
-import Badge from '@/components/ui/Badge';
 import { showToast } from '@/components/ui/Toast';
 import { cn } from '@/lib/utils';
 import { whatsappService as svc } from '@/services/whatsapp.service';
@@ -56,7 +45,9 @@ function snoozeTarget(preset: '1h' | '3h' | 'tomorrow'): string {
 function AssignControl({ conversation }: { conversation: WaConversation }) {
   const qc = useQueryClient();
   const agentsQuery = useQuery({ queryKey: ['wa-agents'], queryFn: () => svc.listAgents() });
-  const agents = agentsQuery.data?.data ?? [];
+  // Memoized so the `?? []` fallback isn't a fresh array on every render, which
+  // would invalidate the options useMemo below every time.
+  const agents = useMemo(() => agentsQuery.data?.data ?? [], [agentsQuery.data]);
 
   const assignMut = useMutation({
     mutationFn: (agentId: string | null) => svc.assign(conversation.id, agentId),
@@ -248,15 +239,6 @@ function SnoozeControl({ conversation }: { conversation: WaConversation }) {
   );
 }
 
-/** Status pill for an application / plan state. */
-function StatusPill({ status }: { status: string }) {
-  return (
-    <span className="text-primary inline-flex shrink-0 items-center rounded-full bg-[var(--primary-light)] px-1.5 py-0.5 text-[9px] font-semibold tracking-wide uppercase">
-      {status}
-    </span>
-  );
-}
-
 /** Internal notes list + add/delete. */
 function NotesPanel({ conversationId }: { conversationId: string }) {
   const qc = useQueryClient();
@@ -314,7 +296,7 @@ function NotesPanel({ conversationId }: { conversationId: string }) {
             <button
               type="button"
               onClick={() => deleteMut.mutate(note.id)}
-              className="shrink-0 text-[var(--text-muted)] opacity-0 transition-opacity group-hover:opacity-100 hover:text-[var(--error)]"
+              className="shrink-0 text-[var(--text-muted)] opacity-100 transition-opacity hover:text-[var(--error)] lg:opacity-0 lg:group-focus-within:opacity-100 lg:group-hover:opacity-100 lg:focus-visible:opacity-100"
               aria-label="Delete note"
             >
               <Trash2 className="h-3.5 w-3.5" />

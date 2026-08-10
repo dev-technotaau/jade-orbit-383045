@@ -3,6 +3,10 @@
     "files": true
   },
   "compilerOptions": {
+    /* Required by ts-jest\'s transpile-only mode (see jest.config.js) and a
+       good idea regardless: it rejects constructs that cannot be compiled
+       file-by-file. */
+    "isolatedModules": true,
     "target": "ES2022",
     "module": "commonjs",
 

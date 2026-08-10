@@ -40,7 +40,6 @@ export function usePopoverPlacement(
     const rect = triggerRef.current.getBoundingClientRect();
     const spaceBelow = window.innerHeight - rect.bottom;
     const spaceAbove = rect.top;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setPlacement(spaceBelow < estimatedHeight && spaceAbove > spaceBelow ? 'top' : 'bottom');
   }, [isOpen, triggerRef, estimatedHeight]);
 

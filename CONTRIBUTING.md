@@ -28,7 +28,7 @@ outside the team.
 ```bash
 git clone git@github.com:dev-technotaau/whatsapp-cloud-module.git
 cd whatsapp-cloud-module
-npm install      # installs root + backend + frontend (npm workspaces)
+npm run install:all      # root + backend + frontend (npm --prefix, not workspaces)
 ```
 
 Required tooling: Node 20+, plus a local PostgreSQL and Redis. See
@@ -60,19 +60,25 @@ We work directly off the canonical repository — **do not fork**.
    ticket/issue if applicable.
 6. Request review from at least one peer; security-sensitive changes
    (auth, RBAC, secrets, infra) require tech-lead approval.
-7. Merge with **squash & merge** once CI is green and review is approved.
-   Delete the branch after merge.
+7. Merge with **squash & merge** once review is approved. Delete the branch
+   after merge.
 
-### CI gates
+### Gates
 
-The PR must pass:
+There is **no CI in this repository** — no `.github/` workflows. Enforcement is
+local, via the Husky hooks (which only run once someone has executed
+`npm run prepare`, so verify yours are installed):
 
-- ESLint + Prettier (root + backend + frontend)
-- TypeScript type-check
-- Jest tests (backend + frontend)
-- `commitlint` against the conventional-commits config
+- `pre-commit` — lint-staged: ESLint + Prettier on staged files
+- `commit-msg` — commitlint against the conventional-commits config
 
-The pre-commit + commit-msg Husky hooks already enforce these locally.
+Run the full set yourself before opening a PR — the hooks do not cover them:
+
+```bash
+npm run lint          # backend (max-warnings 27) + frontend (max-warnings 0)
+npm run type-check    # tsc --noEmit, both sides
+npm test              # jest, both sides
+```
 
 ---
 

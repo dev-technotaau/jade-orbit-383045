@@ -7,7 +7,7 @@
     "dev": "next dev",
     "build": "next build --webpack",
     "start": "next start",
-    "lint": "eslint src/",
+    "lint": "eslint src/ --max-warnings 0",
     "lint:fix": "eslint src/ --fix",
     "type-check": "tsc --noEmit",
     "format": "prettier --write src/",
@@ -80,5 +80,5 @@
     "lightningcss-linux-x64-gnu": "^1.30.2",
     "lightningcss-linux-x64-musl": "^1.30.2"
   },
-  "description": "WhatsApp Cloud Module — operator UI"
+  "description": "WhatsApp Cloud Module \u2014 operator UI"
 }

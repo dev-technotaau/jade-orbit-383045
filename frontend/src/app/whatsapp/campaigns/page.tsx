@@ -24,7 +24,7 @@ export default function SuperAdminWhatsappCampaignsPage() {
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(50);
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['wa-campaigns', page, limit],
     queryFn: () => svc.listCampaigns({ page, limit }),
     refetchInterval: 30_000,
@@ -68,7 +68,18 @@ export default function SuperAdminWhatsappCampaignsPage() {
           {isLoading && (
             <p className="p-6 text-center text-sm text-[var(--text-muted)]">Loading…</p>
           )}
-          {!isLoading && campaigns.length === 0 && (
+          {/* A failed request must not render as "no campaigns yet" — that reads
+              as "nothing to see", on a page whose whole job is showing what is
+              running right now. */}
+          {!isLoading && isError && (
+            <div className="p-8 text-center">
+              <p className="text-sm text-[var(--error)]">Could not load campaigns.</p>
+              <Button variant="outline" size="sm" className="mt-3" onClick={() => void refetch()}>
+                Retry
+              </Button>
+            </div>
+          )}
+          {!isLoading && !isError && campaigns.length === 0 && (
             <p className="p-8 text-center text-sm text-[var(--text-muted)]">
               No campaigns yet. Create one to send an approved template to an audience.
             </p>

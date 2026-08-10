@@ -38,10 +38,14 @@ const envSchema = z
     BULLMQ_SCHEDULER_CONCURRENCY: z.string().default('2'),
 
     FRONTEND_URL: z.string().default('http://localhost:3000'),
+    /**
+     * Comma-separated allowed origins. `*` means "reflect whatever origin asked"
+     * — which, combined with `credentials: true`, is the browser-accepted form of
+     * wildcard-with-credentials and voids the premise the CSRF design is written
+     * on (only allowed origins can read /api/csrf-token). Fine locally; refused
+     * in production by the superRefine below.
+     */
     CORS_ORIGIN: z.string().default('*'),
-
-
-
 
     // Cloudflare R2
     CLOUDFLARE_ACCOUNT_ID: z.string().optional(),
@@ -49,7 +53,6 @@ const envSchema = z
     R2_SECRET_ACCESS_KEY: z.string().optional(),
     R2_BUCKET_NAME: z.string().default('whatsapp-media'),
     R2_PUBLIC_URL: z.string().optional(),
-
 
     /**
      * The single shared secret gating this module.
@@ -74,6 +77,13 @@ const envSchema = z
      * leaked. Operators simply unlock again with the same password.
      */
     SESSION_EPOCH: z.string().default('1'),
+    /**
+     * Absolute session lifetime in seconds (default 12h). Signed INTO the unlock
+     * token, so the server enforces it — the cookie's own maxAge is only a hint
+     * to the browser. Keep the frontend's NEXT_PUBLIC/SESSION_MAX_AGE_SECONDS in
+     * step so the cookie expires at the same moment the token does.
+     */
+    SESSION_MAX_AGE_SECONDS: z.string().default('43200'),
     /**
      * Display name for the API's HTML pages (root, health, 404) and the OpenAPI
      * docs. The frontend has its own NEXT_PUBLIC_BRAND_NAME; keep them in sync.
@@ -103,7 +113,14 @@ const envSchema = z
 
     // Rate Limiting
     RATE_LIMIT_WINDOW_MS: z.string().default('900000'), // 15 minutes
-    RATE_LIMIT_MAX_REQUESTS: z.string().default('100'),
+    /**
+     * 100 was a public-site default and is far too low here. This is an internal
+     * console: every operator's traffic arrives through the same BFF egress
+     * address, so they share one bucket, and a single open inbox tab spends
+     * requests continuously (conversation list, unread badge, thread polling).
+     * The real burst protection is ddosProtection(); this is the slow ceiling.
+     */
+    RATE_LIMIT_MAX_REQUESTS: z.string().default('2000'),
     AUTH_RATE_LIMIT_WINDOW_MS: z.string().default('300000'), // 5 minutes
     AUTH_RATE_LIMIT_MAX_ATTEMPTS: z.string().default('30'),
 
@@ -111,7 +128,6 @@ const envSchema = z
     LOG_LEVEL: z
       .enum(['error', 'warn', 'info', 'http', 'verbose', 'debug', 'silly'])
       .default('info'),
-
 
     // Field-Level Encryption (AES-256-GCM, 32-byte hex key)
     FIELD_ENCRYPTION_KEY: z
@@ -122,13 +138,69 @@ const envSchema = z
     // Centralized Log Aggregation
     LOG_AGGREGATION_URL: z.string().optional(),
     LOG_AGGREGATION_TOKEN: z.string().optional(),
+  })
+  /**
+   * Production preflight.
+   *
+   * Every credential below is `.optional()` because local development and the
+   * test suite legitimately run without them. In production they are not
+   * optional at all — and each one fails *late* and *quietly*: no APP_PASSWORD
+   * and requireAppPassword fails closed on every request (the console looks
+   * broken, not misconfigured); no META_WHATSAPP_TOKEN and every send fails at
+   * the Graph call; no META_WHATSAPP_APP_SECRET and every inbound webhook is
+   * rejected as unsigned, so the inbox just stays empty.
+   *
+   * A missing variable should stop the deploy, not produce a green instance
+   * that silently does nothing. The parse failure below already exits(1).
+   *
+   * The schema also carried four cross-field refinements that were removed with
+   * the systems they guarded (RS256 JWT key pairing, Firebase service-account
+   * JSON, SUPER_ADMIN_EMAIL/PASSWORD, a production CF_TURNSTILE_SECRET_KEY).
+   */
+  .superRefine((cfg, ctx) => {
+    if (cfg.NODE_ENV !== 'production') return;
 
+    const required: Array<[keyof typeof cfg, string]> = [
+      ['APP_PASSWORD', 'the only credential protecting the console'],
+      ['META_WHATSAPP_TOKEN', 'required to send anything via the Cloud API'],
+      ['META_WHATSAPP_PHONE_ID', 'required to send anything via the Cloud API'],
+      ['META_WHATSAPP_APP_SECRET', 'webhook signature verification fails closed without it'],
+      ['META_WHATSAPP_WEBHOOK_VERIFY_TOKEN', 'Meta cannot complete the webhook handshake'],
+      ['BFF_SECRET', 'the frontend proxy cannot authenticate to this API'],
+    ];
+
+    for (const [key, why] of required) {
+      if (!cfg[key]) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [key as string],
+          message: `${String(key)} is required in production - ${why}`,
+        });
+      }
+    }
+
+    if (cfg.CORS_ORIGIN === '*') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['CORS_ORIGIN'],
+        message:
+          "CORS_ORIGIN must not be '*' in production - with credentials enabled it " +
+          'reflects any origin, which defeats the CSRF protection. Set it to the ' +
+          "frontend's origin (comma-separated for several).",
+      });
+    }
+
+    if (!cfg.FIELD_ENCRYPTION_KEY) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['FIELD_ENCRYPTION_KEY'],
+        message:
+          'FIELD_ENCRYPTION_KEY is required in production - without it, opt-in ' +
+          'evidence and operator notes about customers are written to the database ' +
+          'in plaintext, silently.',
+      });
+    }
   });
-
-// The schema carried four cross-field refinements, all now gone with the
-// systems they guarded: RS256 JWT key pairing, Firebase service-account JSON
-// validation, SUPER_ADMIN_EMAIL/PASSWORD pairing, and a production requirement
-// for CF_TURNSTILE_SECRET_KEY. Each read a key that no longer exists.
 
 const parsed = envSchema.safeParse(process.env);
 

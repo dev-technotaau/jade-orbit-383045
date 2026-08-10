@@ -1,5 +1,6 @@
 import api from '@/lib/api';
 import { API } from '@/constants/api';
+import { assertUploadSize } from '@/constants/config';
 import type { ApiResponse } from '@/types/api';
 import type { TemplateSendPayload } from '@/lib/whatsapp-template-vars';
 import type {
@@ -213,6 +214,7 @@ export const whatsappService = {
    * `{ handle }`; surfaces Meta's "App ID not configured" etc. on failure.
    */
   async uploadHeaderSample(file: File): Promise<string> {
+    assertUploadSize(file);
     const form = new FormData();
     form.append('file', file);
     const res = await api.post(API.SUPER_ADMIN.WA_TEMPLATE_MEDIA_HANDLE, form, {
@@ -496,6 +498,9 @@ export const whatsappService = {
     caption?: string,
     voice?: boolean,
   ): Promise<ApiResponse<WaMessage>> {
+    // Refuse oversized files here rather than letting the BFF proxy fail on a
+    // platform body limit it cannot report cleanly. See MAX_UPLOAD_BYTES.
+    assertUploadSize(file);
     const form = new FormData();
     form.append('file', file);
     if (caption) form.append('caption', caption);

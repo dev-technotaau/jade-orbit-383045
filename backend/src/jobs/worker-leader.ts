@@ -9,7 +9,6 @@ import {
   bullmqQueueFailed,
 } from '../routes/metrics.routes';
 
-import { createWhatsappWorker } from './whatsapp.worker';
 import { createWhatsappInboundWorker } from './whatsapp-inbound.worker';
 import { createWhatsappMediaWorker } from './whatsapp-media.worker';
 import { createWhatsappCampaignWorker } from './whatsapp-campaign.worker';
@@ -17,7 +16,6 @@ import { createSchedulerWorker } from './scheduler.worker';
 import { createWebhookWorker } from './webhook.worker';
 
 // Queue instances for metrics collection
-import { whatsappQueue } from './whatsapp.queue';
 import { whatsappInboundQueue } from './whatsapp-inbound.queue';
 import { whatsappMediaQueue } from './whatsapp-media.queue';
 import { whatsappCampaignQueue } from './whatsapp-campaign.queue';
@@ -26,7 +24,6 @@ import { webhookQueue } from './webhook.queue';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const ALL_QUEUES: Queue<any>[] = [
-  whatsappQueue,
   whatsappInboundQueue,
   whatsappMediaQueue,
   whatsappCampaignQueue,
@@ -38,6 +35,16 @@ const LOCK_KEY = 'wa:worker-leader';
 const LOCK_TTL = 30; // seconds — auto-expires if leader crashes
 const RENEW_INTERVAL = 10_000; // ms — renew every 10s (3 chances before TTL)
 const MONITOR_INTERVAL = 5_000; // ms — standby checks every 5s
+/**
+ * Consecutive renewal failures tolerated before demoting.
+ *
+ * The 30s TTL against a 10s renewal deliberately gives three attempts; demoting
+ * on the first one threw that away and turned a single Redis hiccup into a full
+ * worker stop-start (which drains all five workers, and a campaign batch can take a
+ * while to drain). Two failures still leaves a renewal's worth of headroom
+ * before the lock actually expires and another instance can claim it.
+ */
+const MAX_RENEW_FAILURES = 2;
 
 /**
  * Manages BullMQ worker lifecycle via Redis-based leader election.
@@ -57,6 +64,9 @@ class WorkerLeaderManager {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private workers: Worker<any>[] = [];
   private _isLeader = false;
+  /** Guards against a second demotion/promotion racing one already in flight. */
+  private transitioning = false;
+  private renewFailures = 0;
 
   get isLeader(): boolean {
     return this._isLeader;
@@ -85,7 +95,6 @@ class WorkerLeaderManager {
 
   private startWorkers(): void {
     this.workers = [
-      createWhatsappWorker(),
       createWhatsappInboundWorker(),
       createWhatsappMediaWorker(),
       createWhatsappCampaignWorker(),
@@ -126,17 +135,51 @@ class WorkerLeaderManager {
    * down), transition to standby mode.
    */
   private startRenewal(): void {
+    this.renewFailures = 0;
     this.timer = setInterval(async () => {
+      // A demotion already in progress owns the transition; renewing underneath
+      // it (or starting a second one) is how two overlapping demotions used to
+      // orphan a whole worker set.
+      if (this.transitioning) return;
+
       const renewed = await renewLock(LOCK_KEY, this.lockValue!, LOCK_TTL);
-      if (!renewed) {
-        logger.warn('Lost worker leadership (lock renewal failed)');
-        this._isLeader = false;
+      if (renewed) {
+        this.renewFailures = 0;
+        return;
+      }
+
+      this.renewFailures += 1;
+      if (this.renewFailures < MAX_RENEW_FAILURES) {
+        logger.warn(
+          `Leader lock renewal failed (${this.renewFailures}/${MAX_RENEW_FAILURES}) — retrying`
+        );
+        return;
+      }
+
+      logger.warn('Lost worker leadership (lock renewal failed)');
+      this.transitioning = true;
+      // Stop renewing FIRST. This interval used to keep firing throughout the
+      // (potentially minutes-long) worker drain below, stacking demotions on top
+      // of each other; it was only cleared inside startMonitoring, after the
+      // await.
+      this.clearTimer();
+      this._isLeader = false;
+      try {
         this.stopMetricsCollection();
         await this.stopWorkers();
         updateService('BullMQ Workers', 'ready', 'Standby — monitoring');
+      } finally {
+        this.transitioning = false;
         this.startMonitoring();
       }
     }, RENEW_INTERVAL);
+  }
+
+  private clearTimer(): void {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
   }
 
   /**
@@ -144,31 +187,46 @@ class WorkerLeaderManager {
    * When it has, acquire it and start the workers.
    */
   private startMonitoring(): void {
-    if (this.timer) clearInterval(this.timer);
+    this.clearTimer();
     this.timer = setInterval(async () => {
+      if (this.transitioning || this._isLeader) return;
       const acquired = await acquireLock(LOCK_KEY, LOCK_TTL);
-      if (acquired) {
+      if (!acquired) return;
+
+      this.transitioning = true;
+      try {
         this.lockValue = acquired;
         this._isLeader = true;
-        if (this.timer) clearInterval(this.timer);
+        this.clearTimer();
         this.startWorkers();
-        this.startRenewal();
         this.startMetricsCollection();
         updateService('BullMQ Workers', 'ready', `Leader — ${this.workers.length} workers`);
+      } finally {
+        this.transitioning = false;
       }
+      // Renewal starts last, and outside the guard, so its first tick can never
+      // observe a half-built worker set.
+      this.startRenewal();
     }, MONITOR_INTERVAL);
   }
 
   private async stopWorkers(): Promise<void> {
     this.stopMetricsCollection();
-    await Promise.allSettled(this.workers.map((w) => w.close()));
+    // Take the list BEFORE awaiting. Clearing it afterwards would wipe any
+    // worker set installed by a promotion that ran during the drain — those
+    // workers would then be live but unreachable, and nothing could ever stop
+    // them.
+    const workers = this.workers;
     this.workers = [];
-    logger.info('Stopped all BullMQ workers');
+    if (workers.length === 0) return;
+    await Promise.allSettled(workers.map((w) => w.close()));
+    logger.info(`Stopped ${workers.length} BullMQ workers`);
   }
 
   /** Graceful shutdown: stop workers and release the leader lock. */
   async shutdown(): Promise<void> {
-    if (this.timer) clearInterval(this.timer);
+    this.transitioning = true; // no promotion may start while we are leaving
+    this.clearTimer();
     await this.stopWorkers();
     if (this.lockValue) {
       await releaseLock(LOCK_KEY, this.lockValue);

@@ -6,6 +6,24 @@ import logger from './logger';
 // Check if Redis is enabled (optional for development)
 const isRedisEnabled = env.REDIS_ENABLED !== 'false';
 
+/**
+ * Reconnect forever, with a bounded backoff.
+ *
+ * This previously returned `null` after 3 attempts. ioredis treats a non-number
+ * from `retryStrategy` as "stop reconnecting" and permanently ends the client —
+ * so roughly 1.2s of unavailability (200+400+600ms) killed Redis for the life of
+ * the process. A managed-Redis failover on Render routinely exceeds that.
+ *
+ * The consequences were total and silent: `renewLock` catches the error and
+ * returns false, so the worker leader demotes and stops every worker; standby
+ * then polls `acquireLock`, which also catches and returns null forever. The
+ * instance stayed up serving HTTP with zero inbound processing, campaign sends
+ * or crons — one warn line, and no alerting.
+ *
+ * Capped at 5s so a long outage doesn't spin hot.
+ */
+const retryStrategy = (times: number): number => Math.min(times * 200, 5000);
+
 // Build Redis configuration from environment variables
 const buildRedisConfig = (): RedisOptions => {
   // If full URL is provided, use it
@@ -13,10 +31,7 @@ const buildRedisConfig = (): RedisOptions => {
     return {
       maxRetriesPerRequest: null, // Required for BullMQ
       lazyConnect: true, // Don't connect immediately
-      retryStrategy: (times) => {
-        if (times > 3) return null; // Stop retrying after 3 attempts
-        return Math.min(times * 200, 2000);
-      },
+      retryStrategy,
     };
   }
 
@@ -25,10 +40,7 @@ const buildRedisConfig = (): RedisOptions => {
     port: parseInt(env.REDIS_PORT, 10),
     maxRetriesPerRequest: null, // Required for BullMQ
     lazyConnect: true, // Don't connect immediately
-    retryStrategy: (times) => {
-      if (times > 3) return null; // Stop retrying after 3 attempts
-      return Math.min(times * 200, 2000);
-    },
+    retryStrategy,
   };
 
   // Add password if provided

@@ -89,6 +89,25 @@ export const errorHandler = (err: any, req: Request, res: Response, _next: NextF
     err = prismaError;
   }
 
+  // Multer (file uploads). A MulterError has no `isOperational`, so it fell
+  // through to the generic branch and an oversized attachment came back as a
+  // 500 "Something went wrong. Please try again later." — which tells the
+  // operator nothing about the actual problem, which is that their file is too
+  // big. Give it the real status and say the limit out loud.
+  if (err?.name === 'MulterError') {
+    const multerMessages: Record<string, [string, number, string]> = {
+      LIMIT_FILE_SIZE: ['File is larger than the 16 MB WhatsApp limit', 413, 'WA_FILE_TOO_LARGE'],
+      LIMIT_FILE_COUNT: ['Too many files — send one at a time', 400, 'WA_TOO_MANY_FILES'],
+      LIMIT_UNEXPECTED_FILE: ['Unexpected file field', 400, 'WA_UNEXPECTED_FILE'],
+    };
+    const [message, code, errorCode] = multerMessages[err.code as string] ?? [
+      'File upload failed',
+      400,
+      'WA_UPLOAD_FAILED',
+    ];
+    err = new AppError(message, code, errorCode);
+  }
+
   // NEVER assign onto the caught error. Some library errors expose these as
   // getter-only accessors — notably the OpenSearch client's ResponseError,
   // which defines `get statusCode()` with no setter

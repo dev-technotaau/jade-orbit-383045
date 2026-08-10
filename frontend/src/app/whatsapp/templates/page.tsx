@@ -13,6 +13,7 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import DashboardLayout from '@/components/layout/DashboardLayout';
+import DialogShell from '@/components/ui/DialogShell';
 import Input from '@/components/ui/Input';
 import Button from '@/components/ui/Button';
 import Select from '@/components/ui/Select';
@@ -105,7 +106,7 @@ function TemplateAnalyticsModal({
   const rejectionReason = a?.template.rejectionReason ?? template.rejectionReason;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+    <DialogShell onClose={onClose} label="Template analytics">
       <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-xl bg-white p-6 shadow-xl">
         <div className="mb-4 flex items-start justify-between gap-3">
           <div className="min-w-0">
@@ -177,7 +178,7 @@ function TemplateAnalyticsModal({
           </Button>
         </div>
       </div>
-    </div>
+    </DialogShell>
   );
 }
 

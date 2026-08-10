@@ -17,11 +17,36 @@ function getKey(): Buffer | null {
 
 /**
  * Whether field encryption is configured (FIELD_ENCRYPTION_KEY present).
- * Callers that store third-party secrets (e.g. mailbox IMAP/SMTP passwords)
- * should refuse to persist rather than silently fall back to plaintext.
+ *
+ * `encryptField` returns its input unchanged when there is no key, which is the
+ * right behaviour for a dev machine and a silent data-protection failure in
+ * production: opt-in evidence (IP, referral) and operator notes about customers
+ * land in the database as plaintext, with nothing in the logs saying so. The
+ * key is now required in production (config/env.ts refuses to boot without it),
+ * and {@link warnIfEncryptionDisabled} covers every other environment.
  */
 export function isEncryptionEnabled(): boolean {
   return getKey() !== null;
+}
+
+let warned = false;
+
+/**
+ * Log once, loudly, when a field that is supposed to be encrypted is about to be
+ * written in the clear. Called from the write sites and from boot.
+ */
+export function warnIfEncryptionDisabled(context = 'startup'): void {
+  if (isEncryptionEnabled() || warned) return;
+  warned = true;
+  // Lazy require: this module is imported by config-level code, and importing
+  // the logger eagerly would create a cycle.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const logger = require('../config/logger').default as { warn: (m: string) => void };
+  logger.warn(
+    `FIELD_ENCRYPTION_KEY is not set (${context}) - consent evidence and ` +
+      'conversation notes will be stored in PLAINTEXT. Generate one with ' +
+      '`openssl rand -hex 32`.'
+  );
 }
 
 /**
@@ -76,6 +101,9 @@ export function decryptField(encrypted: string): string {
  * Returns the ciphertext string (a valid JSON value). Pairs with decryptJson().
  */
 export function encryptJson(value: unknown): string {
+  // Consent evidence carries IP and referral data; if it is about to be stored
+  // in the clear, say so once rather than degrading silently.
+  warnIfEncryptionDisabled('consent evidence');
   return encryptField(JSON.stringify(value));
 }
 

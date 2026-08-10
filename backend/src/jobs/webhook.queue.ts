@@ -13,7 +13,12 @@ export const webhookQueue = new Queue(WEBHOOK_QUEUE_NAME, {
       delay: 1000,
     },
     removeOnComplete: true,
-    removeOnFail: false,
+    // Bounded, not `false`. Failed jobs are worth keeping to diagnose a bad
+    // run, but `false` keeps them FOREVER — in Redis, the one datastore here
+    // with no retention story and the tightest memory budget. A week and a
+    // thousand jobs is enough to investigate anything anyone will actually
+    // investigate.
+    removeOnFail: { age: 7 * 24 * 3600, count: 1000 },
   },
 });
 

@@ -1,5 +1,5 @@
+import { randomUUID } from 'crypto';
 import { redis } from '../config/redis';
-import { v4 as uuidv4 } from 'uuid';
 import logger from '../config/logger';
 
 /**
@@ -14,7 +14,7 @@ import logger from '../config/logger';
  * @returns Lock value (UUID) if acquired, null if already locked
  */
 export async function acquireLock(key: string, ttlSeconds: number): Promise<string | null> {
-  const lockValue = uuidv4();
+  const lockValue = randomUUID();
   try {
     const result = await redis.set(key, lockValue, 'EX', ttlSeconds, 'NX');
     if (result === 'OK') {

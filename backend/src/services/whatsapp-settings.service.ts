@@ -1,4 +1,5 @@
 import { prisma } from '../config/prisma';
+import { invalidateOptOutKeywordCache } from './whatsapp-contact.service';
 import { Prisma } from '@prisma/client';
 
 /**
@@ -45,9 +46,16 @@ export async function updateWaSettings(patch: {
     data.faqTriggerKeywords = { set: patch.faqTriggerKeywords };
   }
 
-  return prisma.waSettings.upsert({
+  const saved = await prisma.waSettings.upsert({
     where: { id: 'default' },
     create: { id: 'default', ...(data as Prisma.WaSettingsCreateInput) },
     update: data,
   });
+
+  // The opt-out detector caches these for 60s; drop the cache now so a keyword
+  // the operator just added takes effect on the very next inbound message
+  // rather than up to a minute later.
+  if (patch.optOutKeywords !== undefined) invalidateOptOutKeywordCache();
+
+  return saved;
 }

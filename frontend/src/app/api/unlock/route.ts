@@ -54,9 +54,19 @@ export async function POST(request: NextRequest) {
 
   let upstream: Response;
   try {
+    // Forward the caller's address. Without it the backend sees this function's
+    // egress IP for every unlock attempt in the world, so its per-IP brute-force
+    // limiter treats the entire team as one bucket: 30 wrong guesses from
+    // anywhere locks everyone out of the console. The generic proxy route has
+    // always forwarded this; the unlock route — the one endpoint where it
+    // actually protects a credential — did not.
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const forwarded = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip');
+    if (forwarded) headers['x-forwarded-for'] = forwarded;
+
     upstream = await fetch(`${BACKEND}/unlock`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ password }),
       cache: 'no-store',
     });
@@ -70,14 +80,24 @@ export async function POST(request: NextRequest) {
     const body = await upstream.json().catch(() => ({}));
     return NextResponse.json(
       { error: body?.error?.message ?? 'Unlock failed' },
-      { status: upstream.status }
+      { status: upstream.status },
     );
   }
 
-  const { data } = (await upstream.json()) as { data?: { token?: string } };
+  const { data } = (await upstream.json()) as {
+    data?: { token?: string; expiresInSeconds?: number };
+  };
   if (!data?.token) {
     return NextResponse.json({ error: 'Malformed response from API' }, { status: 502 });
   }
+
+  // Prefer the lifetime the BACKEND signed into the token. The token now carries
+  // its own expiry and the server enforces it, so a cookie that outlived the
+  // token would just produce confusing 401s on a session that looks live.
+  const maxAge =
+    typeof data.expiresInSeconds === 'number' && data.expiresInSeconds > 0
+      ? data.expiresInSeconds
+      : SESSION_MAX_AGE_SECONDS;
 
   const res = NextResponse.json({ ok: true });
   res.cookies.set(COOKIE, data.token, {
@@ -85,7 +105,7 @@ export async function POST(request: NextRequest) {
     sameSite: 'lax',
     secure: process.env.NODE_ENV === 'production',
     path: '/',
-    maxAge: SESSION_MAX_AGE_SECONDS,
+    maxAge,
   });
   return res;
 }

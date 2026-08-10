@@ -5,6 +5,9 @@ import { emitWa } from '../utils/whatsapp-realtime';
 import { sendReadReceipt } from './whatsapp.service';
 import type { Prisma, WaConversationStatus } from '@prisma/client';
 
+/** Sentinel `assignedTo` value meaning "has no assignee". */
+export const UNASSIGNED = '__none__';
+
 const WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /** Whether the 24h customer-service window is currently open. */
@@ -22,6 +25,7 @@ export async function getOrCreateConversation(channelId: string, contactId: stri
 
 export interface ConversationListFilters {
   status?: WaConversationStatus;
+  /** An operator label, or {@link UNASSIGNED} to match conversations with none. */
   assignedTo?: string;
   q?: string;
   unreadOnly?: boolean;
@@ -59,7 +63,15 @@ function buildConversationListWhere(
       : [];
   return {
     ...(params.status ? { status: params.status } : {}),
-    ...(params.assignedTo ? { assignedTo: params.assignedTo } : {}),
+    // `__none__` is the sentinel for "unassigned". It has to be server-side:
+    // filtering it in the client only ever saw the loaded page, so an inbox with
+    // 50 assigned conversations on page 1 reported "no conversations" while
+    // hundreds of unassigned ones sat on page 2.
+    ...(params.assignedTo === UNASSIGNED
+      ? { assignedTo: null }
+      : params.assignedTo
+        ? { assignedTo: params.assignedTo }
+        : {}),
     ...(params.unreadOnly ? { unreadCount: { gt: 0 } } : {}),
     // Hide archived conversations unless explicitly asked for.
     ...(params.includeArchived ? {} : { archivedAt: null }),

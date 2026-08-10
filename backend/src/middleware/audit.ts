@@ -75,7 +75,7 @@ export const audit = (action: string, entity: string) => {
       const entityId = req.params.id || req.body?.id;
 
       // Fire and forget audit log (PII redacted)
-      AuditService.log({
+      void AuditService.log({
         action,
         entity,
         entityId: typeof entityId === 'string' ? entityId : undefined,

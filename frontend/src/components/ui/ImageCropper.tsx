@@ -137,6 +137,9 @@ export default function ImageCropper({
             aspect={aspectRatio}
             circularCrop={circularCrop}
           >
+            {/* react-image-crop measures this element directly and needs the raw
+                DOM node + a blob: src, so next/image is not usable here. */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               ref={imgRef}
               alt="Crop preview"

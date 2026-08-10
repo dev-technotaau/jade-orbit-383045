@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { MessageSquareText, LayoutList, X, Trash2, Plus } from 'lucide-react';
+import DialogShell from '@/components/ui/DialogShell';
 import Input from '@/components/ui/Input';
 import Textarea from '@/components/ui/Textarea';
 import Button from '@/components/ui/Button';
@@ -179,7 +180,7 @@ function InteractiveModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+    <DialogShell onClose={onClose} label="Interactive message">
       <div className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-xl bg-white p-6 shadow-xl">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-bold text-[var(--text)]">Interactive message</h2>
@@ -316,7 +317,7 @@ function InteractiveModal({
           </Button>
         </div>
       </div>
-    </div>
+    </DialogShell>
   );
 }
 

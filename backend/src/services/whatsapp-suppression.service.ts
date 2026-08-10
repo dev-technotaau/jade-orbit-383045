@@ -46,3 +46,33 @@ export async function getSuppressedPhoneSet(): Promise<Set<string>> {
   const rows = await prisma.waSuppression.findMany({ select: { phone: true } });
   return new Set(rows.map((r) => r.phone));
 }
+
+/**
+ * Is this phone on the do-not-contact list?
+ *
+ * The list was only ever consulted when a campaign audience was materialized —
+ * i.e. once, possibly days before the campaign ran, and never for the drip,
+ * scheduled-message, one-off template or bridge paths at all. A number added to
+ * the list after materialization (a complaint, a legal request) kept receiving
+ * messages from every already-built campaign. "Must never receive a campaign,
+ * regardless of opt-in status" has to be enforced at the send, not at the plan.
+ *
+ * Indexed unique lookup, so this is cheap enough to run per send.
+ */
+export async function isSuppressed(phone: string | null | undefined): Promise<boolean> {
+  if (!phone) return false;
+  const normalized = normalizeWaPhone(phone);
+  if (!normalized) return false;
+  try {
+    const hit = await prisma.waSuppression.findUnique({
+      where: { phone: normalized },
+      select: { id: true },
+    });
+    return hit != null;
+  } catch {
+    // Fail OPEN deliberately: a database blip must not silently halt every
+    // send. The materializer's list check still applies, and the failure is
+    // visible in the logs of whatever called us.
+    return false;
+  }
+}

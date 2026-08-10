@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { X } from 'lucide-react';
+import DialogShell from '@/components/ui/DialogShell';
 import Input from '@/components/ui/Input';
 import PhoneInput from '@/components/ui/PhoneInput';
 import Button from '@/components/ui/Button';
@@ -127,7 +128,7 @@ export default function TemplateComposeModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+    <DialogShell onClose={onClose} label="Send a template">
       <div className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-xl bg-white p-6 shadow-xl">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-bold text-[var(--text)]">
@@ -227,6 +228,6 @@ export default function TemplateComposeModal({
           </Button>
         </div>
       </div>
-    </div>
+    </DialogShell>
   );
 }

@@ -37,6 +37,10 @@ function Avatar({ src, alt, firstName, lastName, size = 'md', className }: Avata
       )}
     >
       {showImage ? (
+        // Deliberately a plain <img>: sources are arbitrary remote URLs (and blob:
+        // object URLs) that next/image would need configured remotePatterns for,
+        // and an avatar is far too small for the optimizer to be worth it.
+        // eslint-disable-next-line @next/next/no-img-element
         <img
           src={src}
           alt={alt || `${firstName || ''} ${lastName || ''}`.trim() || 'Avatar'}

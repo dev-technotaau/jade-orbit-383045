@@ -2,13 +2,17 @@ import { prisma } from '../config/prisma';
 import { env } from '../config/env';
 import logger from '../config/logger';
 import { syncFromMeta } from '../services/whatsapp-template.service';
-import { launchCampaign, cloneAndLaunchRecurring } from '../services/whatsapp-campaign.service';
+import {
+  launchCampaign,
+  cloneAndLaunchRecurring,
+  enqueuePendingRecipients,
+} from '../services/whatsapp-campaign.service';
 import { advanceDueSequenceRecipients } from '../services/whatsapp-sequence.service';
 import { dispatchDueScheduledMessages } from '../services/whatsapp-scheduled-message.service';
 import { syncChannelHealth, getDefaultChannel } from '../services/whatsapp-channel.service';
 import { deleteFileFromR2 } from '../services/storage.service';
-import { addWhatsappInboundJob } from './whatsapp-inbound.queue';
-import { addCampaignBatchJob } from './whatsapp-campaign.queue';
+import { requeueWhatsappInboundJob } from './whatsapp-inbound.queue';
+import { whatsappCampaignQueue } from './whatsapp-campaign.queue';
 import { waChannelQuality, waMessagingTierLimit } from '../utils/whatsapp-metrics';
 
 /** Map a Meta quality rating to the numeric gauge (0 unknown, 1 green, 2 yellow, 3 red). */
@@ -115,6 +119,26 @@ export async function handleWaSyncChannelHealth(): Promise<void> {
  */
 const WA_WEBHOOK_EVENT_TTL_DAYS = 14;
 
+/**
+ * Fixed TTLs for the three tables that were accumulating personal data forever
+ * outside every retention and erasure path.
+ *
+ * `WebhookDelivery.payload` stores the whole outbound event verbatim — for
+ * `whatsapp.message.inbound` that is the contact's phone number and the text
+ * they sent — once per delivery attempt, retries included. Nothing deleted it,
+ * the retention prune did not know about it, and DPDP erasure did not scrub it,
+ * so a contact who exercised their right to erasure still had their number and
+ * message sitting in this table. It is a debug log; it does not need to outlive
+ * a fortnight.
+ *
+ * `AuditLog` holds actor, IP, user agent and entity ids; `archiveLogs()` exists
+ * but was never called from anywhere. `WaLinkClick` holds IP + user agent per
+ * click.
+ */
+const WEBHOOK_DELIVERY_TTL_DAYS = 30;
+const AUDIT_LOG_TTL_DAYS = 180;
+const LINK_CLICK_TTL_DAYS = 180;
+
 export async function handleWaPruneRetention(): Promise<void> {
   const settings = await prisma.waSettings
     .findUnique({ where: { id: 'default' } })
@@ -167,16 +191,106 @@ export async function handleWaPruneRetention(): Promise<void> {
   const eventCutoff = new Date(Date.now() - eventTtlDays * DAY_MS);
   let deletedEvents = 0;
   for (let i = 0; i < MAX_LOOPS; i++) {
-    const res = await prisma.waWebhookEvent.deleteMany({
+    // Select ids, then delete by id — the same shape the message prune above
+    // uses. The previous version looped over a bare `deleteMany`, which has no
+    // LIMIT: the first call deleted every stale row in one transaction (a
+    // multi-hundred-thousand-row DELETE against a 30s statement_timeout) and
+    // the loop then exited having batched nothing.
+    const doomed = await prisma.waWebhookEvent.findMany({
       where: { createdAt: { lt: eventCutoff } },
+      select: { id: true },
+      orderBy: { createdAt: 'asc' },
+      take: BATCH,
+    });
+    if (doomed.length === 0) break;
+    const res = await prisma.waWebhookEvent.deleteMany({
+      where: { id: { in: doomed.map((e) => e.id) } },
     });
     deletedEvents += res.count;
-    if (res.count < BATCH) break; // deleteMany has no limit; break once it tails off
+    if (doomed.length < BATCH) break;
   }
+
+  // 3) Everything else that quietly accumulates personal data. Batched by id
+  //    for the same reason as above: an unbounded DELETE would hit the 30s
+  //    statement_timeout on a table that has never been pruned.
+  const pruneOlderThan = async (
+    label: string,
+    days: number,
+    del: (cutoff: Date, take: number) => Promise<number>
+  ): Promise<number> => {
+    const cutoff = new Date(Date.now() - days * DAY_MS);
+    let total = 0;
+    for (let i = 0; i < MAX_LOOPS; i++) {
+      const n = await del(cutoff, BATCH).catch((e) => {
+        logger.warn(`WhatsApp retention prune (${label}) failed: ${(e as Error).message}`);
+        return 0;
+      });
+      total += n;
+      if (n < BATCH) break;
+    }
+    return total;
+  };
+
+  const deletedDeliveries = await pruneOlderThan(
+    'webhook deliveries',
+    WEBHOOK_DELIVERY_TTL_DAYS,
+    async (cutoff, take) => {
+      const doomed = await prisma.webhookDelivery.findMany({
+        where: { createdAt: { lt: cutoff } },
+        select: { id: true },
+        orderBy: { createdAt: 'asc' },
+        take,
+      });
+      if (doomed.length === 0) return 0;
+      const res = await prisma.webhookDelivery.deleteMany({
+        where: { id: { in: doomed.map((d) => d.id) } },
+      });
+      return res.count;
+    }
+  );
+
+  const deletedAudit = await pruneOlderThan(
+    'audit logs',
+    AUDIT_LOG_TTL_DAYS,
+    async (cutoff, take) => {
+      const doomed = await prisma.auditLog.findMany({
+        where: { createdAt: { lt: cutoff } },
+        select: { id: true },
+        orderBy: { createdAt: 'asc' },
+        take,
+      });
+      if (doomed.length === 0) return 0;
+      const res = await prisma.auditLog.deleteMany({
+        where: { id: { in: doomed.map((d) => d.id) } },
+      });
+      return res.count;
+    }
+  );
+
+  const deletedClicks = await pruneOlderThan(
+    'link clicks',
+    LINK_CLICK_TTL_DAYS,
+    async (cutoff, take) => {
+      const doomed = await prisma.waLinkClick.findMany({
+        where: { createdAt: { lt: cutoff } },
+        select: { id: true },
+        orderBy: { createdAt: 'asc' },
+        take,
+      });
+      if (doomed.length === 0) return 0;
+      const res = await prisma.waLinkClick.deleteMany({
+        where: { id: { in: doomed.map((d) => d.id) } },
+      });
+      return res.count;
+    }
+  );
 
   logger.info(
     `WhatsApp retention prune: ${deletedMessages} message(s), ${deletedMedia} media object(s) ` +
-      `(>${retentionDays ?? '∞'}d), ${deletedEvents} webhook event(s) (>${eventTtlDays}d) deleted`
+      `(>${retentionDays ?? '∞'}d), ${deletedEvents} webhook event(s) (>${eventTtlDays}d), ` +
+      `${deletedDeliveries} webhook delivery/ies (>${WEBHOOK_DELIVERY_TTL_DAYS}d), ` +
+      `${deletedAudit} audit log(s) (>${AUDIT_LOG_TTL_DAYS}d), ` +
+      `${deletedClicks} link click(s) (>${LINK_CLICK_TTL_DAYS}d) deleted`
   );
 }
 
@@ -198,8 +312,10 @@ export async function handleWaEventRecovery(): Promise<void> {
   let requeued = 0;
   for (const ev of stuck) {
     try {
-      await addWhatsappInboundJob({ eventRowId: ev.id });
-      requeued++;
+      // `requeue` (not `add`): the spent job still occupies this jobId and a
+      // plain add would be silently discarded. See the queue module.
+      const job = await requeueWhatsappInboundJob(ev.id);
+      if (job) requeued++;
     } catch (e) {
       logger.warn(
         `WhatsApp event recovery re-enqueue failed for ${ev.id}: ${(e as Error).message}`
@@ -215,9 +331,33 @@ export async function handleWaEventRecovery(): Promise<void> {
  * recently is re-batched. Re-enqueuing is safe — the worker atomically claims
  * each recipient (PENDING -> SENT) before sending, so no recipient is double-sent.
  */
+/** Most recipients one recovery tick will re-batch. Bounds queue amplification. */
+const RECOVERY_RECIPIENT_CAP = 5000;
+
+/**
+ * How many batch jobs for this campaign are already waiting, delayed or active.
+ * Best-effort: if the queue can't be inspected, report 0 and let the cron
+ * proceed (an extra batch is survivable; a permanently stalled campaign is not).
+ */
+async function countQueuedBatches(campaignId: string): Promise<number> {
+  try {
+    const jobs = await whatsappCampaignQueue.getJobs(['waiting', 'delayed', 'active'], 0, 500);
+    return jobs.filter((j) => j?.data?.campaignId === campaignId).length;
+  } catch {
+    return 0;
+  }
+}
+
 export async function handleWaCampaignRecovery(): Promise<void> {
+  // BROADCAST only. A SEQUENCE (drip) campaign deliberately leaves every
+  // recipient PENDING — `launchCampaign` hands off to `startSequence` and the
+  // wa-drip-tick cron advances them one step at a time. Nothing on that path
+  // writes `sentAt`, so the "is it progressing?" test below was always zero for
+  // drips and this cron re-batched the whole audience within 10 minutes of
+  // launch, blasting the campaign's BASE template to everyone at once and then
+  // marking the campaign COMPLETED — silently cancelling the remaining steps.
   const running = await prisma.waCampaign.findMany({
-    where: { status: 'RUNNING' },
+    where: { status: 'RUNNING', type: 'BROADCAST' },
     select: { id: true, batchSize: true },
   });
   if (running.length === 0) return;
@@ -241,24 +381,43 @@ export async function handleWaCampaignRecovery(): Promise<void> {
         continue;
       }
 
-      const recentlySent = await prisma.waCampaignRecipient.count({
-        where: { campaignId: c.id, sentAt: { gte: stallCutoff } },
+      // Progress is `lastAttemptAt`, not `sentAt`. A campaign being rate-limited
+      // by Meta rolls every recipient back to PENDING with `sentAt: null`
+      // (131056/130429/131048 are all retryable), so the old test saw zero
+      // progress on exactly the campaign that was working hardest — and
+      // re-batched the whole thing on top of the work already queued.
+      const recentlyAttempted = await prisma.waCampaignRecipient.count({
+        where: { campaignId: c.id, lastAttemptAt: { gte: stallCutoff } },
       });
-      if (recentlySent > 0) continue; // still progressing — leave it alone
+      if (recentlyAttempted > 0) continue; // still progressing — leave it alone
 
-      const pending = await prisma.waCampaignRecipient.findMany({
-        where: { campaignId: c.id, status: 'PENDING' },
-        select: { id: true },
-      });
-      const batchSize = c.batchSize || 100;
-      for (let i = 0; i < pending.length; i += batchSize) {
-        await addCampaignBatchJob({
-          campaignId: c.id,
-          recipientIds: pending.slice(i, i + batchSize).map((r) => r.id),
-        });
+      // Don't pile on. If batches for this campaign are already queued or
+      // running, the campaign is not stalled in the sense this cron repairs.
+      const queued = await countQueuedBatches(c.id);
+      if (queued > 0) {
+        logger.info(
+          `WhatsApp campaign ${c.id} recovery: skipped — ${queued} batch job(s) already queued`
+        );
+        continue;
+      }
+
+      // Paged + capped. This used to be an unbounded findMany of every PENDING
+      // recipient into memory before the first job was queued.
+      const requeued = await enqueuePendingRecipients(
+        c.id,
+        c.batchSize || 100,
+        RECOVERY_RECIPIENT_CAP
+      );
+      if (requeued === RECOVERY_RECIPIENT_CAP) {
+        // Say so rather than looking like the whole backlog was handled. The
+        // next tick picks up where this one stopped.
+        logger.warn(
+          `WhatsApp campaign ${c.id} recovery: capped at ${RECOVERY_RECIPIENT_CAP} recipients ` +
+            'this tick; the remainder is left for the next run'
+        );
       }
       logger.info(
-        `WhatsApp campaign ${c.id} recovery: re-batched ${pending.length} PENDING recipient(s)`
+        `WhatsApp campaign ${c.id} recovery: re-batched ${requeued} PENDING recipient(s)`
       );
     } catch (e) {
       logger.error(`WhatsApp campaign ${c.id} recovery failed: ${(e as Error).message}`);

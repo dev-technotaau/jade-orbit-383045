@@ -44,12 +44,27 @@ const MAX_SINGLE_HEADER = 8 * 1024; // 8KB per header
 const MAX_TOTAL_HEADERS = 32 * 1024; // 32KB total
 
 /**
+ * `decodeURIComponent` throws URIError on any stray or truncated escape — `/%`
+ * or `?q=%zz` is enough. This is the FIRST middleware in the chain, so that
+ * throw turned a malformed URL (scanners produce them constantly) into a 500
+ * and a logged server error. Falling back to the raw string is the conservative
+ * outcome: the pattern checks below still run, just against the undecoded form.
+ */
+function safeDecode(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+/**
  * Application-level WAF middleware.
  * Blocks common attack patterns: SQL injection, path traversal, exploit probes.
  */
 export const waf = () => {
   return (req: Request, res: Response, next: NextFunction): void => {
-    const url = decodeURIComponent(req.originalUrl || req.url);
+    const url = safeDecode(req.originalUrl || req.url);
     const queryString = req.originalUrl?.split('?')[1] || '';
 
     // Check blocked paths
@@ -74,10 +89,7 @@ export const waf = () => {
     }
 
     // Check SQL injection in query string
-    if (
-      queryString &&
-      SQL_PATTERNS.some((pattern) => pattern.test(decodeURIComponent(queryString)))
-    ) {
+    if (queryString && SQL_PATTERNS.some((pattern) => pattern.test(safeDecode(queryString)))) {
       logger.warn(`WAF: Blocked SQL injection in query from ${req.ip}`);
       res.status(403).json({
         success: false,

@@ -17,7 +17,12 @@ export const whatsappCampaignQueue = new Queue(WHATSAPP_CAMPAIGN_QUEUE_NAME, {
     attempts: 2,
     backoff: { type: 'exponential', delay: 5000 },
     removeOnComplete: true,
-    removeOnFail: false,
+    // Bounded, not `false`. Failed jobs are worth keeping to diagnose a bad
+    // run, but `false` keeps them FOREVER — in Redis, the one datastore here
+    // with no retention story and the tightest memory budget. A week and a
+    // thousand jobs is enough to investigate anything anyone will actually
+    // investigate.
+    removeOnFail: { age: 7 * 24 * 3600, count: 1000 },
   },
 });
 

@@ -2,6 +2,7 @@ import type { Prisma } from '@prisma/client';
 import { prisma } from '../config/prisma';
 import { AppError } from '../middleware/error';
 import logger from '../config/logger';
+import { withLock } from '../utils/distributed-lock';
 import { sendSessionMessage, sendTemplateToConversation } from './whatsapp-send.service';
 
 interface ScheduleMessageInput {
@@ -72,8 +73,22 @@ export async function cancelScheduled(id: string) {
  * Dispatch every PENDING scheduled message whose sendAt has arrived. Each row is
  * sent best-effort and stamped SENT (+ sentAt) or FAILED (+ error) independently,
  * so one bad row never blocks the rest. Capped per run.
+ *
+ * Every row is CLAIMED before it is sent. The scheduler cron fires every minute
+ * and its worker runs at concurrency 2, while a single tick can spend minutes
+ * making sequential Graph calls — so ticks overlap routinely. Selecting PENDING
+ * rows and only marking them SENT *after* the send meant an overlapping tick
+ * selected the same rows and delivered the same message to the customer twice.
+ * The claim (PENDING -> SENT, compare-and-set) is the same idiom the campaign
+ * worker uses, and needs no new enum value: a failure downgrades to FAILED.
  */
 export async function dispatchDueScheduledMessages(): Promise<void> {
+  // Belt to the per-row claim's braces: hold a cluster-wide lock so ticks
+  // serialize instead of racing. TTL comfortably exceeds a full 200-row run.
+  await withLock('wa:tick:scheduled', 600, dispatchDueScheduledMessagesInner);
+}
+
+async function dispatchDueScheduledMessagesInner(): Promise<void> {
   const due = await prisma.waScheduledMessage.findMany({
     where: { status: 'PENDING', sendAt: { lte: new Date() } },
     orderBy: { sendAt: 'asc' },
@@ -83,6 +98,13 @@ export async function dispatchDueScheduledMessages(): Promise<void> {
 
   let sent = 0;
   for (const m of due) {
+    // Claim it. count === 0 means a concurrent tick got there first.
+    const claim = await prisma.waScheduledMessage.updateMany({
+      where: { id: m.id, status: 'PENDING' },
+      data: { status: 'SENT', sentAt: new Date() },
+    });
+    if (claim.count === 0) continue;
+
     try {
       if (m.kind === 'template') {
         if (!m.templateId) {
@@ -105,16 +127,18 @@ export async function dispatchDueScheduledMessages(): Promise<void> {
           text: m.text ?? '',
         });
       }
+      // Already claimed as SENT above; just clear any error from a prior attempt.
       await prisma.waScheduledMessage.update({
         where: { id: m.id },
-        data: { status: 'SENT', sentAt: new Date(), error: null },
+        data: { error: null },
       });
       sent++;
     } catch (e) {
+      // Downgrade the optimistic claim.
       await prisma.waScheduledMessage
         .update({
           where: { id: m.id },
-          data: { status: 'FAILED', error: (e as Error).message.slice(0, 500) },
+          data: { status: 'FAILED', sentAt: null, error: (e as Error).message.slice(0, 500) },
         })
         .catch(() => {});
       logger.warn(`Scheduled WhatsApp message ${m.id} send failed: ${(e as Error).message}`);
