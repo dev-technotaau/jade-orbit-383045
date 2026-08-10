@@ -36,7 +36,8 @@ const SERVICE_CATEGORIES: Record<string, string[]> = {
     'Request Timeout',
   ],
   storage: ['Cloudflare R2'],
-  notifications: ['WhatsApp (Meta)'],
+  whatsapp: ['WhatsApp (Meta)', 'WhatsApp Webhook'],
+  auth: ['App Password'],
   monitoring: [
     'Winston Logger',
     'Request ID Correlation',
@@ -115,21 +116,18 @@ export const displayStartupStatus = (): void => {
   });
 
   // Display by category
+  // One label per key in SERVICE_CATEGORIES — the render loop iterates THIS map,
+  // so a category without a label here is silently never printed. The host
+  // platform's cache / search / messaging / email / cloud / features /
+  // infrastructure groups went with the services that populated them.
   const categoryLabels: Record<string, string> = {
     core: '🖥️  Core',
     database: '📦 Database',
-    cache: '🗄️  Cache & Queue',
-    search: '🔍 Search',
     auth: '🔐 Authentication',
-    messaging: '📨 Messaging',
+    whatsapp: '💬 WhatsApp',
     storage: '💾 Storage',
-    email: '📧 Email',
-    notifications: '📱 Notifications',
-    cloud: '☁️  Cloud Services',
-    monitoring: '📊 Monitoring',
     security: '🔒 Security',
-    features: '⚙️  Features',
-    infrastructure: '🏗️  Infrastructure',
+    monitoring: '📊 Monitoring',
   };
 
   for (const [category, label] of Object.entries(categoryLabels)) {

@@ -9,10 +9,30 @@ import { encryptJson, decryptJson } from '../utils/encryption';
 // transparently decrypted on every read path below, so callers see the original
 // object. decryptJson() passes through legacy plaintext rows.
 
-/** Normalize any phone string to E.164 (`+<digits>`). */
+/**
+ * Normalize any phone string to E.164 (`+<digits>`).
+ *
+ * A bare national number (no `+`, ten digits or fewer) gets DEFAULT_COUNTRY_CODE
+ * prefixed. Without this an operator pasting `9876543210` into contact import
+ * produced `+9876543210` — a number Meta cannot route, with no error until the
+ * first send failed.
+ *
+ * Inbound webhook numbers are unaffected: Meta always sends full international
+ * digits (e.g. `919876543210`, 12), which is longer than any national number, so
+ * the prefix rule never fires on them.
+ */
 export function normalizeWaPhone(raw: string): string {
-  const digits = raw.replace(/[^\d]/g, '');
-  return digits ? `+${digits}` : raw;
+  const trimmed = String(raw ?? '').trim();
+  const digits = trimmed.replace(/[^\d]/g, '');
+  if (!digits) return raw;
+
+  // An explicit `+` means the caller already gave a country code.
+  if (trimmed.startsWith('+')) return `+${digits}`;
+
+  const cc = (env.DEFAULT_COUNTRY_CODE || '').replace(/[^\d]/g, '');
+  if (cc && digits.length <= 10) return `+${cc}${digits}`;
+
+  return `+${digits}`;
 }
 
 /** Common opt-out variants, merged with any env-configured keywords. */
