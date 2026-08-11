@@ -105,7 +105,12 @@ function NavList({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
 
   return (
-    <nav className="flex flex-1 flex-col gap-0.5 p-3" aria-label="Main">
+    // min-h-0 is load-bearing. A flex item defaults to min-height:auto, so it
+    // refuses to shrink below its content and overflow-y-auto never engages —
+    // the nav would push the footer off the rail instead of scrolling. Scrolling
+    // here rather than on <aside> keeps the logo and the Online/Lock controls
+    // pinned while a long nav scrolls between them.
+    <nav className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto p-3" aria-label="Main">
       {NAV.map((item) => {
         const Icon = item.icon;
         // Exact match for the inbox, so it does not stay highlighted on every
@@ -179,7 +184,13 @@ export default function Sidebar() {
       </button>
 
       {/* Desktop rail */}
-      <aside className="hidden w-56 shrink-0 flex-col border-r border-[var(--border)] bg-white lg:flex">
+      {/* sticky + h-dvh, not a bare flex child. As a stretch item of the
+          min-h-dvh row in DashboardLayout, the rail inherited the PAGE height:
+          on a long page it grew with the content, so its footer sat at the very
+          bottom of the document and the logo and tabs scrolled out of view.
+          A definite height also opts it out of align-items: stretch, which is
+          what makes top-0 mean anything here. */}
+      <aside className="sticky top-0 hidden h-dvh w-56 shrink-0 flex-col border-r border-[var(--border)] bg-white lg:flex">
         <div className="flex h-14 items-center border-b border-[var(--border)] px-4">
           <Logo size="sm" />
         </div>
