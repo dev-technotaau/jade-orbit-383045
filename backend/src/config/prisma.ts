@@ -3,7 +3,7 @@ dotenv.config();
 
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Prisma, PrismaClient } from '@prisma/client';
-import { Pool } from 'pg';
+import { Pool, type PoolClient } from 'pg';
 
 // Ensure Decimal fields serialize as numbers in JSON responses (not strings)
 (Prisma.Decimal.prototype as any).toJSON = function () {
@@ -75,10 +75,64 @@ const createPool = () => {
     ...(ssl === false ? {} : { ssl }),
   });
 
-  // Set statement timeout and validate connection on every new/reconnected client
-  pool.on('connect', (client) => {
-    client.query('SET statement_timeout = 30000').catch(() => {});
-  });
+  // Statement timeout, applied once per physical connection.
+  //
+  // This was a pool.on('connect') listener firing the SET without awaiting it.
+  // pg does not await those listeners, so the SET raced the first real query on
+  // the same client and every new connection emitted:
+  //
+  //   DeprecationWarning: Calling client.query() when the client is already
+  //   executing a query ... will be removed in pg@9.0
+  //
+  // The tidy-looking alternative — passing `options: '-c statement_timeout=...'`
+  // in the Pool config — is a DEAD END behind a pooler. Measured against the
+  // live Supabase session pooler: the startup packet is accepted, connect()
+  // succeeds, and statement_timeout stays at the 2min default. It would have
+  // read as fixed while doing nothing.
+  //
+  // So the SET stays, but is awaited before the client is handed out. pg calls
+  // connect() two ways — `await pool.connect()`, and `this.connect(callback)`
+  // from inside Pool.query() — and BOTH must keep working: handling only the
+  // promise form silently breaks every pool.query() in the app.
+  const STATEMENT_TIMEOUT_SQL = 'SET statement_timeout = 30000';
+  const APPLIED = Symbol('statementTimeoutApplied');
+  type TaggedClient = PoolClient & { [APPLIED]?: boolean };
+
+  const rawConnect = pool.connect.bind(pool) as () => Promise<PoolClient>;
+
+  const connectWithTimeout = async (): Promise<PoolClient> => {
+    const client = (await rawConnect()) as TaggedClient;
+    if (!client[APPLIED]) {
+      try {
+        await client.query(STATEMENT_TIMEOUT_SQL);
+        client[APPLIED] = true;
+      } catch {
+        // A pooler that refuses SET must not render the connection unusable —
+        // the query still runs, just under the server-side default.
+      }
+    }
+    return client;
+  };
+
+  type ConnectCallback = (err: Error | null, client?: PoolClient, release?: () => void) => void;
+  (pool as unknown as { connect: (cb?: ConnectCallback) => Promise<PoolClient> | void }).connect =
+    function (cb?: ConnectCallback) {
+      if (typeof cb === 'function') {
+        // async/await rather than .then(onOk, onErr): the two-argument form does
+        // not read as handled rejection to promise/catch-or-return, and a
+        // callback invoked inside .then() is its own lint smell.
+        void (async () => {
+          try {
+            const client = await connectWithTimeout();
+            cb(null, client, () => client.release());
+          } catch (err) {
+            cb(err as Error);
+          }
+        })();
+        return undefined;
+      }
+      return connectWithTimeout();
+    };
 
   // Handle pool-level errors: log and evict the failed client so the pool
   // replaces it with a fresh connection on the next checkout.

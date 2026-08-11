@@ -31,7 +31,14 @@ function Avatar({ src, alt, firstName, lastName, size = 'md', className }: Avata
   return (
     <div
       className={cn(
-        'relative inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-[var(--primary-light)]',
+        // The ring is load-bearing, not decoration. The fill is
+        // --primary-light, and the inbox paints its ACTIVE conversation row in
+        // that same --primary-light — so on the one row an operator looks at
+        // most, the disc had exactly zero contrast against its backdrop and the
+        // initials appeared to float with no avatar behind them. A ring keeps
+        // the circle legible on any surface instead of depending on whatever
+        // sits underneath it.
+        'relative inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-[var(--primary-light)] ring-1 ring-[var(--primary)]/20',
         sizeStyle.container,
         className,
       )}

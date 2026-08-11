@@ -1319,8 +1319,19 @@ export default function SuperAdminWhatsappInboxPage() {
           pushes its bottom-anchored child (the composer) off screen. The root
           layout uses min-h-dvh for exactly this reason; the inbox was the one
           page that reintroduced vh, and the only one with a composer pinned to
-          the bottom of a fixed-height box. */}
-      <div className="flex h-[calc(100dvh-9rem)] overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg)]">
+          the bottom of a fixed-height box.
+
+          The subtraction tracks DashboardLayout, whose vertical padding differs
+          per breakpoint: pt-16/pb-20 (9rem) base, p-6/pb-20 (6.5rem) at sm,
+          pt-8/pb-20 (7rem) at lg. A single -9rem was therefore correct on mobile
+          only and over-subtracted everywhere else.
+
+          The negative margins claw back most of pb-20. That padding exists to
+          keep a page final row clear of the fixed BackToTop button — meaningful
+          on a scrolling list, pure dead space under a viewport-height inbox that
+          never scrolls. What is left is a gap matching each breakpoint side
+          padding, so the box sits in the layout rather than on top of it. */}
+      <div className="-mb-16 flex h-[calc(100dvh-5rem)] overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg)] sm:-mb-14 sm:h-[calc(100dvh-3rem)] lg:-mb-12 lg:h-[calc(100dvh-4rem)]">
         {/* Conversation list — full width on mobile; hidden once a pane other
             than "list" is active below lg. */}
         <aside

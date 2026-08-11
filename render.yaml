@@ -27,8 +27,12 @@ services:
     startCommand: npm run start:migrate
 
     envVars:
+      # Pinned to a major, matching backend/.nvmrc. Render resolves .nvmrc when
+      # NODE_VERSION is unset, and it previously held 'lts/*' — which re-resolves
+      # on every deploy, so an unrelated redeploy after the next LTS promotion
+      # would silently move the runtime a major version.
       - key: NODE_VERSION
-        value: '22'
+        value: '24'
       - key: NODE_ENV
         value: production
 
