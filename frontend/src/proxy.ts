@@ -64,6 +64,9 @@ function nextWithCsp(): NextResponse {
       // host allowlist below are the CSP2 fallback path (ignored by modern
       // browsers when nonce is present).
       `script-src 'nonce-${nonce}' 'strict-dynamic' 'unsafe-inline' 'unsafe-eval' 'self'`,
+      // Turnstile loader. Modern browsers ignore this (strict-dynamic wins);
+      // it is the CSP2 fallback for browsers without strict-dynamic support.
+      'https://challenges.cloudflare.com',
       // Vercel live preview
       'https://vercel.live',
     ]
@@ -96,7 +99,13 @@ function nextWithCsp(): NextResponse {
     // `blob:` lets the inbox preview a just-picked PDF via
     // `URL.createObjectURL(file)` in an inline <iframe>. Without it Chrome
     // silently blocks the iframe (broken-PDF placeholder, no console error).
-    "frame-src 'self' blob: https://vercel.live",
+    // challenges.cloudflare.com is where Turnstile renders its challenge
+    // iframe. Without it the widget is blocked outright, and because Turnstile
+    // is required in production (env.ts superRefine) that means nobody can
+    // unlock. The blocked frame also gets a null origin, so its postMessage
+    // handshake back to the page fails — that is the 'target origin ... does
+    // not match the recipient window (null)' noise, not a separate bug.
+    "frame-src 'self' blob: https://challenges.cloudflare.com https://vercel.live",
     "worker-src 'self' blob:",
     "manifest-src 'self'",
     "object-src 'none'",
@@ -139,7 +148,13 @@ function nextWithCsp(): NextResponse {
  * role out of ha_access_token to pick a dashboard. None of that survives — there
  * is one password and one dashboard.
  */
-const OPEN_PATHS = ['/unlock'];
+/**
+ * /offline is public because the service worker pre-caches it as the
+ * navigation fallback. Gated, it 307s to /unlock while locked, and the worker
+ * would cache a redirect — which cannot then be served for a navigation.
+ * It renders no data, so there is nothing behind it to protect.
+ */
+const OPEN_PATHS = ['/unlock', '/offline'];
 
 /** Cookie set by /api/unlock. Its presence means unlocked. */
 const UNLOCK_COOKIE = 'wa_unlock';

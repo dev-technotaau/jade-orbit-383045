@@ -1,4 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 210 48" width="210" height="48" role="img" aria-label="TechnoTaau">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 162 48" width="162" height="48" role="img" aria-label="TechnoTaau">
+  <!--
+    textLength pins the wordmark to exactly 110 units regardless of which font
+    in the stack the platform resolves. Without it the rendered width varies by
+    OS, so the viewBox cannot hug the ink - it was 210 wide against ~161 of
+    artwork, and every container that centred this file put the mark ~28px left
+    of centre at h-14.
+  -->
   <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
     <stop offset="0" stop-color="#1e5caf"/><stop offset="1" stop-color="#154a91"/>
   </linearGradient></defs>
@@ -8,5 +15,6 @@
     <rect x="28.50" y="27.00" width="9.00" height="49.00" rx="1.50" fill="#fff"/>
     <rect x="62.50" y="27.00" width="9.00" height="49.00" rx="1.50" fill="#fff"/></g>
   <text x="52" y="31.5" font-family="ui-sans-serif,-apple-system,'Segoe UI',Roboto,sans-serif"
-        font-size="20" font-weight="680" letter-spacing="-0.4" fill="#0f1720">Techno<tspan fill="#1e5caf">Taau</tspan></text>
+        font-size="20" font-weight="680" letter-spacing="-0.4"
+        textLength="110" lengthAdjust="spacingAndGlyphs" fill="#0f1720">Techno<tspan fill="#1e5caf">Taau</tspan></text>
 </svg>

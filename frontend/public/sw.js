@@ -24,7 +24,7 @@
  *  job-board prewarm task and the Web Push / FCM stack.)
  */
 
-const CACHE_VERSION = 'v6';
+const CACHE_VERSION = 'v7';
 const CACHE_PREFIX = 'ha-';
 
 const PAGE_CACHE = `${CACHE_PREFIX}pages-${CACHE_VERSION}`;
@@ -40,7 +40,7 @@ const OFFLINE_URL = '/offline';
 const PRECACHE_ASSETS = [
   '/',
   '/offline',
-  '/icons/logo.svg',
+  '/logo.svg',
   '/web-app-manifest-192x192.png',
   '/web-app-manifest-512x512.png',
 ];
@@ -142,7 +142,30 @@ function isFontAsset(req) {
 /* ── Install ───────────────────────────────────────────────────────── */
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(PAGE_CACHE).then((cache) => cache.addAll(PRECACHE_ASSETS)));
+  event.waitUntil(
+    (async () => {
+      const cache = await caches.open(PAGE_CACHE);
+      // Deliberately NOT cache.addAll(). addAll() is atomic: a single 404
+      // rejects the whole promise, which fails the install and leaves nothing
+      // cached at all — including the offline fallback that exists for exactly
+      // that situation. The browser then retries the install on every load.
+      await Promise.all(
+        PRECACHE_ASSETS.map(async (url) => {
+          try {
+            const res = await fetch(url, { cache: 'reload' });
+            // A redirected response cannot be served for a navigation request
+            // ("a redirected response was used for a request whose redirect
+            // mode is not follow"), so caching one is worse than caching none.
+            // While locked, / redirects to /unlock and would land here.
+            if (!res.ok || res.redirected) return;
+            await cache.put(url, res);
+          } catch {
+            // A missing or unreachable asset must never fail the install.
+          }
+        }),
+      );
+    })(),
+  );
   // Activate the new SW as soon as install completes — combined with
   // clientsClaim + skipWaiting message support, users get fresh code on
   // next reload without a 24h SW-update wait.

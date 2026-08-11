@@ -17,7 +17,12 @@ import metricsRoutes, {
 } from './routes/metrics.routes';
 import requestId from './middleware/request-id';
 import { requireAppPassword } from './middleware/app-password';
-import { isBrowserRequest, renderRootPage, renderNotFoundPage } from './utils/pretty-page';
+import {
+  isBrowserRequest,
+  renderRootPage,
+  renderNotFoundPage,
+  FAVICON_MARK,
+} from './utils/pretty-page';
 // Audit middleware applied per-route in admin.routes.ts
 
 const app: Application = express();
@@ -396,6 +401,16 @@ app.get('/', (req: Request, res: Response) => {
     message: 'WhatsApp Module API',
     docs: '/api-docs',
   });
+});
+
+// Browsers request /favicon.ico for any page that does not declare an icon —
+// including every JSON endpoint someone opens in a tab. With no route it fell
+// through to the universal 404, and the request logger warns on any status
+// >= 400, so a routine browser probe wrote a warn line on every visit. That is
+// the same log-flooding pattern the webhook GET had. Serving the mark costs
+// ~400 bytes and keeps warn-level output meaningful.
+app.get('/favicon.ico', (_req: Request, res: Response) => {
+  res.type('image/svg+xml').set('Cache-Control', 'public, max-age=86400').send(FAVICON_MARK);
 });
 
 // API versioning enforcement — reject unsupported versions

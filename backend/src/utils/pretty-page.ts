@@ -90,7 +90,12 @@ function formatUptime(seconds: number): string {
 }
 
 /**
- * Inline monogram, used as a data-URL favicon.
+ * Inline monogram, used as a data-URL favicon AND served at /favicon.ico.
+ *
+ * This drew an 'HA' monogram in Hire Adda's accent orange until Aug 2026 —
+ * the comment below was written when the remote PNGs were dropped, but the
+ * replacement kept the old lettering. It is now the same TT mark the frontend
+ * ships in src/app/icon0.svg.
  *
  * These pages are fully self-contained. The host platform's version pulled a
  * ~345 KB wordmark and four favicon PNGs from hireadda.in, which meant every
@@ -98,11 +103,12 @@ function formatUptime(seconds: number): string {
  * origin in the backend's helmet CSP imgSrc. Nothing here fetches a remote
  * asset now, so the CSP no longer needs an exception for it.
  */
-const FAVICON_MARK = `
+export const FAVICON_MARK = `
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" aria-hidden="true">
-  <rect x="0" y="0" width="100" height="100" rx="12" ry="12" fill="#FFFFFF" />
-  <path d="M 16 25 L 22 25 L 22 47 L 34 47 L 34 25 L 40 25 L 40 75 L 34 75 L 34 53 L 22 53 L 22 75 L 16 75 Z" fill="${BRAND_ACCENT}" />
-  <path d="M 52 75 L 58.5 75 L 61 65 L 77 65 L 79.5 75 L 86 75 L 73 25 L 65 25 Z M 63 59 L 69 35 L 75 59 Z" fill="${BRAND_COLOR}" />
+  <rect width="100" height="100" rx="22" fill="${BRAND_COLOR}"/>
+  <rect x="16" y="27" width="68" height="9.5" rx="1.5" fill="#fff"/>
+  <rect x="28.5" y="27" width="9" height="49" rx="1.5" fill="#fff"/>
+  <rect x="62.5" y="27" width="9" height="49" rx="1.5" fill="#fff"/>
 </svg>
 `;
 

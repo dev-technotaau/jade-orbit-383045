@@ -89,10 +89,14 @@ const nextConfig: NextConfig = {
           // Re-evaluate if cross-origin isolated APIs are ever needed.
           {
             key: 'Permissions-Policy',
-            // Razorpay and Turnstile delegations went with the billing system
-            // and the CAPTCHA layer; nothing here needs a cross-origin grant.
+            // Razorpay's delegation went with the billing system. Turnstile's is back,
+            // because the CAPTCHA layer is: the private-state-token pair lets
+            // challenges.cloudflare.com redeem a Private Access Token and clear a
+            // visitor silently. Unlisted features default to 'self', which excludes the
+            // cross-origin frame and forces an interactive challenge on every unlock.
+            // Browsers lacking the feature ignore the token, so this is safe to send.
             value:
-              'camera=(), microphone=(self), geolocation=(), payment=(), usb=(), serial=(), bluetooth=(), accelerometer=(), gyroscope=(), magnetometer=(), midi=(), publickey-credentials-get=(self), publickey-credentials-create=(self), interest-cohort=(), browsing-topics=(), clipboard-read=(self), clipboard-write=(self), display-capture=(), fullscreen=(self), picture-in-picture=(self), screen-wake-lock=(self), web-share=(self), xr-spatial-tracking=(self), gamepad=(), hid=(), idle-detection=(), local-fonts=(), storage-access=(self)',
+              'camera=(), microphone=(self), geolocation=(), payment=(), usb=(), serial=(), bluetooth=(), accelerometer=(), gyroscope=(), magnetometer=(), midi=(), publickey-credentials-get=(self), publickey-credentials-create=(self), interest-cohort=(), browsing-topics=(), clipboard-read=(self), clipboard-write=(self), display-capture=(), fullscreen=(self), picture-in-picture=(self), screen-wake-lock=(self), web-share=(self), xr-spatial-tracking=(self), gamepad=(), hid=(), idle-detection=(), local-fonts=(), storage-access=(self), private-state-token-issuance=(self "https://challenges.cloudflare.com"), private-state-token-redemption=(self "https://challenges.cloudflare.com")',
           },
           {
             key: 'Strict-Transport-Security',
