@@ -14,6 +14,8 @@ import {
   LogOut,
   Menu,
   X,
+  ShieldCheck,
+  FileClock,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -56,6 +58,8 @@ const NAV: NavItem[] = [
   { label: 'Contacts', href: '/whatsapp/contacts', icon: Users },
   { label: 'Campaigns', href: '/whatsapp/campaigns', icon: Send },
   { label: 'Analytics', href: '/whatsapp/analytics', icon: BarChart3 },
+  { label: 'Audit trail', href: '/whatsapp/audit', icon: FileClock },
+  { label: 'Security', href: '/whatsapp/security', icon: ShieldCheck },
   { label: 'Settings', href: '/whatsapp/settings', icon: Settings },
 ];
 
@@ -119,7 +123,7 @@ function NavList({ onNavigate }: { onNavigate?: () => void }) {
               'flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
               active
                 ? 'bg-primary-light text-primary'
-                : 'text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text)]'
+                : 'text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text)]',
             )}
           >
             <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />

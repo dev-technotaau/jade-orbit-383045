@@ -14,6 +14,7 @@ import * as settingsCtrl from '../controllers/whatsapp-settings.controller';
 import * as keywordRuleCtrl from '../controllers/whatsapp-keyword-rule.controller';
 import * as noteCtrl from '../controllers/whatsapp-notes.controller';
 import * as analyticsCtrl from '../controllers/whatsapp-analytics.controller';
+import * as auditCtrl from '../controllers/audit.controller';
 import * as scheduledMsgCtrl from '../controllers/whatsapp-scheduled-message.controller';
 import * as suppressionCtrl from '../controllers/whatsapp-suppression.controller';
 import * as segmentCtrl from '../controllers/whatsapp-segment.controller';
@@ -474,6 +475,20 @@ router.post(
 );
 router.get('/campaigns/:id/conversions', conversionCtrl.byCampaign);
 router.get('/analytics/conversions', conversionCtrl.summary);
+
+// ── Audit trail (read side) ──
+//
+// Every route is a READ. The trail is append-only by construction — there is no
+// endpoint to edit or delete an entry, and deletion happens only through the
+// retention cron. `/export` and `/verify` are themselves audited, because
+// "who pulled the audit log" is exactly the kind of thing an audit log is for.
+router.get('/audit', auditCtrl.listAudit);
+router.get('/audit/stats', auditCtrl.auditStats);
+router.get('/audit/facets', auditCtrl.auditFacets);
+router.get('/audit/verify', audit('WA_AUDIT_VERIFY', 'AuditLog'), auditCtrl.verifyAudit);
+router.get('/audit/export', audit('WA_AUDIT_EXPORT', 'AuditLog'), auditCtrl.exportAudit);
+// Declared last so the literal paths above win over the :id wildcard.
+router.get('/audit/:id', auditCtrl.getAuditEntry);
 
 // ── Suppression (do-not-contact) list ──
 router.get('/suppressions', suppressionCtrl.list);

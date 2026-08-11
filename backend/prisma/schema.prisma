@@ -7,6 +7,10 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+  // No `url` here — Prisma 7 removed it from the schema. The CLI's connection
+  // lives in prisma.config.js, which resolves DIRECT_URL || DATABASE_URL so
+  // `db push` and `migrate` bypass any transaction pooler; the runtime client
+  // gets its own connection from config/prisma.ts. See .env.example.
 }
 
 enum WaDirection {
@@ -702,4 +706,69 @@ model WebhookDelivery {
 
   @@index([webhookId])
   @@index([createdAt])
+}
+
+/// Multi-factor authentication for the operator console.
+///
+/// A SINGLETON, like WaSettings — this module authenticates with one shared app
+/// password and has no user table, so there is one TOTP seed that every operator
+/// enrols against. That is a deliberate trade: it is a genuine second factor
+/// (possession of a device, not just knowledge of the password) but it cannot
+/// attribute or revoke per person. `epoch` is the compensating control — bump it
+/// and every enrolled authenticator and trusted device dies at once, forcing a
+/// re-enrol, which is the answer if the QR ever leaks.
+model WaMfaConfig {
+  id String @id @default("default")
+
+  /// Live only after a successful confirm. Enrolment sets pendingSecret first.
+  enabled Boolean @default(false)
+
+  /// Base32 TOTP seed, AES-256-GCM encrypted at rest (utils/encryption).
+  /// Enrolment REFUSES to proceed when FIELD_ENCRYPTION_KEY is unset rather
+  /// than silently storing a plaintext seed.
+  secret String?
+
+  /// Enrolment in progress: scanned but not yet confirmed with a live code.
+  /// Kept separate from `secret` so re-opening the setup screen can never
+  /// clobber the seed that is currently protecting the console.
+  pendingSecret String?
+  pendingAt     DateTime?
+
+  /// SHA-256 hashes of single-use recovery codes. Plaintext is shown exactly
+  /// once, at generation, and is not recoverable afterwards.
+  recoveryCodes String[] @default([])
+
+  /// Revocation generation. Mixed into every trusted-device binding; bumping it
+  /// invalidates all of them and requires re-enrolment.
+  epoch Int @default(1)
+
+  enrolledAt     DateTime?
+  lastVerifiedAt DateTime?
+  updatedAt      DateTime  @updatedAt
+
+  @@map("WaMfaConfig")
+}
+
+/// A browser that may skip the TOTP prompt until `expiresAt`.
+///
+/// The token itself lives in an httpOnly cookie and only its hash is stored, so
+/// a database read cannot mint one. Bound to the MFA epoch, rotated on every
+/// use, and swept by the retention cron — hire_adda's equivalent table is
+/// returned in a JSON body, never rotated, and never cleaned up.
+model WaTrustedDevice {
+  id        String @id @default(uuid())
+  tokenHash String @unique
+
+  /// Coarse label for the management UI ("Chrome on Windows"), never the raw UA.
+  label String?
+  ip    String?
+
+  /// The MFA epoch this device was trusted under. Stale epochs are rejected.
+  epoch Int @default(1)
+
+  lastUsedAt DateTime?
+  expiresAt  DateTime
+  createdAt  DateTime  @default(now())
+
+  @@index([expiresAt])
 }

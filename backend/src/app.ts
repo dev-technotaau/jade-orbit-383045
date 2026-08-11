@@ -138,7 +138,13 @@ import {
   verifyWhatsappWebhook,
   handleWhatsappWebhook,
 } from './controllers/whatsapp-webhook.controller';
-app.get('/api/v1/webhooks/whatsapp', verifyWhatsappWebhook);
+// The GET verification handshake is called a handful of times in the lifetime of
+// a deployment (Meta calls it when you subscribe), so it gets the same ceiling
+// as the POST. It used to have none at all: mounted before apiLimiter, skipped
+// by webhookLimiter, and exempted from ddosProtection by a path match that did
+// not distinguish the method — an unauthenticated, unmetered endpoint that logs
+// a warn line per request.
+app.get('/api/v1/webhooks/whatsapp', webhookLimiter, verifyWhatsappWebhook);
 app.post(
   '/api/v1/webhooks/whatsapp',
   webhookLimiter,
@@ -307,6 +313,12 @@ apiV1Router.use('/unlock', unlockRoutes);
 // Protect all state-changing API routes
 // Note: This applies to POST, PUT, DELETE, PATCH requests
 apiV1Router.use(doubleCsrfProtection);
+
+// MFA management. Mounted HERE, below the CSRF middleware, and not as a child of
+// the unlock router — that one sits above CSRF so a locked browser can reach it,
+// and a state-changing endpoint must not inherit that exemption.
+import { mfaManagementRouter } from './routes/unlock.routes';
+apiV1Router.use('/mfa', mfaManagementRouter);
 
 // Health check route
 app.use('/health', healthRoutes);

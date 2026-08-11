@@ -46,8 +46,7 @@ export const API = {
     WA_CAMPAIGN_RETRY: (id: string) => `/whatsapp/campaigns/${id}/retry-failed`,
     WA_CAMPAIGN_DUPLICATE: (id: string) => `/whatsapp/campaigns/${id}/duplicate`,
     WA_CAMPAIGN_TEST_SEND: (id: string) => `/whatsapp/campaigns/${id}/test-send`,
-    WA_CAMPAIGN_SAVE_TEMPLATE: (id: string) =>
-      `/whatsapp/campaigns/${id}/save-as-template`,
+    WA_CAMPAIGN_SAVE_TEMPLATE: (id: string) => `/whatsapp/campaigns/${id}/save-as-template`,
     WA_CAMPAIGN_TEMPLATES: '/whatsapp/campaign-templates',
     WA_CAMPAIGN_TEMPLATE: (id: string) => `/whatsapp/campaign-templates/${id}`,
     WA_CAMPAIGN_TEMPLATE_USE: (id: string) => `/whatsapp/campaign-templates/${id}/use`,
@@ -65,15 +64,20 @@ export const API = {
     WA_SEND_INTERACTIVE: (id: string) => `/whatsapp/conversations/${id}/interactive`,
     WA_CHANNEL_SYNC: '/whatsapp/channels/sync',
     WA_CONTACTS_EXPORT: '/whatsapp/contacts/export',
-    WA_CAMPAIGN_RECIPIENTS_EXPORT: (id: string) =>
-      `/whatsapp/campaigns/${id}/recipients/export`,
+    WA_CAMPAIGN_RECIPIENTS_EXPORT: (id: string) => `/whatsapp/campaigns/${id}/recipients/export`,
     WA_SETTINGS: '/whatsapp/settings',
+    // Audit trail (read-only — there is no write endpoint by design).
+    WA_AUDIT: '/whatsapp/audit',
+    WA_AUDIT_STATS: '/whatsapp/audit/stats',
+    WA_AUDIT_FACETS: '/whatsapp/audit/facets',
+    WA_AUDIT_VERIFY: '/whatsapp/audit/verify',
+    WA_AUDIT_EXPORT: '/whatsapp/audit/export',
+    WA_AUDIT_ENTRY: (id: string) => `/whatsapp/audit/${id}`,
     // ── Email system (super-admin bulk/marketing) ──
     WA_KEYWORD_RULES: '/whatsapp/keyword-rules',
     WA_KEYWORD_RULE: (id: string) => `/whatsapp/keyword-rules/${id}`,
     WA_NOTES: (id: string) => `/whatsapp/conversations/${id}/notes`,
-    WA_NOTE: (id: string, noteId: string) =>
-      `/whatsapp/conversations/${id}/notes/${noteId}`,
+    WA_NOTE: (id: string, noteId: string) => `/whatsapp/conversations/${id}/notes/${noteId}`,
     WA_LABELS: (id: string) => `/whatsapp/conversations/${id}/labels`,
     WA_SNOOZE: (id: string) => `/whatsapp/conversations/${id}/snooze`,
     WA_CAMPAIGN_STEPS: (id: string) => `/whatsapp/campaigns/${id}/steps`,

@@ -38,6 +38,27 @@ const createPool = () => {
     connectionString.includes('localhost') || connectionString.includes('127.0.0.1');
   const isRemote = !isLocalhost;
 
+  /**
+   * TLS, driven by DATABASE_SSL_MODE.
+   *
+   * This used to be inferred purely from "is the host localhost", always with
+   * `rejectUnauthorized: false` — encryption without authentication, so a
+   * man-in-the-middle on the path to the database still works. That is the
+   * right DEFAULT for managed providers (their certs rarely chain-verify from a
+   * bare Node client without shipping their CA), but it should be a decision,
+   * not a hardcode.
+   *
+   * `verify-full` / `verify-ca` turn on real certificate verification for
+   * deployments that can supply a trusted chain.
+   *
+   * Note this is an explicit knob now rather than a declared-and-ignored one:
+   * both the host platform and its docker env carried a DATABASE_SSL_MODE that
+   * nothing ever read.
+   */
+  const sslMode = process.env.DATABASE_SSL_MODE || (isRemote ? 'require' : 'disable');
+  const verifies = sslMode === 'verify-full' || sslMode === 'verify-ca';
+  const ssl = sslMode === 'disable' ? false : { rejectUnauthorized: verifies };
+
   const pool = new Pool({
     connectionString,
     // Keep pool small for managed DB services
@@ -50,8 +71,8 @@ const createPool = () => {
     keepAlive: true,
     keepAliveInitialDelayMillis: 10_000,
     allowExitOnIdle: false,
-    // Remote/managed PostgreSQL providers require SSL
-    ...(isRemote ? { ssl: { rejectUnauthorized: false } } : {}),
+    // TLS per DATABASE_SSL_MODE (see above).
+    ...(ssl === false ? {} : { ssl }),
   });
 
   // Set statement timeout and validate connection on every new/reconnected client

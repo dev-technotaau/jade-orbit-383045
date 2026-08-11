@@ -285,12 +285,22 @@ export async function handleWaPruneRetention(): Promise<void> {
     }
   );
 
+  // Expired trusted devices. hire_adda declares an @@index([expiresAt]) on its
+  // equivalent table as if a sweeper were planned, and then never wrote one, so
+  // the table grows forever.
+  const { pruneExpiredTrustedDevices } = await import('../services/whatsapp-mfa.service');
+  const deletedDevices = await pruneExpiredTrustedDevices().catch((e) => {
+    logger.warn(`WhatsApp retention prune (trusted devices) failed: ${(e as Error).message}`);
+    return 0;
+  });
+
   logger.info(
     `WhatsApp retention prune: ${deletedMessages} message(s), ${deletedMedia} media object(s) ` +
       `(>${retentionDays ?? '∞'}d), ${deletedEvents} webhook event(s) (>${eventTtlDays}d), ` +
       `${deletedDeliveries} webhook delivery/ies (>${WEBHOOK_DELIVERY_TTL_DAYS}d), ` +
       `${deletedAudit} audit log(s) (>${AUDIT_LOG_TTL_DAYS}d), ` +
-      `${deletedClicks} link click(s) (>${LINK_CLICK_TTL_DAYS}d) deleted`
+      `${deletedClicks} link click(s) (>${LINK_CLICK_TTL_DAYS}d), ` +
+      `${deletedDevices} expired trusted device(s) deleted`
   );
 }
 

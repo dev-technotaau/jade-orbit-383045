@@ -20,7 +20,13 @@ export const ddosProtection = () => {
     // a 429 makes it retry, back off, and eventually disable the subscription.
     // Its protection is the X-Hub-Signature-256 HMAC, which is verified before
     // anything is written. (A generous webhookLimiter still applies.)
-    if (req.path.startsWith('/health') || req.path === '/api/v1/webhooks/whatsapp') {
+    // Narrowed to POST. The justification below is Meta's status-callback
+    // burst, which is POST-only; the GET handshake has no HMAC and no burst
+    // behaviour, so exempting it just handed out a free unmetered endpoint.
+    if (
+      req.path.startsWith('/health') ||
+      (req.method === 'POST' && req.path === '/api/v1/webhooks/whatsapp')
+    ) {
       return next();
     }
 

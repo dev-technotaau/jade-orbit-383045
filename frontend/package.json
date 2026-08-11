@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@breezystack/lamejs": "^1.2.7",
+    "@marsidev/react-turnstile": "^1.5.5",
     "@tanstack/react-query": "^5.90.21",
     "@tiptap/extension-highlight": "^3.27.1",
     "@tiptap/extension-link": "^3.20.0",

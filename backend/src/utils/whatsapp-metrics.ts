@@ -11,6 +11,42 @@ import logger from '../config/logger';
  * `wa_messages_total` — every inbound/outbound message keyed by direction +
  * type + status. Source of truth for throughput + send-success dashboards.
  */
+/**
+ * Unlock attempts, by outcome.
+ *
+ * The one credential in the system had no metric at all, so a sustained
+ * password-guessing campaign was invisible on every dashboard. `reason`
+ * distinguishes a wrong password from a wrong TOTP code from an expired
+ * challenge, and on success records which second factor satisfied it.
+ */
+/**
+ * Turnstile outcomes. `rejected` climbing is bots being turned away — the
+ * signal that the challenge is earning its place. `timeout`/`error` climbing is
+ * Cloudflare being unreachable, which blocks logins and needs a human.
+ */
+export const turnstileVerificationsTotal = new client.Counter({
+  name: 'wa_turnstile_verifications_total',
+  help: 'Cloudflare Turnstile verification outcomes',
+  labelNames: ['outcome'] as const,
+});
+
+export const unlockAttemptsTotal = new client.Counter({
+  name: 'wa_unlock_attempts_total',
+  help: 'Unlock attempts by outcome and reason',
+  labelNames: ['outcome', 'reason'] as const,
+});
+
+/**
+ * Longest current run of consecutive failures from a single address. Alert on
+ * this rather than on the raw counter: a handful of failures is someone
+ * fat-fingering their password, a sustained streak is an attack.
+ */
+export const unlockFailureStreak = new client.Gauge({
+  name: 'wa_unlock_failure_streak',
+  help: 'Consecutive failed unlock attempts from one address',
+  labelNames: ['scope'] as const,
+});
+
 export const waMessagesTotal = new client.Counter({
   name: 'wa_messages_total',
   help: 'WhatsApp messages by direction + type + status',

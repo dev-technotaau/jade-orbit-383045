@@ -24,12 +24,20 @@ const ENV: Record<string, string | undefined> = {
   APP_PASSWORD: 'correct-horse-battery-staple',
   SESSION_EPOCH: '1',
   SESSION_MAX_AGE_SECONDS: '43200',
+  ALLOW_PASSWORD_HEADER_WITH_MFA: 'false',
   OPERATOR_LABEL: 'operator',
 };
 jest.mock('../../config/env', () => ({
   get env() {
     return ENV;
   },
+}));
+
+// requireAppPassword consults the MFA flag on the header path, so the gate can
+// refuse a single factor once MFA is on.
+const isMfaEnabledMock = jest.fn();
+jest.mock('../../services/whatsapp-mfa.service', () => ({
+  isMfaEnabled: () => isMfaEnabledMock(),
 }));
 
 import crypto from 'crypto';
@@ -59,6 +67,8 @@ beforeEach(() => {
   ENV.APP_PASSWORD = 'correct-horse-battery-staple';
   ENV.SESSION_EPOCH = '1';
   ENV.SESSION_MAX_AGE_SECONDS = '43200';
+  ENV.ALLOW_PASSWORD_HEADER_WITH_MFA = 'false';
+  isMfaEnabledMock.mockResolvedValue(false);
   jest.useRealTimers();
 });
 
@@ -158,6 +168,53 @@ describe('requireAppPassword', () => {
 
   it('still honours the header after an epoch bump (it is the password itself)', async () => {
     ENV.SESSION_EPOCH = '7';
+    const res = await request(appWithGate())
+      .get('/gated')
+      .set('X-App-Password', ENV.APP_PASSWORD as string);
+    expect(res.status).toBe(200);
+  });
+});
+
+describe('the X-App-Password header vs MFA', () => {
+  it('REFUSES the header alone once MFA is enabled', async () => {
+    // The header is compared against APP_PASSWORD directly, so leaving it open
+    // would let anyone holding the password reach every operator route having
+    // never presented a second factor — MFA would protect the browser and
+    // nothing else.
+    isMfaEnabledMock.mockResolvedValue(true);
+
+    const res = await request(appWithGate())
+      .get('/gated')
+      .set('X-App-Password', ENV.APP_PASSWORD as string);
+
+    expect(res.status).toBe(401);
+    expect(res.body?.error?.code).toBe('MFA_REQUIRED');
+  });
+
+  it('still accepts a full session cookie when MFA is enabled', async () => {
+    // A cookie can only exist if every factor was satisfied at sign-in.
+    isMfaEnabledMock.mockResolvedValue(true);
+
+    const res = await request(appWithGate())
+      .get('/gated')
+      .set('Cookie', `${UNLOCK_COOKIE}=${issueUnlockToken().token}`);
+
+    expect(res.status).toBe(200);
+  });
+
+  it('re-opens the header path only when explicitly configured', async () => {
+    isMfaEnabledMock.mockResolvedValue(true);
+    ENV.ALLOW_PASSWORD_HEADER_WITH_MFA = 'true';
+
+    const res = await request(appWithGate())
+      .get('/gated')
+      .set('X-App-Password', ENV.APP_PASSWORD as string);
+
+    expect(res.status).toBe(200);
+  });
+
+  it('accepts the header normally when MFA is off', async () => {
+    isMfaEnabledMock.mockResolvedValue(false);
     const res = await request(appWithGate())
       .get('/gated')
       .set('X-App-Password', ENV.APP_PASSWORD as string);

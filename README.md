@@ -177,20 +177,103 @@ and is mounted before the global JSON parser so the raw bytes survive
 
 ## Authentication model
 
-There are no accounts. One shared password gates everything:
+There are no accounts. One shared password gates everything, with an optional
+second factor on top.
 
-- `POST /api/v1/unlock` compares the submitted password in constant time and returns
-  an HMAC token.
-- The Next.js BFF stores that token in an httpOnly, SameSite=Lax cookie
-  (`wa_unlock`). JavaScript can never read it.
+**Signing in**
+
+1. `POST /api/v1/unlock` — Cloudflare Turnstile runs first, then the password is
+   compared in constant time.
+2. With MFA off, that returns the session token. With MFA on, it returns a
+   scoped **5-minute challenge ticket** instead — which opens nothing except
+   step 3.
+3. `POST /api/v1/unlock/mfa/verify` — a 6-digit TOTP code or a recovery code,
+   and only then is the session token issued.
+
+The password crosses the wire exactly once. All three credentials live in
+httpOnly cookies set by the Next.js BFF, so page JavaScript never holds anything
+that advances an authentication:
+
+| Cookie           | What it is               | Lifetime                            |
+| ---------------- | ------------------------ | ----------------------------------- |
+| `wa_unlock`      | the session              | signed into the token (12h default) |
+| `wa_mfa_pending` | the MFA challenge ticket | 5 minutes                           |
+| `wa_device`      | "trust this browser"     | 30 days, rotated on every use       |
+
+**Everything else**
+
 - Every operator route runs behind `requireAppPassword`, which accepts either the
-  cookie or an `X-App-Password` header (for scripts and webhook testers).
-- Socket.IO accepts the same unlock token, fetched server-side via
-  `/api/auth/socket-token`.
-- It **fails closed**: if `APP_PASSWORD` is unset, nothing authenticates.
+  session cookie or an `X-App-Password` header (for scripts and webhook testers).
+  **Once MFA is on, the header alone is refused** — it is checked against
+  `APP_PASSWORD` directly, so accepting it would mean MFA protected the browser
+  and nothing else. Re-open it deliberately with
+  `ALLOW_PASSWORD_HEADER_WITH_MFA=true` if a script truly needs one-factor access.
+- Socket.IO takes a **separate 2-minute ticket**, not the session token, minted
+  by `GET /api/v1/unlock/socket-ticket` and fetched server-side via
+  `/api/auth/socket-token`. `requireAppPassword` rejects it, so a ticket leaked
+  from the page is not a session.
+- It **fails closed** throughout: no `APP_PASSWORD` and nothing authenticates; no
+  `CF_TURNSTILE_SECRET_KEY` in production and the server refuses to boot.
 
 Because there is one operator, fields like `assignedTo`, `createdBy` and
 `actorUserId` are free-text labels (`OPERATOR_LABEL`), not foreign keys.
+
+### Two-factor authentication
+
+Managed at **/whatsapp/security**. TOTP (SHA-1, 6 digits, 30s, ±1 step) —
+compatible with Google Authenticator, 1Password, Authy and the rest.
+
+Because the password is shared and there is no user table, **the TOTP seed is
+shared too**: everyone scans the same QR. That is a real second factor — a
+leaked password is no longer sufficient — but it cannot attribute an action or
+revoke one person. Three controls compensate:
+
+- **The secret is shown once**, during enrolment, and is never retrievable again.
+- **Trusted browsers are individually revocable** — the closest thing to cutting
+  off one machine.
+- **Revoke everything** (an MFA "epoch" bump) invalidates the seed, every
+  recovery code and every trusted browser at once, and forces a re-enrol. This is
+  the answer if the QR is ever screenshotted somewhere it shouldn't be.
+
+Ten single-use recovery codes are issued at enrolment and shown once. Enrolment
+**requires `FIELD_ENCRYPTION_KEY`** and refuses to proceed without it rather than
+writing a plaintext TOTP seed to the database.
+
+### Audit trail
+
+Every state-changing action is recorded — 71 distinct actions across 65 routes —
+and readable at **/whatsapp/audit**: filter by action, entity, actor, IP, free
+text or date range; open any entry for its full detail payload; export the
+filtered set as CSV.
+
+Two properties make it an audit log rather than an activity feed:
+
+- **Append-only.** There is no endpoint that edits or deletes an entry. Rows
+  leave only via the 180-day retention sweep.
+- **Tamper-evident.** Each row carries a SHA-256 checksum over its immutable
+  fields. The viewer re-hashes on read and labels every row Verified / Altered /
+  No checksum, and **Verify integrity** sweeps the whole filtered range and
+  reports anything that no longer matches — i.e. rows edited directly in the
+  database, behind the application's back.
+
+Message bodies, notes, CSAT comments and auto-reply copy are redacted before an
+entry is written: the trail records that an action happened and on what, never
+what was said.
+
+### Brute-force and bot protection
+
+- **Cloudflare Turnstile** on `/unlock`, required in production, fails closed,
+  5s timeout so a Cloudflare outage cannot hang the login path.
+- **Rate limits**: 30 failed password attempts per 5 min per IP, 10 MFA attempts
+  per 15 min, 100 req/s per-IP DDoS cap, 30 Socket.IO handshakes per minute.
+- **Progressive delay** after 3 consecutive failures from one address, applied
+  _before_ the comparison so it cannot be used as a timing oracle.
+- **No lockout, deliberately.** With one shared credential a lockout is a button
+  anyone on the internet could press to take the whole console offline. Delay
+  costs an attacker linearly and a legitimate operator nothing.
+- **Every attempt is audited and counted** — `wa_unlock_attempts_total` and
+  `wa_unlock_failure_streak` on `/metrics`, plus an `UNLOCK_FAILED` audit row.
+  Alert on the streak gauge; a sustained run escalates to an error-level log.
 
 ---
 

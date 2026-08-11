@@ -22,107 +22,107 @@ export function createWebhookWorker(): Worker<WebhookJobData> {
     WEBHOOK_QUEUE_NAME,
     async (job: Job<WebhookJobData>) => {
       return (async () => {
-          const { webhookId, url, secret, event, payload } = job.data;
+        const { webhookId, url, secret, event, payload } = job.data;
 
-          logger.info(`Processing webhook delivery ${job.id} to ${url} for event ${event}`);
+        logger.info(`Processing webhook delivery ${job.id} to ${url} for event ${event}`);
 
-          const body = JSON.stringify({
-            event,
-            timestamp: new Date().toISOString(),
-            data: payload,
+        const body = JSON.stringify({
+          event,
+          timestamp: new Date().toISOString(),
+          data: payload,
+        });
+
+        const signature = webhookService.generateSignature(secret, body);
+
+        let statusCode: number | undefined;
+        let responseBody: string | undefined;
+        let success = false;
+        let error: string | undefined;
+
+        try {
+          // eslint-disable-next-line n/no-unsupported-features/node-builtins
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-webhook-signature': signature,
+              'x-webhook-event': event,
+              'x-webhook-delivery': job.id || '',
+            },
+            body,
+            signal: AbortSignal.timeout(10000),
           });
 
-          const signature = webhookService.generateSignature(secret, body);
+          statusCode = response.status;
+          responseBody = await response.text().catch(() => '');
+          success = response.ok;
 
-          let statusCode: number | undefined;
-          let responseBody: string | undefined;
-          let success = false;
-          let error: string | undefined;
-
-          try {
-            // eslint-disable-next-line n/no-unsupported-features/node-builtins
-            const response = await fetch(url, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'x-webhook-signature': signature,
-                'x-webhook-event': event,
-                'x-webhook-delivery': job.id || '',
-              },
-              body,
-              signal: AbortSignal.timeout(10000), // eslint-disable-line n/no-unsupported-features/node-builtins
-            });
-
-            statusCode = response.status;
-            responseBody = await response.text().catch(() => '');
-            success = response.ok;
-
-            if (!response.ok) {
-              error = `HTTP ${response.status}: ${responseBody?.substring(0, 500)}`;
-            }
-          } catch (err) {
-            error = err instanceof Error ? err.message : 'Unknown error';
-            logger.error(`Webhook delivery failed to ${url}: ${error}`);
+          if (!response.ok) {
+            error = `HTTP ${response.status}: ${responseBody?.substring(0, 500)}`;
           }
+        } catch (err) {
+          error = err instanceof Error ? err.message : 'Unknown error';
+          logger.error(`Webhook delivery failed to ${url}: ${error}`);
+        }
 
-          // Record delivery
-          await prisma.webhookDelivery
-            .create({
+        // Record delivery
+        await prisma.webhookDelivery
+          .create({
+            data: {
+              webhookId,
+              event,
+              payload: payload as any,
+              statusCode,
+              response: responseBody?.substring(0, 2000),
+              success,
+              attempt: job.attemptsMade + 1,
+              error,
+            },
+          })
+          .catch((err) => logger.error('Failed to record webhook delivery', err));
+
+        // Update webhook metadata
+        if (success) {
+          await prisma.webhookEndpoint
+            .update({
+              where: { id: webhookId },
               data: {
-                webhookId,
-                event,
-                payload: payload as any,
-                statusCode,
-                response: responseBody?.substring(0, 2000),
-                success,
-                attempt: job.attemptsMade + 1,
-                error,
+                lastTriggeredAt: new Date(),
+                failureCount: 0,
               },
             })
-            .catch((err) => logger.error('Failed to record webhook delivery', err));
+            .catch(() => {});
+        } else {
+          // Atomic increment to avoid TOCTOU race between concurrent workers
+          const updated = await prisma.webhookEndpoint
+            .update({
+              where: { id: webhookId },
+              data: {
+                failureCount: { increment: 1 },
+                lastTriggeredAt: new Date(),
+              },
+              select: { failureCount: true },
+            })
+            .catch(() => null);
 
-          // Update webhook metadata
-          if (success) {
+          if (updated && updated.failureCount >= MAX_FAILURE_COUNT) {
             await prisma.webhookEndpoint
               .update({
                 where: { id: webhookId },
-                data: {
-                  lastTriggeredAt: new Date(),
-                  failureCount: 0,
-                },
+                data: { isActive: false },
               })
               .catch(() => {});
-          } else {
-            // Atomic increment to avoid TOCTOU race between concurrent workers
-            const updated = await prisma.webhookEndpoint
-              .update({
-                where: { id: webhookId },
-                data: {
-                  failureCount: { increment: 1 },
-                  lastTriggeredAt: new Date(),
-                },
-                select: { failureCount: true },
-              })
-              .catch(() => null);
-
-            if (updated && updated.failureCount >= MAX_FAILURE_COUNT) {
-              await prisma.webhookEndpoint
-                .update({
-                  where: { id: webhookId },
-                  data: { isActive: false },
-                })
-                .catch(() => {});
-              logger.warn(
-                `Webhook ${webhookId} disabled after ${MAX_FAILURE_COUNT} consecutive failures`
-              );
-            }
-
-            // Throw to trigger BullMQ retry
-            throw new Error(error || 'Webhook delivery failed');
+            logger.warn(
+              `Webhook ${webhookId} disabled after ${MAX_FAILURE_COUNT} consecutive failures`
+            );
           }
 
-          return { success, statusCode };
-        })();
+          // Throw to trigger BullMQ retry
+          throw new Error(error || 'Webhook delivery failed');
+        }
+
+        return { success, statusCode };
+      })();
     },
     {
       connection: redis,

@@ -2,6 +2,7 @@ import type { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { AppError } from './error';
 import { env } from '../config/env';
+import { asyncHandler } from '../utils/async-handler';
 
 /**
  * Single app-level password.
@@ -140,26 +141,86 @@ export function verifySocketTicket(ticket: unknown): boolean {
   return verifyToken('socket', ticket);
 }
 
+/** How long an operator has to produce their second factor. */
+const MFA_PENDING_TTL_SECONDS = 5 * 60;
+
+/**
+ * Issue the half-authenticated token handed out after a correct password when
+ * MFA is enabled.
+ *
+ * This is what makes the second factor mean something. hire_adda has no
+ * intermediate state at all: it answers `{requireMfa:true}` with no token, and
+ * the client re-POSTs the entire email+password alongside the code — so the
+ * password crosses the wire twice per login and nothing downstream can tell a
+ * session that passed TOTP from one that did not.
+ *
+ * A pending token proves "this caller knew the password, just now" and NOTHING
+ * else. It is scoped, so `requireAppPassword` rejects it on every route: the
+ * only thing it opens is the verify endpoint.
+ */
+export function issueMfaPendingToken(): { token: string; expiresInSeconds: number } {
+  return {
+    token: mintToken('mfa-pending', MFA_PENDING_TTL_SECONDS),
+    expiresInSeconds: MFA_PENDING_TTL_SECONDS,
+  };
+}
+
+/** True when `token` is a currently-valid MFA challenge token. */
+export function verifyMfaPendingToken(token: unknown): boolean {
+  return verifyToken('mfa-pending', token);
+}
+
 /**
  * Gate every operator route. Accepts either the unlock cookie or a
  * `X-App-Password` header, so scripts and webhook testers can authenticate
  * without a browser session.
  */
-export const requireAppPassword = (req: Request, _res: Response, next: NextFunction): void => {
-  const cookie = (req as Request & { cookies?: Record<string, string> }).cookies?.[COOKIE_NAME];
-  const header = req.header('X-App-Password');
+export const requireAppPassword = asyncHandler(
+  async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
+    const cookie = (req as Request & { cookies?: Record<string, string> }).cookies?.[COOKIE_NAME];
+    const header = req.header('X-App-Password');
 
-  // A socket ticket is deliberately NOT accepted here — see issueSocketTicket.
-  const ok = verifyUnlockToken(cookie) || (header && safeEqual(header, secret()));
+    // A socket ticket is deliberately NOT accepted here — see issueSocketTicket.
+    // A session cookie can only exist if every factor was satisfied at sign-in.
+    if (verifyUnlockToken(cookie)) {
+      (req as Request & { user?: typeof APP_ACTOR }).user = APP_ACTOR;
+      return next();
+    }
 
-  if (!ok) {
+    if (header && safeEqual(header, secret())) {
+      /**
+       * The raw-password header is a COMPLETE MFA BYPASS unless it is gated.
+       *
+       * It exists so scripts and webhook testers can authenticate without a
+       * browser session, and it is checked against APP_PASSWORD directly — so
+       * once MFA is enabled, anyone holding the password could still reach every
+       * operator route (read every conversation, message every customer, export
+       * the contact list) having never presented a second factor. Turning MFA on
+       * while leaving this open buys almost nothing.
+       *
+       * So: when MFA is on, the header alone is refused. A deployment that truly
+       * needs the script path can re-open it with
+       * ALLOW_PASSWORD_HEADER_WITH_MFA=true, which is an explicit, auditable
+       * decision to accept one factor for API callers rather than an accident.
+       */
+      const { isMfaEnabled } = await import('../services/whatsapp-mfa.service');
+      if ((await isMfaEnabled()) && env.ALLOW_PASSWORD_HEADER_WITH_MFA !== 'true') {
+        return next(
+          new AppError(
+            'Two-factor authentication is enabled, so the X-App-Password header is not ' +
+              'sufficient on its own. Sign in through the console, or set ' +
+              'ALLOW_PASSWORD_HEADER_WITH_MFA=true to allow single-factor API access.',
+            401,
+            'MFA_REQUIRED'
+          )
+        );
+      }
+      (req as Request & { user?: typeof APP_ACTOR }).user = APP_ACTOR;
+      return next();
+    }
+
     next(new AppError('Locked. Provide the app password.', 401, 'LOCKED'));
-    return;
   }
-
-  // Shim — see the note at the top of this file.
-  (req as Request & { user?: typeof APP_ACTOR }).user = APP_ACTOR;
-  next();
-};
+);
 
 export const UNLOCK_COOKIE = COOKIE_NAME;

@@ -39,6 +39,30 @@ export const initializeServices = async (): Promise<void> => {
   registerService('Rate Limiting', 'ready');
   registerService('DDoS Protection', 'ready');
   registerService('WAF (Web App Firewall)', 'ready');
+  registerService(
+    'Turnstile (bot protection)',
+    env.CF_TURNSTILE_SECRET_KEY ? 'ready' : env.NODE_ENV === 'production' ? 'error' : 'disabled',
+    env.CF_TURNSTILE_SECRET_KEY
+      ? 'Challenge on /unlock'
+      : env.NODE_ENV === 'production'
+        ? 'CF_TURNSTILE_SECRET_KEY unset — /unlock will reject every attempt'
+        : 'CF_TURNSTILE_SECRET_KEY unset — challenge skipped (non-production)'
+  );
+
+  // MFA state lives in the database, so this is a read rather than a config
+  // check. Never let it stop a boot (see the header of this file).
+  try {
+    const { isMfaEnabled } = await import('../services/whatsapp-mfa.service');
+    const on = await isMfaEnabled();
+    registerService(
+      'Two-Factor Auth (TOTP)',
+      on ? 'ready' : 'disabled',
+      on ? 'Shared authenticator secret' : 'Not enrolled — set up at /whatsapp/security'
+    );
+  } catch (error) {
+    registerService('Two-Factor Auth (TOTP)', 'error', (error as Error).message);
+  }
+
   {
     // Field encryption is optional by construction (encryptField passes the
     // value through without a key). Surface it in the banner rather than

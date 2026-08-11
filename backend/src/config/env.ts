@@ -11,8 +11,37 @@ const envSchema = z
 
     // Database
     DATABASE_URL: z.string(),
+    /**
+     * Direct (non-pooled) connection, for the Prisma CLI only.
+     *
+     * Optional: prisma.config.js resolves `DIRECT_URL || DATABASE_URL`, so an
+     * unset value falls back correctly for a plain Postgres. It is REQUIRED
+     * whenever DATABASE_URL points at a transaction pooler — Supabase's 6543,
+     * PgBouncer, Neon's pooled host — because `db push` and `migrate` cannot run
+     * through one.
+     *
+     * Declared here so it is validated and discoverable. The host platform kept
+     * a DIRECT_URL in its docker env that no code ever read, and a
+     * DATABASE_SSL_MODE in env.ts with zero consumers; both looked configured
+     * and configured nothing.
+     */
+    DIRECT_URL: z.string().optional(),
     DATABASE_POOL_SIZE: z.string().default('10'),
     DATABASE_POOL_TIMEOUT: z.string().default('10'),
+    /**
+     * TLS for the database connection.
+     *
+     * `require` encrypts but does NOT verify the server certificate;
+     * `verify-full` also checks it, which is what actually defends against an
+     * active man-in-the-middle. `disable` is for a local Postgres only.
+     *
+     * Defaults to `require` because every managed provider mandates TLS and
+     * most present certificates that a bare Node client cannot chain-verify
+     * without their CA bundle.
+     */
+    DATABASE_SSL_MODE: z
+      .enum(['disable', 'prefer', 'require', 'verify-ca', 'verify-full'])
+      .default('require'),
 
     // CSRF
     CSRF_SECRET: z.string().min(32),
@@ -76,6 +105,16 @@ const envSchema = z
      * Bump this when someone leaves, a device is lost, or a token may have
      * leaked. Operators simply unlock again with the same password.
      */
+    /**
+     * Cloudflare Turnstile — the bot check in front of the app password.
+     * REQUIRED in production (see the superRefine below); without it the one
+     * credential in the system is defended by rate limiting alone.
+     *
+     * Local development: Cloudflare's always-passes test key is
+     *   1x0000000000000000000000000000000AA
+     * and the matching frontend site key is 1x00000000000000000000AA.
+     */
+    CF_TURNSTILE_SECRET_KEY: z.string().optional(),
     SESSION_EPOCH: z.string().default('1'),
     /**
      * Absolute session lifetime in seconds (default 12h). Signed INTO the unlock
@@ -84,6 +123,15 @@ const envSchema = z
      * step so the cookie expires at the same moment the token does.
      */
     SESSION_MAX_AGE_SECONDS: z.string().default('43200'),
+    /**
+     * Allow the X-App-Password header to authenticate even when MFA is enabled.
+     *
+     * Default false, because the header is checked against APP_PASSWORD directly
+     * and would otherwise be a complete second-factor bypass for API callers.
+     * Set to 'true' only if a script genuinely needs single-factor access, and
+     * know that it re-opens that hole.
+     */
+    ALLOW_PASSWORD_HEADER_WITH_MFA: z.string().default('false'),
     /**
      * Display name for the API's HTML pages (root, health, 404) and the OpenAPI
      * docs. The frontend has its own NEXT_PUBLIC_BRAND_NAME; keep them in sync.
@@ -187,6 +235,16 @@ const envSchema = z
           "CORS_ORIGIN must not be '*' in production - with credentials enabled it " +
           'reflects any origin, which defeats the CSRF protection. Set it to the ' +
           "frontend's origin (comma-separated for several).",
+      });
+    }
+
+    if (!cfg.CF_TURNSTILE_SECRET_KEY) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['CF_TURNSTILE_SECRET_KEY'],
+        message:
+          'CF_TURNSTILE_SECRET_KEY is required in production - without it the app ' +
+          'password has no bot protection in front of it, only rate limiting.',
       });
     }
 

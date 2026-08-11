@@ -1,7 +1,6 @@
 import type { Server as HttpServer } from 'http';
 import type { Socket } from 'socket.io';
 import { Server } from 'socket.io';
-import crypto from 'crypto';
 import { env } from './config/env';
 import { verifySocketTicket } from './middleware/app-password';
 import logger from './config/logger';
@@ -34,12 +33,94 @@ const socketCorsOrigin = (): string | string[] => {
   return url;
 };
 
+/**
+ * Per-IP handshake throttle.
+ *
+ * Engine.IO hijacks the HTTP server's 'request' listeners and serves anything
+ * under /socket.io itself, delegating to Express only for other paths — so NOT
+ * ONE piece of Express middleware runs for a handshake. ddosProtection, the WAF,
+ * apiLimiter, the structured request log and the Prometheus counter are all
+ * mounted on the Express app and are simply skipped.
+ *
+ * That left the handshake as the one credential-checking surface in the system
+ * with no rate limit, no log line and no metric: a loop over
+ * `GET /socket.io/?EIO=4&transport=polling&token=<guess>` was bounded only by
+ * the attacker's bandwidth, and nobody watching logs or dashboards would see it.
+ *
+ * Same shape as ddosProtection so the two behave alike, but keyed and counted
+ * separately: handshakes are rare in normal use (one per tab), so the ceiling
+ * can be far lower than an HTTP request rate.
+ */
+const HANDSHAKE_WINDOW_SECONDS = 60;
+const HANDSHAKE_MAX_PER_WINDOW = 30;
+const HANDSHAKE_BLOCK_SECONDS = 300;
+
+/** Resolve the client address the same way Express would, honouring XFF. */
+function handshakeIp(req: {
+  headers: Record<string, unknown>;
+  socket?: { remoteAddress?: string };
+}): string {
+  const hops = parseInt(process.env.TRUST_PROXY_HOPS || '1', 10);
+  const raw = req.headers['x-forwarded-for'];
+  const xff = (Array.isArray(raw) ? raw[0] : raw) as string | undefined;
+  if (hops > 0 && xff) {
+    // Same semantics as Express's numeric `trust proxy`: entries are appended
+    // left-to-right, so the rightmost is the one the nearest trusted proxy
+    // wrote. Anything further left is client-supplied and untrustworthy.
+    const parts = xff
+      .split(',')
+      .map((v) => v.trim())
+      .filter(Boolean);
+    if (parts.length) return parts[parts.length - 1];
+  }
+  return req.socket?.remoteAddress || 'unknown';
+}
+
+async function handshakeAllowed(ip: string): Promise<boolean> {
+  try {
+    const blockKey = `wa:sock:block:${ip}`;
+    if (await redis.get(blockKey)) return false;
+
+    const rateKey = `wa:sock:rate:${ip}`;
+    const n = await redis.incr(rateKey);
+    await redis.expire(rateKey, HANDSHAKE_WINDOW_SECONDS);
+    if (n > HANDSHAKE_MAX_PER_WINDOW) {
+      await redis.set(blockKey, '1', 'EX', HANDSHAKE_BLOCK_SECONDS);
+      logger.warn(
+        `Socket.IO: blocking ${ip} for ${HANDSHAKE_BLOCK_SECONDS}s — ` +
+          `${n} handshakes in ${HANDSHAKE_WINDOW_SECONDS}s`
+      );
+      return false;
+    }
+    return true;
+  } catch {
+    // Redis unavailable. Allow the handshake: the credential check below is
+    // pure crypto and fails closed on its own, so this degrades availability
+    // rather than security.
+    return true;
+  }
+}
+
 export const initSocket = (httpServer: HttpServer) => {
   io = new Server(httpServer, {
     cors: {
       origin: socketCorsOrigin(),
       methods: ['GET', 'POST'],
       credentials: true,
+    },
+    // Runs before the Engine.IO session is created, so a throttled client costs
+    // us nothing but the Redis round-trip.
+    allowRequest: (req, callback) => {
+      const ip = handshakeIp(req as never);
+      void (async () => {
+        let ok = true;
+        try {
+          ok = await handshakeAllowed(ip);
+        } catch {
+          ok = true; // never let a throttling failure become an outage
+        }
+        callback(ok ? null : 'Too many handshakes', ok);
+      })();
     },
   });
 
@@ -75,20 +156,28 @@ export const initSocket = (httpServer: HttpServer) => {
    */
   io.use((socket, next) => {
     const token = socket.handshake.auth?.token || socket.handshake.query?.token;
+    const ip = handshakeIp(socket.request as never);
+
     if (!token || typeof token !== 'string') {
+      logger.warn(`Socket.IO: handshake from ${ip} with no credential`);
       return next(new Error('Authentication required'));
     }
     if (!env.APP_PASSWORD) {
       return next(new Error('APP_PASSWORD is not configured'));
     }
-    const equals = (a: string, b: string): boolean => {
-      const ab = Buffer.from(a);
-      const bb = Buffer.from(b);
-      return ab.length === bb.length && crypto.timingSafeEqual(ab, bb);
-    };
-    if (!verifySocketTicket(token) && !equals(token, env.APP_PASSWORD)) {
+
+    // ONLY the scoped, short-lived ticket. This used to also accept the raw
+    // APP_PASSWORD "for scripts" — which turned the one Express-free surface in
+    // the system into an unmetered, unlogged password oracle. A script that
+    // needs a socket can mint a ticket the same way the browser does:
+    //   GET /api/v1/unlock/socket-ticket   (with X-App-Password or the cookie)
+    // That path runs behind requireAppPassword, the rate limiters and the audit
+    // trail, which is exactly the point.
+    if (!verifySocketTicket(token)) {
+      logger.warn(`Socket.IO: rejected handshake from ${ip} — invalid or expired ticket`);
       return next(new Error('Invalid or expired socket ticket'));
     }
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (socket as any).userId = env.OPERATOR_LABEL || 'operator';
     next();
