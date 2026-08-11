@@ -1,0 +1,99 @@
+# Render Blueprint — backend only. The frontend deploys to Vercel from frontend/.
+#
+# Why the build command carries --include=dev:
+#   Render sets NODE_ENV=production, which makes `npm install` omit
+#   devDependencies. The build needs typescript and tsc-alias, both of which are
+#   (correctly) devDependencies. Without the flag the build dies at `tsc: not found`.
+#
+#   prisma and cross-env are NOT in that category — they are runtime
+#   dependencies, because start:migrate runs `prisma db push` on every boot and
+#   `start` is wrapped in cross-env. They live in "dependencies" so the start
+#   phase survives even if devDependencies are ever pruned after the build.
+#
+# Secrets are marked `sync: false`: Render prompts for them on first deploy and
+# never stores them in this file. Do not add real values here — this file is
+# committed.
+
+services:
+  - type: web
+    name: whatsapp-cloud-module-api
+    runtime: node
+    rootDir: backend
+    plan: free
+    region: singapore
+    branch: main
+    healthCheckPath: /health
+    buildCommand: npm install --include=dev && npm run build
+    startCommand: npm run start:migrate
+
+    envVars:
+      - key: NODE_VERSION
+        value: '22'
+      - key: NODE_ENV
+        value: production
+
+      # ---- Database (Supabase session pooler, port 5432 — NOT 6543) ----
+      # A transaction pooler breaks `db push` (DDL) and the
+      # `SET statement_timeout` this app issues on pool connect.
+      - key: DATABASE_URL
+        sync: false
+      - key: DIRECT_URL
+        sync: false
+      - key: DATABASE_SSL_MODE
+        value: require
+
+      # ---- Redis (BullMQ requires noeviction + a non-clustered instance) ----
+      - key: REDIS_ENABLED
+        value: 'true'
+      - key: REDIS_URL
+        sync: false
+
+      # ---- Auth / crypto ----
+      # Rotating FIELD_ENCRYPTION_KEY makes every stored TOTP secret
+      # undecryptable and forces re-enrolment. Back it up before you change it.
+      - key: APP_PASSWORD
+        sync: false
+      - key: CSRF_SECRET
+        sync: false
+      - key: BFF_SECRET
+        sync: false
+      - key: FIELD_ENCRYPTION_KEY
+        sync: false
+      - key: CF_TURNSTILE_SECRET_KEY
+        sync: false
+      - key: SESSION_EPOCH
+        value: '1'
+      - key: SESSION_MAX_AGE_SECONDS
+        value: '43200'
+      # Keep false. True re-opens a complete MFA bypass for X-App-Password callers.
+      - key: ALLOW_PASSWORD_HEADER_WITH_MFA
+        value: 'false'
+
+      # ---- Network. env.ts rejects CORS_ORIGIN='*' in production. ----
+      - key: FRONTEND_URL
+        sync: false
+      - key: CORS_ORIGIN
+        sync: false
+      - key: TRUST_PROXY_HOPS
+        value: '1'
+      - key: SHUTDOWN_TIMEOUT_MS
+        value: '25000'
+
+      # ---- Meta WhatsApp Cloud API ----
+      - key: META_WHATSAPP_TOKEN
+        sync: false
+      - key: META_WHATSAPP_PHONE_ID
+        sync: false
+      - key: META_WHATSAPP_WABA_ID
+        sync: false
+      - key: META_WHATSAPP_APP_ID
+        sync: false
+      - key: META_WHATSAPP_APP_SECRET
+        sync: false
+      - key: META_WHATSAPP_WEBHOOK_VERIFY_TOKEN
+        sync: false
+      - key: META_WHATSAPP_API_VERSION
+        value: v21.0
+
+      - key: LOG_LEVEL
+        value: info
