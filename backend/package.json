@@ -24,7 +24,7 @@
     "test:cov": "cross-env NODE_ENV=test jest --coverage",
     "db:generate": "dotenv -- prisma generate",
     "db:push": "dotenv -- prisma db push",
-    "db:deploy": "prisma db push --skip-generate",
+    "db:deploy": "prisma db push",
     "db:studio": "dotenv -- prisma studio",
     "postinstall": "prisma generate"
   },
