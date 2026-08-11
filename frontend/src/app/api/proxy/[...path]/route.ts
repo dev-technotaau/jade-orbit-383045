@@ -94,7 +94,23 @@ async function proxyRequest(
   // Stream the response through untouched — including binary media, which the
   // WhatsApp inbox fetches for attachments.
   const outHeaders = new Headers();
-  const passthrough = ['content-type', 'content-disposition', 'content-length', 'cache-control'];
+  // content-length is NOT unconditionally forwarded. undici transparently
+  // decompresses gzip/br, but leaves the upstream content-length — the
+  // COMPRESSED size — in res.headers. Forwarding it hands the browser a byte
+  // count that does not describe the body it is about to receive:
+  //   header < actual -> the response is truncated mid-JSON and parsing fails
+  //   header > actual -> the browser waits for bytes that never arrive, and
+  //                      the request hangs until the client timeout
+  // Measured against the deployed API: /mfa/status announced 139 bytes and
+  // delivered 182; /keyword-rules announced 30 and delivered 26. Both failed,
+  // in opposite ways, while the backend logged a clean 200.
+  //
+  // It is still forwarded when nothing was decoded, so binary media (already
+  // compressed, so the compressor skips it) keeps a real length for progress
+  // reporting. Omitted, the response is simply chunked and read to end-of-stream.
+  const wasDecoded = res.headers.has('content-encoding');
+  const passthrough = ['content-type', 'content-disposition', 'cache-control'];
+  if (!wasDecoded) passthrough.push('content-length');
   for (const h of passthrough) {
     const v = res.headers.get(h);
     if (v) outHeaders.set(h, v);
