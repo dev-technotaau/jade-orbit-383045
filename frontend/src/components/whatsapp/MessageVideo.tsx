@@ -115,7 +115,11 @@ export default function MessageVideo({ message, outbound }: MessageVideoProps) {
       >
         <video
           ref={videoRef}
-          src={src}
+          // `#t=0.1` asks the browser to seek to the first tenth of a second, so
+          // it paints a real frame instead of a black rectangle behind the blur.
+          // There is no server-side poster: extracting one needs a video decoder
+          // the backend deliberately does not carry, and Meta supplies none.
+          src={`${src}#t=0.1`}
           preload="metadata"
           playsInline
           onClick={togglePlay}

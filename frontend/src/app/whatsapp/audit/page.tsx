@@ -2,15 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
-import {
-  ShieldCheck,
-  ShieldAlert,
-  ShieldQuestion,
-  Download,
-  Search,
-  X,
-  AlertTriangle,
-} from 'lucide-react';
+import Link from 'next/link';
+import { ShieldCheck, Download, Search, X, AlertTriangle, ExternalLink } from 'lucide-react';
 import DashboardLayout from '@/components/layout/DashboardLayout';
 import Button from '@/components/ui/Button';
 import Input from '@/components/ui/Input';
@@ -19,14 +12,9 @@ import Modal from '@/components/ui/Modal';
 import Spinner from '@/components/ui/Spinner';
 import Pagination from '@/components/ui/Pagination';
 import { showToast } from '@/components/ui/Toast';
-import {
-  auditService,
-  type AuditEntry,
-  type AuditFilters,
-  type IntegrityState,
-} from '@/services/audit.service';
+import AuditEntryDetail, { IntegrityBadge } from '@/components/whatsapp/AuditEntryDetail';
+import { auditService, type AuditEntry, type AuditFilters } from '@/services/audit.service';
 import type { ApiError } from '@/types/api';
-import { cn } from '@/lib/utils';
 
 const errText = (e: unknown, fallback: string) => (e as unknown as ApiError)?.message || fallback;
 
@@ -122,7 +110,8 @@ export default function AuditPage() {
             <h1 className="text-xl font-bold text-[var(--text)]">Audit trail</h1>
             <p className="mt-1 text-sm text-[var(--text-muted)]">
               Every action taken through the console. Append-only — entries cannot be edited or
-              deleted, and are removed only by the 180-day retention sweep.
+              deleted. The retention sweep archives them at 90 days (tick “Include archived” to see
+              those) and removes them at 180.
             </p>
           </div>
           <div className="flex gap-2">
@@ -164,9 +153,20 @@ export default function AuditPage() {
                 someone has modified this table directly. Treat the trail as untrustworthy from here
                 and investigate database access.
               </p>
-              <p className="mt-1 font-mono text-xs break-all">
-                {verifyMut.data.invalidIds.slice(0, 8).join(', ')}
-                {verifyMut.data.invalidIds.length > 8 ? ' …' : ''}
+              {/* An id is the only handle an investigation has on an altered
+                  row, and none of the filters above search by it — so each one
+                  links to its entry instead of being text to copy out. */}
+              <p className="mt-1 flex flex-wrap gap-x-3 gap-y-1 font-mono text-xs break-all">
+                {verifyMut.data.invalidIds.slice(0, 8).map((id) => (
+                  <Link
+                    key={id}
+                    href={`/whatsapp/audit/${id}`}
+                    className="underline underline-offset-2 hover:no-underline"
+                  >
+                    {id}
+                  </Link>
+                ))}
+                {verifyMut.data.invalidIds.length > 8 && <span>…</span>}
               </p>
             </div>
           </div>
@@ -250,6 +250,20 @@ export default function AuditPage() {
               value={filters.to ?? ''}
               onChange={(e) => setFilter('to', e.target.value)}
             />
+
+            {/* Entries older than 90 days are archived by the retention sweep and
+                drop out of the working trail. They are still here, and still
+                verifiable, until the 180-day delete — this is the only way to
+                reach them, so without it "no results" would be indistinguishable
+                from "that period has been archived". */}
+            <label className="flex h-10 items-center gap-2 text-sm text-[var(--text-secondary)]">
+              <input
+                type="checkbox"
+                checked={!!filters.includeArchived}
+                onChange={(e) => setFilter('includeArchived', e.target.checked)}
+              />
+              Include archived
+            </label>
           </div>
 
           {activeCount > 0 && (
@@ -340,6 +354,14 @@ export default function AuditPage() {
                     >
                       <td className="px-4 py-2 whitespace-nowrap text-[var(--text-muted)]">
                         {new Date(row.createdAt).toLocaleString()}
+                        {row.isArchived && (
+                          <span
+                            title="Archived by the retention sweep — kept, but out of the default view"
+                            className="ml-2 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-semibold text-gray-600"
+                          >
+                            ARCHIVED
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-2 font-medium text-[var(--text)]">{row.action}</td>
                       <td className="px-4 py-2 text-[var(--text-secondary)]">
@@ -440,34 +462,19 @@ export default function AuditPage() {
       >
         {selected && (
           <div className="space-y-4">
-            <div className="flex items-center justify-between gap-3">
-              <span className="font-semibold text-[var(--text)]">{selected.action}</span>
-              <IntegrityBadge state={selected.integrity} />
-            </div>
+            <AuditEntryDetail entry={selected} />
 
-            <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
-              <Field label="When" value={new Date(selected.createdAt).toLocaleString()} />
-              <Field label="Actor" value={selected.performedBy ?? '—'} />
-              <Field label="Entity" value={selected.entity} />
-              <Field label="Entity id" value={selected.entityId ?? '—'} mono />
-              <Field label="IP address" value={selected.ipAddress ?? '—'} mono />
-              <Field label="Entry id" value={selected.id} mono />
-              <Field
-                label="User agent"
-                value={selected.userAgent ?? '—'}
-                className="sm:col-span-2"
-              />
-            </dl>
-
-            <div>
-              <p className="mb-1 text-sm font-medium text-[var(--text)]">Details</p>
-              <p className="mb-2 text-xs text-[var(--text-muted)]">
-                Message bodies, notes and other free text are redacted before an entry is written —
-                this records that an action happened, never what was said.
-              </p>
-              <pre className="max-h-72 overflow-auto rounded-lg bg-[var(--bg-secondary)] p-3 text-xs text-[var(--text)]">
-                {JSON.stringify(selected.details ?? {}, null, 2)}
-              </pre>
+            {/* The modal is reachable only from a row the current filter happened
+                to return; the page behind this link is the address to paste into
+                a ticket or an incident write-up. */}
+            <div className="flex justify-end border-t border-[var(--border)] pt-3">
+              <Link
+                href={`/whatsapp/audit/${selected.id}`}
+                className="text-primary inline-flex items-center gap-1.5 text-sm hover:underline"
+              >
+                Open this entry on its own page
+                <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+              </Link>
             </div>
           </div>
         )}
@@ -513,63 +520,5 @@ function StatTile({ label, value }: { label: string; value: string }) {
       <p className="text-xs text-[var(--text-muted)]">{label}</p>
       <p className="mt-1 text-lg font-semibold text-[var(--text)]">{value}</p>
     </div>
-  );
-}
-
-function Field({
-  label,
-  value,
-  mono,
-  className,
-}: {
-  label: string;
-  value: string;
-  mono?: boolean;
-  className?: string;
-}) {
-  return (
-    <div className={className}>
-      <dt className="text-xs text-[var(--text-muted)]">{label}</dt>
-      <dd className={cn('break-all text-[var(--text)]', mono && 'font-mono text-xs')}>{value}</dd>
-    </div>
-  );
-}
-
-/** Says whether the row still hashes to the checksum stored with it. */
-function IntegrityBadge({ state }: { state: IntegrityState }) {
-  const map = {
-    valid: {
-      icon: ShieldCheck,
-      text: 'Verified',
-      cls: 'bg-emerald-50 text-emerald-700',
-      title: 'This entry still matches the checksum recorded when it was written.',
-    },
-    invalid: {
-      icon: ShieldAlert,
-      text: 'Altered',
-      cls: 'bg-red-50 text-red-700',
-      title:
-        'This entry no longer matches its checksum — it has been modified since it was written.',
-    },
-    unverifiable: {
-      icon: ShieldQuestion,
-      text: 'No checksum',
-      cls: 'bg-[var(--bg-secondary)] text-[var(--text-muted)]',
-      title: 'Written before checksums existed, so it can be neither confirmed nor doubted.',
-    },
-  } as const;
-
-  const { icon: Icon, text, cls, title } = map[state];
-  return (
-    <span
-      title={title}
-      className={cn(
-        'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium',
-        cls,
-      )}
-    >
-      <Icon className="h-3 w-3" aria-hidden="true" />
-      {text}
-    </span>
   );
 }

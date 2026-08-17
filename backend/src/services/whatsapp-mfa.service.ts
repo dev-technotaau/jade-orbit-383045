@@ -12,15 +12,18 @@ import { encryptField, decryptField, isEncryptionEnabled } from '../utils/encryp
  * Multi-factor authentication for the operator console.
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * One shared TOTP seed, because this module has one shared app password and no
- * user table. Every operator scans the same QR. That is weaker than per-person
- * MFA — it cannot attribute an action or revoke one person — but it is still a
- * real second factor: knowing the password is no longer sufficient, you also
- * need a device that was enrolled.
+ * One shared TOTP seed. OPERATOR_PASSWORDS gives each person their own password
+ * and their own audit label, but there is still no user table to hang a
+ * per-person secret off, so every operator scans the same QR. That is weaker
+ * than per-person MFA — the seed alone cannot attribute an action or lock one
+ * person out — but it is still a real second factor: knowing a password is no
+ * longer sufficient, you also need a device that was enrolled.
  *
  * The compensating controls for the shared seed are `epoch` (below),
- * per-browser trusted devices that CAN be revoked individually, and an audit
- * row for every MFA event.
+ * per-browser trusted devices that CAN be revoked individually, an audit row
+ * for every MFA event that now names the operator who caused it, and removing a
+ * leaver from OPERATOR_PASSWORDS — which is what actually ends their access,
+ * shared seed or not.
  *
  * ── Parameters ──
  * SHA-1 / 6 digits / 30s / ±1 step, matching what hire_adda's speakeasy setup
@@ -112,6 +115,8 @@ function generateRecoveryCodes(count = RECOVERY_CODE_COUNT): string[] {
 function buildTotp(base32Secret: string): TOTP {
   return new TOTP({
     issuer: env.BRAND_NAME || 'TechnoTaau',
+    // The account name shown in the authenticator. One seed for the console, so
+    // this names the deployment's shared account rather than any one person.
     label: env.OPERATOR_LABEL || 'operator',
     algorithm: TOTP_ALGORITHM,
     digits: TOTP_DIGITS,

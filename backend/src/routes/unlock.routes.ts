@@ -1,6 +1,5 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
-import crypto from 'crypto';
 import { env } from '../config/env';
 import {
   issueUnlockToken,
@@ -8,6 +7,7 @@ import {
   issueMfaPendingToken,
   verifyMfaPendingToken,
   requireAppPassword,
+  resolveOperator,
 } from '../middleware/app-password';
 import { authLimiter, mfaLimiter } from '../middleware/rate-limit';
 import { verifyTurnstile } from '../middleware/turnstile';
@@ -37,6 +37,12 @@ import {
  *   POST /unlock/mfa/verify      pendingToken+code -> full token
  * The password is sent exactly once. The pending token is scoped, so it opens
  * nothing but the verify endpoint.
+ *
+ * ── Who signed in ──
+ * The password also answers WHO: with OPERATOR_PASSWORDS configured, each
+ * person has their own, and the label it resolves to is signed into the token
+ * that comes back. Nothing here accepts a name from the caller — a name in the
+ * request body would be an assertion, and the audit trail would inherit it.
  */
 const router = Router();
 
@@ -45,8 +51,12 @@ export const TRUSTED_DEVICE_COOKIE = 'wa_device';
 
 const clientIp = (req: Request): string => req.ip || req.socket.remoteAddress || 'unknown';
 const clientUa = (req: Request): string | undefined => req.get('user-agent') ?? undefined;
+/** The operator requireAppPassword resolved for this request. */
+const actorOf = (req: Request): string | undefined =>
+  (req as Request & { user?: { id: string } }).user?.id;
 
-function requireConfiguredPassword(res: Response): string | null {
+/** True when a password is configured; answers 500 and returns false when not. */
+function requireConfiguredPassword(res: Response): boolean {
   if (!env.APP_PASSWORD) {
     // Fail closed and say so plainly — a misconfigured deployment should be
     // obvious, not look like a wrong password.
@@ -57,9 +67,9 @@ function requireConfiguredPassword(res: Response): string | null {
         code: 'APP_PASSWORD_UNSET',
       },
     });
-    return null;
+    return false;
   }
-  return env.APP_PASSWORD;
+  return true;
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
@@ -85,8 +95,7 @@ router.post(
     const userAgent = clientUa(req);
     const supplied = (req.body as { password?: unknown })?.password;
 
-    const secret = requireConfiguredPassword(res);
-    if (!secret) return;
+    if (!requireConfiguredPassword(res)) return;
 
     if (typeof supplied !== 'string' || supplied.length === 0) {
       res.status(400).json({
@@ -100,13 +109,13 @@ router.post(
     // to distinguish a wrong password from a right one by timing.
     await applyProgressiveDelay(ip);
 
-    // Constant-time compare. Length is checked first because timingSafeEqual
-    // throws on a length mismatch — and length alone leaks nothing useful here.
-    const a = Buffer.from(supplied);
-    const b = Buffer.from(secret);
-    const ok = a.length === b.length && crypto.timingSafeEqual(a, b);
+    // Not "is this the password" but "whose password is this": APP_PASSWORD
+    // resolves to the shared label, an OPERATOR_PASSWORDS entry to that person.
+    // Constant-time throughout, and every candidate is compared — see
+    // resolveOperator.
+    const operator = resolveOperator(supplied);
 
-    if (!ok) {
+    if (!operator) {
       await recordUnlockFailure({ ip, userAgent, reason: 'bad_password' });
       res.status(401).json({
         success: false,
@@ -117,7 +126,7 @@ router.post(
 
     if (!(await mfa.isMfaEnabled())) {
       await recordUnlockSuccess({ ip, userAgent, mfa: 'not_required' });
-      const { token, expiresInSeconds } = issueUnlockToken();
+      const { token, expiresInSeconds } = issueUnlockToken(operator);
       res.status(200).json({ success: true, data: { token, expiresInSeconds } });
       return;
     }
@@ -130,7 +139,7 @@ router.post(
     const rotated = await mfa.consumeTrustedDevice(deviceToken, { userAgent, ip });
     if (rotated) {
       await recordUnlockSuccess({ ip, userAgent, mfa: 'trusted_device' });
-      const { token, expiresInSeconds } = issueUnlockToken();
+      const { token, expiresInSeconds } = issueUnlockToken(operator);
       res.status(200).json({
         success: true,
         data: {
@@ -142,7 +151,9 @@ router.post(
       return;
     }
 
-    const pending = issueMfaPendingToken();
+    // The challenge carries the operator, so step 2 issues the session for the
+    // person whose password opened it rather than for the shared label.
+    const pending = issueMfaPendingToken(operator);
     res.status(200).json({
       success: true,
       data: {
@@ -174,7 +185,8 @@ router.post(
       trustDevice?: unknown;
     };
 
-    if (!verifyMfaPendingToken(pendingToken)) {
+    const operator = verifyMfaPendingToken(pendingToken);
+    if (!operator) {
       await recordUnlockFailure({ ip, userAgent, reason: 'expired_challenge' });
       res.status(401).json({
         success: false,
@@ -211,7 +223,7 @@ router.post(
     }
 
     await recordUnlockSuccess({ ip, userAgent, mfa: factor });
-    const { token, expiresInSeconds } = issueUnlockToken();
+    const { token, expiresInSeconds } = issueUnlockToken(operator);
 
     const data: Record<string, unknown> = { token, expiresInSeconds, factor };
     if (trustDevice === true) {
@@ -234,8 +246,10 @@ router.post(
  * this with the cookie and hands the browser a two-minute, socket-scoped ticket
  * instead: it opens a socket and nothing else — requireAppPassword rejects it.
  */
-router.get('/socket-ticket', requireAppPassword, (_req: Request, res: Response) => {
-  const { ticket, expiresInSeconds } = issueSocketTicket();
+router.get('/socket-ticket', requireAppPassword, (req: Request, res: Response) => {
+  // Scoped to the operator who asked, so the socket's rooms and anything it
+  // stamps stay attributed to a person rather than to the shared label.
+  const { ticket, expiresInSeconds } = issueSocketTicket(actorOf(req));
   res.status(200).json({ success: true, data: { ticket, expiresInSeconds } });
 });
 
@@ -260,8 +274,15 @@ export const mfaManagementRouter = Router();
 const mgmt = mfaManagementRouter;
 mgmt.use(requireAppPassword);
 
-/** Re-assert the password for a state-changing MFA action. */
-function assertPassword(supplied: unknown): void {
+/**
+ * Re-assert the password for a state-changing MFA action.
+ *
+ * It must be the CALLER's OWN password. Accepting any operator's would let
+ * somebody who watched a colleague type theirs disable MFA from their own
+ * session — and the audit row would name the wrong person, which is the one
+ * thing this re-assertion exists to pin down.
+ */
+function assertPassword(supplied: unknown, actor: string | undefined): void {
   if (!env.APP_PASSWORD) {
     throw new AppError('APP_PASSWORD is not configured', 500, 'APP_PASSWORD_UNSET');
   }
@@ -272,9 +293,8 @@ function assertPassword(supplied: unknown): void {
       'WA_MFA_PASSWORD_REQUIRED'
     );
   }
-  const a = Buffer.from(supplied);
-  const b = Buffer.from(env.APP_PASSWORD);
-  if (!(a.length === b.length && crypto.timingSafeEqual(a, b))) {
+  const operator = resolveOperator(supplied);
+  if (!operator || (actor !== undefined && operator !== actor)) {
     throw new AppError('Incorrect password', 401, 'INVALID_PASSWORD');
   }
 }
@@ -301,7 +321,7 @@ mgmt.post(
   audit('WA_MFA_ENABLED', 'WaMfaConfig'),
   asyncHandler(async (req: Request, res: Response) => {
     const { code, password } = (req.body ?? {}) as { code?: unknown; password?: unknown };
-    assertPassword(password);
+    assertPassword(password, actorOf(req));
     if (typeof code !== 'string') {
       throw new AppError('A code is required', 400, 'WA_MFA_CODE_REQUIRED');
     }
@@ -316,7 +336,7 @@ mgmt.post(
   audit('WA_MFA_DISABLED', 'WaMfaConfig'),
   asyncHandler(async (req: Request, res: Response) => {
     const { code, password } = (req.body ?? {}) as { code?: unknown; password?: unknown };
-    assertPassword(password);
+    assertPassword(password, actorOf(req));
     // Both factors to remove a factor — otherwise a leaked password alone
     // could strip MFA and re-open the console to one factor.
     if (typeof code !== 'string' || !(await mfa.verifyCode(code))) {
@@ -333,7 +353,7 @@ mgmt.post(
   audit('WA_MFA_RECOVERY_CODES_REGENERATED', 'WaMfaConfig'),
   asyncHandler(async (req: Request, res: Response) => {
     const { code, password } = (req.body ?? {}) as { code?: unknown; password?: unknown };
-    assertPassword(password);
+    assertPassword(password, actorOf(req));
     if (typeof code !== 'string' || !(await mfa.verifyCode(code))) {
       throw new AppError('That code is not valid', 401, 'WA_MFA_INVALID_CODE');
     }
@@ -347,7 +367,7 @@ mgmt.post(
   mfaLimiter,
   audit('WA_MFA_EPOCH_ROTATED', 'WaMfaConfig'),
   asyncHandler(async (req: Request, res: Response) => {
-    assertPassword((req.body as { password?: unknown })?.password);
+    assertPassword((req.body as { password?: unknown })?.password, actorOf(req));
     const data = await mfa.rotateEpoch();
     res.status(200).json({ success: true, data });
   })
@@ -379,7 +399,16 @@ mgmt.post(
 );
 
 /**
- * Echo how this process resolved the caller's address.
+ * Who this session is, and how this process resolved its address.
+ *
+ * `operator` is the label every row this session touches gets stamped with —
+ * the server's own answer, decided by the password that unlocked it. The
+ * console reads it to know what to write on "Assign to me" and what to ask for
+ * under "Assigned to me". It used to reconstruct that label itself, first from
+ * a second environment variable and then from the first entry of
+ * `GET /whatsapp/agents`; both were guesses that stopped being right the moment
+ * a deployment configured anything, and a wrong guess shows up as an inbox
+ * filter that silently matches nothing.
  *
  * `trust proxy` depth decides what `req.ip` is, and therefore what the per-IP
  * rate limiter buckets on — get it wrong and either every operator shares one
@@ -391,6 +420,7 @@ router.get('/whoami', requireAppPassword, (req: Request, res: Response) => {
   res.status(200).json({
     success: true,
     data: {
+      operator: actorOf(req) ?? null,
       ip: req.ip,
       ips: req.ips,
       trustProxy: req.app.get('trust proxy fn') ? req.app.get('trust proxy') : undefined,

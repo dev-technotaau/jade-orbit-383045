@@ -14,6 +14,12 @@ import {
   handleWaDripTick,
   handleWaScheduledTick,
   handleWaRecurringTick,
+  handleWaMediaReconcile,
+  handleWaWebhookHeartbeat,
+  handleWaClickRollup,
+  handleWaMessageRollup,
+  handleWaMetaCostSync,
+  handleWaWeeklyReport,
 } from './whatsapp-cron.worker';
 
 /**
@@ -23,14 +29,14 @@ import {
  * The host platform registered ~40 cases here (job expiry, digests, billing,
  * settlements, PBAC sweeps, email crons). All of those went with their features.
  *
- * ── The nine names below are load-bearing ──
+ * ── The fourteen names below are load-bearing ──
  * They must match `whatsapp-cron.queue.ts` EXACTLY. A name registered there but
  * missing here falls to `default`, which logs a warning and returns null — the
  * cron fires on schedule and silently does nothing. That failure mode is quiet
  * enough to survive a deploy unnoticed, so treat the two lists as one unit:
  * change a name in either file and change it in both.
  *
- * The same nine names also appear in `jobs/index.ts` as the live set for
+ * The same fourteen names also appear in `jobs/index.ts` as the live set for
  * `cleanStaleRepeatableJobs` — a name missing there gets UNREGISTERED from Redis
  * on the next boot.
  */
@@ -39,30 +45,42 @@ export function createSchedulerWorker(): Worker {
     SCHEDULER_QUEUE_NAME,
     async (job: Job) => {
       return (async () => {
-          switch (job.name) {
-            case 'wa-sync-templates':
-              return handleWaSyncTemplates();
-            case 'wa-run-scheduled-campaigns':
-              return handleWaScheduledCampaigns();
-            case 'wa-sync-channel-health':
-              return handleWaSyncChannelHealth();
-            case 'wa-prune-retention':
-              return handleWaPruneRetention();
-            case 'wa-event-recovery':
-              return handleWaEventRecovery();
-            case 'wa-campaign-recovery':
-              return handleWaCampaignRecovery();
-            case 'wa-drip-tick':
-              return handleWaDripTick();
-            case 'wa-scheduled-tick':
-              return handleWaScheduledTick();
-            case 'wa-recurring-tick':
-              return handleWaRecurringTick();
-            default:
-              logger.warn(`Unknown scheduler job name: ${job.name}`);
-              return null;
-          }
-        })();
+        switch (job.name) {
+          case 'wa-sync-templates':
+            return handleWaSyncTemplates();
+          case 'wa-run-scheduled-campaigns':
+            return handleWaScheduledCampaigns();
+          case 'wa-sync-channel-health':
+            return handleWaSyncChannelHealth();
+          case 'wa-prune-retention':
+            return handleWaPruneRetention();
+          case 'wa-event-recovery':
+            return handleWaEventRecovery();
+          case 'wa-campaign-recovery':
+            return handleWaCampaignRecovery();
+          case 'wa-drip-tick':
+            return handleWaDripTick();
+          case 'wa-scheduled-tick':
+            return handleWaScheduledTick();
+          case 'wa-recurring-tick':
+            return handleWaRecurringTick();
+          case 'wa-media-reconcile':
+            return handleWaMediaReconcile();
+          case 'wa-webhook-heartbeat':
+            return handleWaWebhookHeartbeat();
+          case 'wa-click-rollup':
+            return handleWaClickRollup();
+          case 'wa-message-rollup':
+            return handleWaMessageRollup();
+          case 'wa-meta-cost-sync':
+            return handleWaMetaCostSync();
+          case 'wa-weekly-report':
+            return handleWaWeeklyReport();
+          default:
+            logger.warn(`Unknown scheduler job name: ${job.name}`);
+            return null;
+        }
+      })();
     },
     {
       connection: redis,

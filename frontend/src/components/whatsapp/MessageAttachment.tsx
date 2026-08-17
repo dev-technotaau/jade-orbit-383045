@@ -130,6 +130,12 @@ export default function MessageAttachment({ message, outbound }: MessageAttachme
               .filter(Boolean)
               .join(' · ') || 'File'}
           </p>
+          {/* Archival gave up: once Meta's own ~30-day copy expires the file is
+              gone, and a download button that simply 404s later tells the
+              operator nothing about why. */}
+          {message.mediaArchiveStatus === 'FAILED' && (
+            <p className="text-xs text-amber-600">Not archived — may no longer be available</p>
+          )}
         </div>
         <a
           href={src}

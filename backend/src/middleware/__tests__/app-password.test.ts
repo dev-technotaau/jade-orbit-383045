@@ -49,6 +49,8 @@ import {
   verifyUnlockToken,
   issueSocketTicket,
   verifySocketTicket,
+  listOperators,
+  resolveOperator,
 } from '../app-password';
 import { errorHandler } from '../error';
 
@@ -68,6 +70,7 @@ beforeEach(() => {
   ENV.SESSION_EPOCH = '1';
   ENV.SESSION_MAX_AGE_SECONDS = '43200';
   ENV.ALLOW_PASSWORD_HEADER_WITH_MFA = 'false';
+  ENV.OPERATOR_PASSWORDS = undefined;
   isMfaEnabledMock.mockResolvedValue(false);
   jest.useRealTimers();
 });
@@ -239,34 +242,34 @@ describe('issueUnlockToken / verifyUnlockToken', () => {
     // The whole point of the change: the old token was a constant, so the "12h
     // session" was a cookie attribute the server never checked.
     const { token } = issueUnlockToken();
-    expect(verifyUnlockToken(token)).toBe(true);
+    expect(verifyUnlockToken(token)).toBe('operator');
 
     const [exp, mac] = token.split('.');
     const expired = `${Number(exp) - 43200 * 1000 - 1000}.${mac}`;
-    expect(verifyUnlockToken(expired)).toBe(false);
+    expect(verifyUnlockToken(expired)).toBeNull();
   });
 
   it('rejects a tampered expiry (the expiry is inside the signed message)', () => {
     const { token } = issueUnlockToken();
     const [exp, mac] = token.split('.');
     const extended = `${Number(exp) + 10_000_000}.${mac}`;
-    expect(verifyUnlockToken(extended)).toBe(false);
+    expect(verifyUnlockToken(extended)).toBeNull();
   });
 
   it('rejects garbage', () => {
     for (const bad of ['', 'nonsense', '123', '.abc', 'abc.def', null, undefined, 42]) {
-      expect(verifyUnlockToken(bad)).toBe(false);
+      expect(verifyUnlockToken(bad)).toBeNull();
     }
   });
 
   it('is invalidated by an epoch bump or a password change', () => {
     const { token } = issueUnlockToken();
     ENV.SESSION_EPOCH = '2';
-    expect(verifyUnlockToken(token)).toBe(false);
+    expect(verifyUnlockToken(token)).toBeNull();
     ENV.SESSION_EPOCH = '1';
-    expect(verifyUnlockToken(token)).toBe(true);
+    expect(verifyUnlockToken(token)).toBe('operator');
     ENV.APP_PASSWORD = 'a-different-password-entirely';
-    expect(verifyUnlockToken(token)).toBe(false);
+    expect(verifyUnlockToken(token)).toBeNull();
   });
 });
 
@@ -274,13 +277,13 @@ describe('socket tickets', () => {
   it('are short-lived', () => {
     const { ticket, expiresInSeconds } = issueSocketTicket();
     expect(expiresInSeconds).toBe(120);
-    expect(verifySocketTicket(ticket)).toBe(true);
+    expect(verifySocketTicket(ticket)).toBe('operator');
   });
 
   it('are NOT accepted as a session credential', async () => {
     // This is the property that makes handing a ticket to page JavaScript safe.
     const { ticket } = issueSocketTicket();
-    expect(verifyUnlockToken(ticket)).toBe(false);
+    expect(verifyUnlockToken(ticket)).toBeNull();
 
     const res = await request(appWithGate())
       .get('/gated')
@@ -290,6 +293,81 @@ describe('socket tickets', () => {
 
   it('do not accept an unlock token in their place either', () => {
     const { token } = issueUnlockToken();
-    expect(verifySocketTicket(token)).toBe(false);
+    expect(verifySocketTicket(token)).toBeNull();
+  });
+});
+
+/**
+ * Named operators.
+ *
+ * The point of the roster is attribution and per-person revocation: the label
+ * on every row follows the password that was used, and deleting an entry ends
+ * that person's sessions without bumping SESSION_EPOCH and signing out the
+ * whole team.
+ */
+describe('named operators (OPERATOR_PASSWORDS)', () => {
+  const ALICE = 'alice-password-long-enough';
+  const BOB = 'bob-password-long-enough';
+
+  beforeEach(() => {
+    ENV.OPERATOR_PASSWORDS = `alice:${ALICE},bob:${BOB}`;
+  });
+
+  it('publishes the shared account plus every named operator', () => {
+    expect(listOperators()).toEqual(['operator', 'alice', 'bob']);
+  });
+
+  it('resolves a password to its own operator, and rejects a non-credential', () => {
+    expect(resolveOperator(ENV.APP_PASSWORD as string)).toBe('operator');
+    expect(resolveOperator(ALICE)).toBe('alice');
+    expect(resolveOperator(BOB)).toBe('bob');
+    expect(resolveOperator('not-a-password-at-all')).toBeNull();
+  });
+
+  it('drops entries that fail the format rules rather than accepting them loosely', () => {
+    ENV.OPERATOR_PASSWORDS = 'carol:too-short,no-colon-here,d.ot:a-long-enough-password';
+    expect(listOperators()).toEqual(['operator']);
+    expect(resolveOperator('too-short')).toBeNull();
+    expect(resolveOperator('a-long-enough-password')).toBeNull();
+  });
+
+  it('stamps the operator the password belongs to, not the shared label', async () => {
+    const res = await request(appWithGate())
+      .get('/gated')
+      .set('Cookie', `${UNLOCK_COOKIE}=${issueUnlockToken('alice').token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.actor).toEqual({ id: 'alice', role: 'ADMIN' });
+  });
+
+  it('attributes the X-App-Password header to the operator whose password it is', async () => {
+    const res = await request(appWithGate()).get('/gated').set('X-App-Password', BOB);
+
+    expect(res.status).toBe(200);
+    expect(res.body.actor).toEqual({ id: 'bob', role: 'ADMIN' });
+  });
+
+  it("ends one operator's sessions when their entry is removed, and only theirs", async () => {
+    const alice = issueUnlockToken('alice').token;
+    const shared = issueUnlockToken().token;
+
+    // The leaver goes; the password everyone else holds is untouched.
+    ENV.OPERATOR_PASSWORDS = `bob:${BOB}`;
+
+    expect(verifyUnlockToken(alice)).toBeNull();
+    expect(verifyUnlockToken(shared)).toBe('operator');
+
+    const stale = await request(appWithGate())
+      .get('/gated')
+      .set('Cookie', `${UNLOCK_COOKIE}=${alice}`);
+    expect(stale.status).toBe(401);
+  });
+
+  it('refuses a label edited into a valid token — it is inside the signature', () => {
+    const token = issueUnlockToken('alice').token;
+    const [exp, , mac] = token.split('.');
+    expect(verifyUnlockToken(`${exp}.bob.${mac}`)).toBeNull();
+    // ...and it cannot be demoted to the shared account by dropping the label.
+    expect(verifyUnlockToken(`${exp}.${mac}`)).toBeNull();
   });
 });

@@ -1,10 +1,19 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import Link from 'next/link';
-import { ArrowLeft, Send, Plus, Trash2, ArrowUp, ArrowDown } from 'lucide-react';
+import {
+  ArrowLeft,
+  Send,
+  Plus,
+  Trash2,
+  ArrowUp,
+  ArrowDown,
+  AlertTriangle,
+  FileUp,
+} from 'lucide-react';
 import DashboardLayout from '@/components/layout/DashboardLayout';
 import Card from '@/components/ui/Card';
 import Input from '@/components/ui/Input';
@@ -14,13 +23,40 @@ import DatePicker from '@/components/ui/DatePicker';
 import Button from '@/components/ui/Button';
 import Switch from '@/components/ui/Switch';
 import { showToast } from '@/components/ui/Toast';
-import { cn } from '@/lib/utils';
+import { cn, formatFileSize } from '@/lib/utils';
+import {
+  describePhoneImport,
+  mergePhoneLines,
+  normalizeForDedupe,
+  parseContactsFile,
+} from '@/lib/parse-contacts';
 import { ROUTES } from '@/constants/routes';
 import { whatsappService as svc } from '@/services/whatsapp.service';
+import {
+  analyzeTemplate,
+  resolveSampleToken,
+  templateExamples,
+  tokensWithoutFallback,
+  usesSampleContact,
+  SAMPLE_CONTACT_NOTE,
+  type TemplateVarSpec,
+} from '@/lib/whatsapp-template-vars';
 import CampaignVariantBuilder, {
   type VariantDraft,
 } from '@/components/whatsapp/CampaignVariantBuilder';
-import type { WaTemplate, WaSequenceStep } from '@/types/whatsapp';
+import SegmentRulesBuilder, { usableRules } from '@/components/whatsapp/SegmentRulesBuilder';
+import TemplatePreviewBubble from '@/components/whatsapp/TemplatePreviewBubble';
+import TemplatePicker from '@/components/whatsapp/TemplatePicker';
+import { WA_UPLOAD_PAYLOAD_MAX_BYTES, WA_UPLOAD_PHONE_MAX } from '@/constants/config';
+import type {
+  WaAbMetric,
+  WaCampaignTemplateParams,
+  WaCarouselCardParams,
+  WaSegmentFilter,
+  WaSegmentRule,
+  WaSequenceStep,
+  WaTemplate,
+} from '@/types/whatsapp';
 import type { ApiError } from '@/types/api';
 
 type CampaignType = 'BROADCAST' | 'SEQUENCE';
@@ -31,6 +67,14 @@ interface StepDraft {
   templateId: string;
   delayHours: string;
   condition: WaSequenceStep['condition'];
+  /** Per-step {{n}} values; steps used to send no parameters at all. */
+  variableMapping?: string[];
+  /**
+   * The picked template itself. Kept on the row (and never sent) because the
+   * catalogue is searched server-side now — the step's parameter inputs and
+   * preview can no longer look the id up in a locally fetched list.
+   */
+  template?: WaTemplate | null;
 }
 
 const CONDITION_OPTIONS = [
@@ -39,15 +83,47 @@ const CONDITION_OPTIONS = [
   { value: 'replied', label: 'Only if they replied' },
 ];
 
-function bodyVarCount(t?: WaTemplate | null): number {
-  if (!t) return 0;
-  const comps = Array.isArray(t.components)
-    ? (t.components as Array<{ type?: string; text?: string }>)
-    : [];
-  const body = comps.find((c) => (c.type ?? '').toUpperCase() === 'BODY');
-  if (!body?.text) return 0;
-  const nums = [...body.text.matchAll(/\{\{(\d+)\}\}/g)].map((m) => Number(m[1]));
-  return nums.length ? Math.max(...nums) : 0;
+/**
+ * The wizard used to read ONLY the body’s positional {{n}} variables, so a
+ * template with a media header, a variable text header or a dynamic URL button
+ * could be selected and launched with no warning — and Meta then rejected every
+ * recipient with (#131008) Required parameter is missing. analyzeTemplate()
+ * resolves the full parameter set the send actually needs.
+ */
+const EMPTY_SPEC: TemplateVarSpec = {
+  headerFormat: 'NONE',
+  headerHasTextVar: false,
+  headerNeedsMedia: false,
+  bodyPositional: 0,
+  bodyNamed: [],
+  buttonUrlVar: false,
+  needsOtpCode: false,
+  headerNeedsLocation: false,
+  needsCouponCode: false,
+  needsLtoExpiration: false,
+  carouselCards: [],
+  none: true,
+};
+
+/**
+ * Daily unique-contact allowance implied by a Meta messaging tier ('TIER_1K' → 1000).
+ *
+ * null whenever there is no daily allowance to state: an unknown tier,
+ * 'TIER_UNLIMITED', or the per-second throughput levels ('STANDARD'/'HIGH') Meta
+ * reports for numbers on per-message pricing — those are a rate, not an allowance.
+ */
+function tierDailyLimit(tier: string | null | undefined): number | null {
+  const t = String(tier ?? '')
+    .toUpperCase()
+    .replace(/^TIER[_-]?/, '')
+    .trim();
+  if (!t || t.includes('UNLIMITED')) return null;
+  const m = t.match(/^(\d+(?:\.\d+)?)\s*([KMB]?)$/);
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const mult = m[2] === 'K' ? 1_000 : m[2] === 'M' ? 1_000_000 : m[2] === 'B' ? 1_000_000_000 : 1;
+  return Math.round(n * mult);
 }
 
 export default function NewCampaignPage() {
@@ -55,15 +131,55 @@ export default function NewCampaignPage() {
   const [campaignType, setCampaignType] = useState<CampaignType>('BROADCAST');
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [templateId, setTemplateId] = useState('');
+  // The picked broadcast template itself — the picker searches server-side, so
+  // the id alone can no longer be resolved against a locally fetched list.
+  const [selected, setSelected] = useState<WaTemplate | null>(null);
   const [audienceType, setAudienceType] = useState('segment');
   const [segmentId, setSegmentId] = useState('');
   const [tags, setTags] = useState('');
   const [optInStatus, setOptInStatus] = useState('');
+  // The advanced half of the inline filter — the same rule grammar a saved
+  // segment stores. Without it the wizard could only express "any of these tags",
+  // so "tagged mumbai AND premium", "messaged us in the last 30 days" or "did not
+  // reply to the Diwali campaign" had to be assembled outside the product.
+  const [rules, setRules] = useState<WaSegmentRule[]>([]);
+  const [ruleOp, setRuleOp] = useState<'and' | 'or'>('and');
   const [phones, setPhones] = useState('');
+  // "Upload phone numbers" was paste-only, so a 4,000-row CSV of targets had to
+  // be imported as permanent contacts and tagged just to be sent to once. The
+  // file is parsed in the browser and its numbers are merged into the SAME
+  // textarea state, so the count, the cap check and the submitted audienceFilter
+  // all stay on one source of truth.
+  const phoneFileRef = useRef<HTMLInputElement>(null);
+  const [parsingPhoneFile, setParsingPhoneFile] = useState(false);
+  /**
+   * The extra columns an uploaded file carried, keyed by `normalizeForDedupe` of
+   * the number — the same identity the merge and the server dedupe on.
+   *
+   * The textarea stays the source of truth for WHICH numbers are in the
+   * audience; this only says what else is known about them. Personalising a
+   * one-off blast was impossible without it — an order id or an appointment slot
+   * had nowhere to live, so `{{attr.order_id}}` went to Meta as a literal — and
+   * keeping the columns beside the list rather than inside it means the operator
+   * can still hand-edit the numbers.
+   *
+   * Keyed on that identity rather than on the raw string because the two do not
+   * agree: `mergePhoneLines` treats `9876543210` and `+919876543210` as one
+   * number and keeps whichever line was there already, so a raw key described a
+   * line the file never wrote and that recipient silently lost every column it
+   * came with — as did any line the operator reformatted by hand.
+   */
+  const [uploadColumns, setUploadColumns] = useState<
+    Record<string, { name?: string; vars?: Record<string, string> }>
+  >({});
   const [mapping, setMapping] = useState<string[]>([]);
   const [throttle, setThrottle] = useState('15');
   const [scheduledAt, setScheduledAt] = useState('');
+  // Hold sends outside the configured business hours. `scheduledAt` is one
+  // absolute instant, so without this a campaign armed for 10:00 local reaches an
+  // international list in the middle of the night — and night-time marketing is
+  // what drives the blocks and reports that degrade a number's quality rating.
+  const [respectBusinessHours, setRespectBusinessHours] = useState(false);
   const [steps, setSteps] = useState<StepDraft[]>([
     { templateId: '', delayHours: '0', condition: 'any' },
   ]);
@@ -72,17 +188,52 @@ export default function NewCampaignPage() {
     { label: 'Variant A', templateId: '', weight: '50' },
     { label: 'Variant B', templateId: '', weight: '50' },
   ]);
+  // A/B TEST PHASE. Blank = send to everyone at once, the old behaviour. Set it
+  // and the launch stops at that share of the audience, so a winner can be picked
+  // on real numbers and the rest sent the template that actually won.
+  const [abSamplePct, setAbSamplePct] = useState('');
+  const [abMetric, setAbMetric] = useState<WaAbMetric>('replied');
   const [recurrenceDays, setRecurrenceDays] = useState('');
+
+  const onPhoneFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setParsingPhoneFile(true);
+    try {
+      const parsed = await parseContactsFile(file);
+      if (parsed.rows.length === 0) {
+        showToast.error('No phone numbers found in that file');
+        return;
+      }
+      const merge = mergePhoneLines(phones, parsed.rows);
+      setPhones(merge.text);
+      setUploadColumns((prev) => {
+        const next = { ...prev };
+        for (const row of parsed.rows) {
+          const phone = (row.phone ?? '').trim();
+          if (!phone) continue;
+          const vars = row.attributes;
+          if (!row.name && !(vars && Object.keys(vars).length)) continue;
+          next[normalizeForDedupe(phone)] = {
+            ...(row.name ? { name: row.name } : {}),
+            ...(vars && Object.keys(vars).length ? { vars } : {}),
+          };
+        }
+        return next;
+      });
+      showToast.success(describePhoneImport(parsed, merge));
+    } catch (err) {
+      showToast.error((err as Error).message || 'Could not read that file');
+    } finally {
+      setParsingPhoneFile(false);
+      // Clear the input so re-picking the same file (after fixing it) still fires.
+      if (phoneFileRef.current) phoneFileRef.current.value = '';
+    }
+  };
 
   const isSequence = campaignType === 'SEQUENCE';
   // A/B testing only applies to broadcasts (a sequence has its own multi-step flow).
   const useAbTest = isAbTest && !isSequence;
-
-  const { data: tplData } = useQuery({
-    queryKey: ['wa-templates', 'approved'],
-    queryFn: () => svc.listTemplates({ status: 'APPROVED', limit: 100 }),
-  });
-  const templates = tplData?.data?.items ?? [];
 
   // Saved segments — when one is picked it drives the audience server-side
   // (backend applies the segment's stored filter), so the inline
@@ -93,11 +244,203 @@ export default function NewCampaignPage() {
   });
   const segments = segmentData?.data ?? [];
   const segmentOptions = segments.map((s) => ({ value: s.id, label: s.name }));
+
+  // Campaigns for the engagement rule ("did not reply to …"). Fetched only while
+  // the inline filter is on screen — a saved segment carries its own rules.
+  const { data: campaignListData } = useQuery({
+    queryKey: ['wa-campaigns', 1, 100],
+    queryFn: () => svc.listCampaigns({ page: 1, limit: 100 }),
+    enabled: audienceType === 'segment',
+  });
+  const campaignOptions = (campaignListData?.data?.items ?? []).map((c) => ({
+    value: c.id,
+    label: c.name,
+  }));
+
+  // The number's Meta messaging tier caps how many DISTINCT contacts a campaign may
+  // start a conversation with per 24h; past it Meta refuses the rest with 131056 and
+  // the number's quality rating suffers. Stating the cap while the audience is being
+  // chosen is the cheapest place to catch a 50,000-number paste on a 1K tier — the
+  // exact headroom left today is shown on the campaign page, right before Launch.
+  const { data: channelData } = useQuery({
+    queryKey: ['wa-channels'],
+    queryFn: () => svc.listChannels(),
+  });
+  const channels = channelData?.data ?? [];
+  const defaultChannel = channels.find((ch) => ch.isDefault) ?? channels[0] ?? null;
+  const dailyTierLimit = tierDailyLimit(defaultChannel?.messagingTier);
+  const pastedPhoneCount = phones.split(/\r?\n/).filter((s) => s.trim()).length;
+  const overTier =
+    audienceType === 'upload' && !!dailyTierLimit && pastedPhoneCount > dailyTierLimit;
   // A saved segment only applies to the "segment" audience source.
   const usingSavedSegment = audienceType === 'segment' && !!segmentId;
-  const selected = templates.find((t) => t.id === templateId) ?? null;
-  const varCount = bodyVarCount(selected);
-  const tplOptions = templates.map((t) => ({ value: t.id, label: `${t.name} (${t.category})` }));
+  const overPhoneCap = audienceType === 'upload' && pastedPhoneCount > WA_UPLOAD_PHONE_MAX;
+
+  /**
+   * The inline audience predicate this campaign stores. A saved segment carries
+   * its own filter server-side, so `segmentId` goes instead of this.
+   *
+   * One builder for both the sequence and the broadcast submit paths — they used
+   * to hold byte-identical copies, and a key added to one would silently not
+   * exist in the other.
+   */
+  const buildAudienceFilter = (): WaSegmentFilter | undefined => {
+    if (usingSavedSegment) return undefined;
+    if (audienceType !== 'segment') {
+      const lines = phones
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      // `recipients` only when the file actually brought columns with it —
+      // otherwise the older `phones` shape keeps travelling, which is what every
+      // campaign created before per-recipient columns existed still carries.
+      const columnsFor = (line: string) => uploadColumns[normalizeForDedupe(line)];
+      const withColumns = lines.filter((line) => columnsFor(line));
+      if (withColumns.length === 0) return { phones: lines };
+      return {
+        recipients: lines.map((line) => ({ phone: line, ...(columnsFor(line) ?? {}) })),
+      };
+    }
+    const filter: WaSegmentFilter = {
+      tags: tags
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+      optInStatus: optInStatus || undefined,
+    };
+    // A half-filled rule row narrows nothing — the backend ignores it — so it is
+    // dropped rather than stored as a condition that reads as active.
+    const finished = usableRules(rules);
+    if (finished.length > 0) {
+      filter.rules = finished;
+      if (finished.length > 1) filter.op = ruleOp;
+    }
+    return filter;
+  };
+  const templateId = selected?.id ?? '';
+  const spec = selected ? analyzeTemplate(selected) : EMPTY_SPEC;
+  const varCount = spec.bodyPositional;
+  /**
+   * Live audience size + cost, recomputed as the filters change.
+   *
+   * Debounced on a serialised copy of the audience so typing a tag does not
+   * fire a COUNT over the contacts table per keystroke, and keyed on that same
+   * string so React Query caches an audience the operator flips back to.
+   * Stateless server-side: previewing an uploaded list writes no contact rows.
+   */
+  const previewTemplateId = useAbTest
+    ? variants[0]?.templateId
+    : isSequence
+      ? steps[0]?.templateId
+      : templateId;
+  const previewFilter = buildAudienceFilter();
+  const previewKey = JSON.stringify({
+    templateId: previewTemplateId,
+    audienceType,
+    audienceFilter: previewFilter,
+    segmentId: usingSavedSegment ? segmentId : undefined,
+  });
+  /**
+   * Size of the personalised audience this will POST, in UTF-8 bytes.
+   *
+   * The row count does not bound it — 20,000 rows are ~310 KB as bare numbers, ~2 MB
+   * with a name and two columns each, and several times that for a wide CSV — so a
+   * list that passes the row cap can still be refused by the request parser, and a
+   * 413 is something the wizard can only report as "Failed to create campaign".
+   *
+   * Counted in bytes rather than characters because these lists routinely carry
+   * non-Latin names, which a code-unit count under-reads by up to 3×.
+   */
+  const uploadPayloadBytes = previewFilter?.recipients
+    ? new TextEncoder().encode(JSON.stringify(previewFilter.recipients)).length
+    : 0;
+  const overPayloadCap = uploadPayloadBytes > WA_UPLOAD_PAYLOAD_MAX_BYTES;
+  const [debouncedPreviewKey, setDebouncedPreviewKey] = useState(previewKey);
+  useEffect(() => {
+    const id = window.setTimeout(() => setDebouncedPreviewKey(previewKey), 400);
+    return () => window.clearTimeout(id);
+  }, [previewKey]);
+  const canPreviewAudience =
+    !!previewTemplateId &&
+    (usingSavedSegment || audienceType === 'segment' || pastedPhoneCount > 0) &&
+    !overPhoneCap &&
+    !overPayloadCap;
+  const previewQuery = useQuery({
+    queryKey: ['wa-audience-preview', debouncedPreviewKey],
+    queryFn: () =>
+      svc.previewAudienceDraft({
+        templateId: previewTemplateId,
+        audienceType: audienceType as 'segment' | 'upload' | 'manual',
+        audienceFilter: previewFilter,
+        ...(usingSavedSegment ? { segmentId } : {}),
+      }),
+    // Gated on the live audience matching the debounced snapshot the key is made
+    // of. Without that equality the request would answer for an audience the
+    // cache key does not describe, and the wrong count would then be served to
+    // everyone who flips back to that filter.
+    enabled: canPreviewAudience && debouncedPreviewKey === previewKey,
+    staleTime: 30_000,
+  });
+  /**
+   * The sample values approved with the template, shown under each mapping row.
+   *
+   * A mapping slot is labelled {{1}} and nothing else, so which sentence
+   * position it fills was only discoverable from the preview at the bottom. The
+   * approved example says what the slot is FOR — and a transposed broadcast
+   * mapping reaches the whole audience at once.
+   */
+  const examples = selected ? templateExamples(selected) : null;
+  const [templateParams, setTemplateParams] = useState<WaCampaignTemplateParams>({});
+  /** Every campaign-level parameter that is a plain string input. */
+  type StringParam = Exclude<keyof WaCampaignTemplateParams, 'ltoExpirationMs' | 'carouselCards'>;
+  const setParam = (k: StringParam, v: string) =>
+    setTemplateParams((p) => ({ ...p, [k]: v || undefined }));
+  /** One carousel card's campaign-wide values, by card index. */
+  const cardParam = (i: number): WaCarouselCardParams => templateParams.carouselCards?.[i] ?? {};
+  const setCardParam = (i: number, patch: Partial<WaCarouselCardParams>) =>
+    setTemplateParams((p) => {
+      const next = [...(p.carouselCards ?? [])];
+      while (next.length <= i) next.push({});
+      next[i] = { ...next[i], ...patch };
+      return { ...p, carouselCards: next };
+    });
+  /**
+   * The first thing missing from the carousel cards, as a sentence to show.
+   *
+   * Meta refuses the WHOLE message for one empty card parameter, so a broadcast
+   * with a half-filled carousel fails for every recipient. The launch gate
+   * refuses it too, but by then the campaign has been drafted and possibly
+   * scheduled — this is the same answer, given while the form is still open.
+   */
+  const carouselGap = (): string | null => {
+    for (const [i, card] of spec.carouselCards.entries()) {
+      const values = cardParam(i);
+      if (!values.headerMediaUrl?.trim()) {
+        return `Card ${i + 1} needs ${card.headerFormat === 'VIDEO' ? 'a video' : 'an image'} URL`;
+      }
+      for (let n = 0; n < card.bodyPositional; n += 1) {
+        if (!(values.bodyParams?.[n] ?? '').trim()) {
+          return `Card ${i + 1} has no value for {{${n + 1}}} — Meta refuses an empty parameter`;
+        }
+      }
+      if (card.buttonUrlVar && !values.buttonUrlParam?.trim()) {
+        return `Card ${i + 1} needs the value for its link button`;
+      }
+    }
+    return null;
+  };
+  // Held as the datetime-local string the input produces and converted to epoch
+  // ms only on submit, exactly as the inbox composer does it.
+  const [ltoExpiresAt, setLtoExpiresAt] = useState('');
+  // Body values as they will be sent, one slot per {{n}} — blank slots included
+  // so the preview can show which placeholder is still unfilled.
+  const previewMapping = Array.from({ length: varCount }, (_, i) => mapping[i] ?? '');
+  // Slots the operator has left empty, and slots whose token can resolve to
+  // nothing. Both end as an empty parameter, which Meta refuses outright.
+  const blankMapping = previewMapping
+    .map((v, i) => (v.trim() ? null : i + 1))
+    .filter((n): n is number => n !== null);
+  const riskyMapping = tokensWithoutFallback(previewMapping);
 
   const updateStep = (index: number, patch: Partial<StepDraft>) =>
     setSteps((prev) => prev.map((s, i) => (i === index ? { ...s, ...patch } : s)));
@@ -133,25 +476,13 @@ export default function NewCampaignPage() {
           templateId: s.templateId,
           delayHours: Math.max(0, parseInt(s.delayHours, 10) || 0),
           condition: s.condition,
+          // Per-step parameters. Steps used to send none, so a step whose template
+          // had placeholders went out blank.
+          ...(s.variableMapping?.length ? { variableMapping: s.variableMapping } : {}),
         }));
         // A saved segment drives the audience server-side, so we omit the
         // manual inline filter and pass segmentId instead.
-        const audienceFilter = usingSavedSegment
-          ? undefined
-          : audienceType === 'segment'
-            ? {
-                tags: tags
-                  .split(',')
-                  .map((s) => s.trim())
-                  .filter(Boolean),
-                optInStatus: optInStatus || undefined,
-              }
-            : {
-                phones: phones
-                  .split(/\r?\n/)
-                  .map((s) => s.trim())
-                  .filter(Boolean),
-              };
+        const audienceFilter = buildAudienceFilter();
         return svc.createCampaign({
           name: name.trim(),
           description: description.trim() || undefined,
@@ -161,27 +492,14 @@ export default function NewCampaignPage() {
           ...(usingSavedSegment ? { segmentId } : {}),
           throttlePerSec: parseInt(throttle, 10) || 15,
           scheduledAt: scheduledAt ? new Date(scheduledAt).toISOString() : undefined,
+          respectBusinessHours,
           type: 'SEQUENCE',
           steps: sequenceSteps,
           ...recurrenceField,
         });
       }
-      const audienceFilter = usingSavedSegment
-        ? undefined
-        : audienceType === 'segment'
-          ? {
-              tags: tags
-                .split(',')
-                .map((s) => s.trim())
-                .filter(Boolean),
-              optInStatus: optInStatus || undefined,
-            }
-          : {
-              phones: phones
-                .split(/\r?\n/)
-                .map((s) => s.trim())
-                .filter(Boolean),
-            };
+      const audienceFilter = buildAudienceFilter();
+      const samplePct = Math.min(99, Math.max(0, parseInt(abSamplePct, 10) || 0));
       const abFields = useAbTest
         ? {
             isAbTest: true,
@@ -189,7 +507,12 @@ export default function NewCampaignPage() {
               label: v.label.trim() || `Variant ${String.fromCharCode(65 + i)}`,
               templateId: v.templateId,
               weight: Math.max(1, parseInt(v.weight, 10) || 1),
+              ...(v.variableMapping?.length ? { variableMapping: v.variableMapping } : {}),
             })),
+            // Blank/0 means "send to everyone now"; a percentage holds the rest
+            // back so the winner can be decided before they are messaged.
+            abTestSamplePct: samplePct > 0 ? samplePct : null,
+            abTestMetric: abMetric,
           }
         : {};
       return svc.createCampaign({
@@ -201,11 +524,43 @@ export default function NewCampaignPage() {
         audienceType,
         audienceFilter,
         ...(usingSavedSegment ? { segmentId } : {}),
+        templateParams: useAbTest
+          ? undefined
+          : {
+              ...templateParams,
+              // Meta needs the media KIND alongside the URL; it comes from the
+              // template's own header format, not from operator input.
+              ...(spec.headerNeedsMedia
+                ? {
+                    headerMediaType: spec.headerFormat.toLowerCase() as
+                      | 'image'
+                      | 'video'
+                      | 'document',
+                  }
+                : {}),
+              ...(spec.needsLtoExpiration && ltoExpiresAt
+                ? { ltoExpirationMs: new Date(ltoExpiresAt).getTime() }
+                : {}),
+              // Carousel cards, normalised to the number of cards the template
+              // was approved with — Meta matches them by card_index, so a stray
+              // extra entry would fail the send for the whole audience.
+              ...(spec.carouselCards.length
+                ? {
+                    carouselCards: spec.carouselCards.map((card, i) => ({
+                      ...cardParam(i),
+                      headerMediaType: (card.headerFormat === 'VIDEO' ? 'video' : 'image') as
+                        | 'image'
+                        | 'video',
+                    })),
+                  }
+                : {}),
+            },
         variableMapping: useAbTest
           ? undefined
           : Array.from({ length: varCount }, (_, i) => mapping[i] || ''),
         throttlePerSec: parseInt(throttle, 10) || 15,
         scheduledAt: scheduledAt ? new Date(scheduledAt).toISOString() : undefined,
+        respectBusinessHours,
         type: 'BROADCAST',
         ...abFields,
         ...recurrenceField,
@@ -226,19 +581,84 @@ export default function NewCampaignPage() {
 
   const submit = () => {
     if (!name.trim()) return showToast.error('Campaign name is required');
+    // A campaign carries ONE card set, filled in against its main template, so a
+    // carousel cannot be a drip step or an A/B variant: those carry a body
+    // mapping and nothing else, and the launch gate refuses them for that reason.
+    const carouselStep = steps.findIndex(
+      (s) => s.template && analyzeTemplate(s.template).carouselCards.length > 0,
+    );
+    if (isSequence && carouselStep >= 0) {
+      return showToast.error(
+        `Step ${carouselStep + 1} is a carousel template. A campaign can only supply cards for its main template — send the carousel as its own broadcast.`,
+      );
+    }
+    const cardGap = useAbTest || isSequence ? null : carouselGap();
     if (isSequence) {
       if (steps.length === 0) return showToast.error('Add at least one sequence step');
       if (steps.some((s) => !s.templateId))
         return showToast.error('Every sequence step needs an approved template');
+      // Same empty-parameter trap as the broadcast mapping below: Meta refuses
+      // the whole message, so a blank slot fails the step for every recipient.
+      const badStep = steps.findIndex((s) => (s.variableMapping ?? []).some((v) => !v.trim()));
+      if (badStep >= 0)
+        return showToast.error(
+          `Step ${badStep + 1} has a variable with no value — pick a token or type a literal`,
+        );
     } else if (useAbTest) {
       if (variants.length < 2) return showToast.error('An A/B test needs at least two variants');
       if (variants.some((v) => !v.templateId))
         return showToast.error('Every variant needs an approved template');
+      const badVariant = variants.find((v) => (v.variableMapping ?? []).some((m) => !m?.trim()));
+      if (badVariant)
+        return showToast.error(
+          `${badVariant.label || 'A variant'} has a variable with no value — pick a token or type a literal`,
+        );
+    } else if (!useAbTest && spec.headerNeedsMedia && !templateParams.headerMediaUrl) {
+      return showToast.error('This template has a media header — add the media URL');
+    } else if (!useAbTest && spec.headerHasTextVar && !templateParams.headerText) {
+      return showToast.error('This template has a variable header — fill in the header text');
+    } else if (!useAbTest && spec.buttonUrlVar && !templateParams.buttonUrlParam) {
+      return showToast.error('This template has a dynamic URL button — add its value');
+    } else if (!useAbTest && spec.needsCouponCode && !templateParams.couponCode) {
+      return showToast.error('This template has a copy-code button — add the coupon code');
+    } else if (!useAbTest && spec.needsLtoExpiration && !ltoExpiresAt) {
+      return showToast.error('This is a limited-time offer — set when it expires');
+    } else if (
+      !useAbTest &&
+      spec.needsLtoExpiration &&
+      new Date(ltoExpiresAt).getTime() <= Date.now()
+    ) {
+      return showToast.error('The offer expiry is in the past — the countdown would show as over');
+    } else if (cardGap) {
+      return showToast.error(cardGap);
+    } else if (!useAbTest && spec.bodyNamed.length > 0) {
+      return showToast.error(
+        'This template uses named variables, which campaigns cannot personalise. Use a template with {{1}} style variables.',
+      );
     } else if (!templateId) {
       return showToast.error('Pick an approved template');
+    } else if (blankMapping.length > 0) {
+      // An empty parameter is not "unpersonalised", it is a hard Meta rejection
+      // for every recipient — so a forgotten mapping row used to fail the entire
+      // audience, and "Retry failed" re-failed it identically.
+      return showToast.error(
+        `Variable {{${blankMapping[0]}}} has no value — pick a token or type a literal`,
+      );
     }
     if (audienceType === 'upload' && !phones.trim())
       return showToast.error('Add phone numbers for the upload audience');
+    // Caught here rather than at the API, which can only answer with a 413 the
+    // wizard used to surface as an unexplained "Failed to create campaign".
+    if (overPhoneCap)
+      return showToast.error(
+        `${pastedPhoneCount.toLocaleString('en-IN')} numbers is over the ${WA_UPLOAD_PHONE_MAX.toLocaleString('en-IN')} limit — split the list across campaigns, or import them as contacts and target a segment`,
+      );
+    // The other bound on the same list. The columns are what make a body big, and
+    // the API can only answer an over-large one with a 413.
+    if (overPayloadCap)
+      return showToast.error(
+        `The columns on this list come to ${formatFileSize(uploadPayloadBytes)}, over the ${formatFileSize(WA_UPLOAD_PAYLOAD_MAX_BYTES)} the API accepts — upload a file with fewer columns, or split the list across campaigns`,
+      );
     mutation.mutate();
   };
 
@@ -316,17 +736,24 @@ export default function NewCampaignPage() {
                   />
                 </div>
                 {!useAbTest && (
-                  <Select
+                  <TemplatePicker
                     label="Template (approved only)"
-                    options={tplOptions}
                     value={templateId}
-                    onChange={(v) => {
-                      setTemplateId(v);
+                    onChange={(t) => {
+                      setSelected(t);
+                      // A different template has a different placeholder count,
+                      // so a carried-over mapping would fill the wrong slots.
                       setMapping([]);
+                      // Same reasoning for the carousel cards, which ride on
+                      // templateParams: leaving them meant a template with no
+                      // carousel shipped the previous template's cards, and Meta
+                      // rejected every recipient.
+                      setTemplateParams((p) => {
+                        const next = { ...p };
+                        delete next.carouselCards;
+                        return next;
+                      });
                     }}
-                    placeholder={
-                      templates.length ? 'Select a template' : 'No approved templates — sync first'
-                    }
                   />
                 )}
                 {useAbTest && (
@@ -340,35 +767,222 @@ export default function NewCampaignPage() {
                     </div>
                     <CampaignVariantBuilder
                       variants={variants}
-                      templateOptions={tplOptions}
-                      hasTemplates={templates.length > 0}
                       onChange={updateVariant}
                       onAdd={addVariant}
                       onRemove={removeVariant}
                     />
+                    {/* The test PHASE. Without it an A/B campaign splits the whole
+                        audience and there is nobody left to send the winner to —
+                        which is the thing an A/B test exists for. */}
+                    <div className="grid gap-4 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-3 sm:grid-cols-2">
+                      <Input
+                        type="number"
+                        min={1}
+                        max={99}
+                        label="Test on % of the audience"
+                        value={abSamplePct}
+                        onChange={(e) => setAbSamplePct(e.target.value)}
+                        placeholder="Leave blank to send to everyone"
+                      />
+                      <Select
+                        label="Decide the winner on"
+                        options={[
+                          { value: 'replied', label: 'Reply rate' },
+                          { value: 'read', label: 'Read rate' },
+                          { value: 'delivered', label: 'Delivery rate' },
+                        ]}
+                        value={abMetric}
+                        onChange={(v) => setAbMetric(v as WaAbMetric)}
+                        clearable={false}
+                      />
+                      <p className="text-xs text-[var(--text-muted)] sm:col-span-2">
+                        {abSamplePct.trim()
+                          ? `Launch sends to ${abSamplePct.trim()}% of the audience. Pick the winner on the campaign page, then release the remaining ${Math.max(0, 100 - (parseInt(abSamplePct, 10) || 0))}% to it.`
+                          : 'The whole audience is split across the variants at launch, so there is no remainder to send the winner to.'}
+                      </p>
+                    </div>
+                  </div>
+                )}
+                {!useAbTest &&
+                  (spec.headerNeedsMedia ||
+                    spec.headerHasTextVar ||
+                    spec.buttonUrlVar ||
+                    spec.needsCouponCode ||
+                    spec.needsLtoExpiration) && (
+                    <div className="space-y-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-3">
+                      <p className="text-xs font-semibold text-[var(--text-muted)]">
+                        Template parameters — the same for every recipient
+                      </p>
+                      {spec.headerNeedsMedia && (
+                        <Input
+                          label={`${spec.headerFormat.charAt(0)}${spec.headerFormat.slice(1).toLowerCase()} header URL`}
+                          value={templateParams.headerMediaUrl ?? ''}
+                          onChange={(e) => setParam('headerMediaUrl', e.target.value)}
+                          placeholder="https://example.com/banner.jpg"
+                        />
+                      )}
+                      {spec.headerHasTextVar && (
+                        <Input
+                          label="Header text"
+                          value={templateParams.headerText ?? ''}
+                          onChange={(e) => setParam('headerText', e.target.value)}
+                        />
+                      )}
+                      {spec.buttonUrlVar && (
+                        <Input
+                          label="URL button value"
+                          value={templateParams.buttonUrlParam ?? ''}
+                          onChange={(e) => setParam('buttonUrlParam', e.target.value)}
+                          placeholder="order/12345"
+                        />
+                      )}
+                      {spec.needsCouponCode && (
+                        <Input
+                          label="Coupon code"
+                          value={templateParams.couponCode ?? ''}
+                          onChange={(e) => setParam('couponCode', e.target.value)}
+                          placeholder="SAVE20"
+                          helperText="Shown on the copy-code button. The whole audience gets this one code."
+                        />
+                      )}
+                      {spec.needsLtoExpiration && (
+                        <Input
+                          type="datetime-local"
+                          label="Offer expires"
+                          value={ltoExpiresAt}
+                          onChange={(e) => setLtoExpiresAt(e.target.value)}
+                          helperText="WhatsApp shows a live countdown to this time. Checked again at launch — a campaign scheduled for next week cannot carry yesterday's expiry."
+                        />
+                      )}
+                    </div>
+                  )}
+                {/* CAROUSEL cards. Campaign-wide, like the header media above:
+                    every recipient gets the same card images and card text, and
+                    only the bubble's body is personalised per recipient. */}
+                {!useAbTest && spec.carouselCards.length > 0 && (
+                  <div className="space-y-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-3">
+                    <p className="text-xs font-semibold text-[var(--text-muted)]">
+                      Carousel cards — {spec.carouselCards.length} card
+                      {spec.carouselCards.length === 1 ? '' : 's'}, the same for every recipient
+                    </p>
+                    <p className="text-[11px] text-[var(--text-muted)]">
+                      Every card needs its own media before this campaign can launch: Meta refuses
+                      the whole message when a card parameter is missing, so one blank card fails
+                      the entire audience.
+                    </p>
+                    {spec.carouselCards.map((card, i) => {
+                      const values = cardParam(i);
+                      const kind = card.headerFormat === 'VIDEO' ? 'video' : 'image';
+                      return (
+                        <div
+                          key={i}
+                          className="space-y-2 rounded-lg border border-[var(--border)] bg-[var(--bg)] p-2.5"
+                        >
+                          <p className="text-xs font-semibold text-[var(--text)]">
+                            Card {i + 1}
+                            {card.bodyText && (
+                              <span className="ml-1.5 font-normal text-[var(--text-muted)]">
+                                {card.bodyText}
+                              </span>
+                            )}
+                          </p>
+                          <Input
+                            label={`Card ${kind} URL`}
+                            value={values.headerMediaUrl ?? ''}
+                            onChange={(e) => setCardParam(i, { headerMediaUrl: e.target.value })}
+                            placeholder={`https://example.com/card-${i + 1}.${
+                              kind === 'video' ? 'mp4' : 'jpg'
+                            }`}
+                          />
+                          {Array.from({ length: card.bodyPositional }, (_, n) => (
+                            <Input
+                              key={n}
+                              label={`Card ${i + 1} {{${n + 1}}}`}
+                              value={values.bodyParams?.[n] ?? ''}
+                              helperText={
+                                card.bodyExamples[n]
+                                  ? `Approved example: ${card.bodyExamples[n]}`
+                                  : undefined
+                              }
+                              onChange={(e) =>
+                                setCardParam(i, {
+                                  bodyParams: Object.assign([...(values.bodyParams ?? [])], {
+                                    [n]: e.target.value,
+                                  }),
+                                })
+                              }
+                            />
+                          ))}
+                          {card.buttonUrlVar && (
+                            <Input
+                              label={`Card ${i + 1} button link value`}
+                              value={values.buttonUrlParam ?? ''}
+                              onChange={(e) => setCardParam(i, { buttonUrlParam: e.target.value })}
+                              placeholder="summer-sale"
+                            />
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
                 {!useAbTest && varCount > 0 && (
                   <div className="space-y-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-3">
                     <p className="text-xs font-semibold text-[var(--text-muted)]">
-                      Variable mapping — type a literal or {'{{name}}'} / {'{{phone}}'}
+                      Variable mapping — type a literal or {'{{name}}'} / {'{{phone}}'} /{' '}
+                      {'{{attr.city}}'}
                     </p>
-                    {Array.from({ length: varCount }, (_, i) => (
-                      <Input
-                        key={i}
-                        label={`{{${i + 1}}}`}
-                        value={mapping[i] ?? ''}
-                        onChange={(e) =>
-                          setMapping((p) => {
-                            const next = [...p];
-                            next[i] = e.target.value;
-                            return next;
-                          })
-                        }
-                        placeholder="{{name}}"
-                      />
-                    ))}
+                    {/* Meta rejects an empty parameter and fails the whole
+                        message, and most imported contacts have no name — so the
+                        fallback form is spelled out here rather than left to be
+                        discovered from a wall of failed recipients. */}
+                    <p className="text-[11px] text-[var(--text-muted)]">
+                      Add a fallback after a pipe — {'{{name|there}}'} — for anyone whose value is
+                      missing. Imported columns are available as {'{{attr.<column>}}'}.
+                    </p>
+                    {Array.from({ length: varCount }, (_, i) => {
+                      const sample = examples?.body[String(i + 1)];
+                      return (
+                        <Input
+                          key={i}
+                          label={`{{${i + 1}}}`}
+                          value={mapping[i] ?? ''}
+                          onChange={(e) =>
+                            setMapping((p) => {
+                              const next = [...p];
+                              next[i] = e.target.value;
+                              return next;
+                            })
+                          }
+                          placeholder="{{name|there}}"
+                          helperText={sample ? `Approved example: ${sample}` : undefined}
+                        />
+                      );
+                    })}
+                    {riskyMapping.length > 0 && (
+                      <p className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
+                        {riskyMapping.join(', ')} has no fallback. Any recipient missing that value
+                        gets an empty parameter, which Meta refuses — that message fails. Write it
+                        as {'{{name|there}}'} to be safe.
+                      </p>
+                    )}
                   </div>
+                )}
+                {/* A broadcast reaches the whole audience at once, so a
+                    transposed mapping is unrecoverable — show the finished
+                    message before the draft is even created. */}
+                {!useAbTest && (
+                  <TemplatePreviewBubble
+                    template={selected}
+                    values={{
+                      bodyParams: previewMapping.map(resolveSampleToken),
+                      headerText: templateParams.headerText,
+                      headerMediaUrl: templateParams.headerMediaUrl,
+                      buttonUrlParam: templateParams.buttonUrlParam,
+                      carouselCards: templateParams.carouselCards,
+                    }}
+                    note={usesSampleContact(previewMapping) ? SAMPLE_CONTACT_NOTE : undefined}
+                  />
                 )}
               </>
             )}
@@ -381,8 +995,9 @@ export default function NewCampaignPage() {
               <div>
                 <h2 className="text-base font-semibold text-[var(--text)]">Sequence steps</h2>
                 <p className="mt-0.5 text-xs text-[var(--text-muted)]">
-                  Steps run in order. Step 1 sends on launch (delay 0); each later step waits its
-                  delay and only sends if its condition holds.
+                  Steps run in order. Each step waits its delay, then sends only if its condition
+                  holds. The delay on step 1 is counted from launch — leave it at 0 to send the
+                  moment the campaign starts.
                 </p>
               </div>
               <Button
@@ -437,13 +1052,17 @@ export default function NewCampaignPage() {
                   </div>
                   <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                     <div className="sm:col-span-2 lg:col-span-1">
-                      <Select
+                      <TemplatePicker
                         label="Template"
-                        options={tplOptions}
                         value={step.templateId}
-                        onChange={(v) => updateStep(i, { templateId: v })}
-                        placeholder={
-                          templates.length ? 'Select a template' : 'No approved templates'
+                        onChange={(t) =>
+                          updateStep(i, {
+                            templateId: t?.id ?? '',
+                            template: t,
+                            // Placeholders differ per template — clear rather
+                            // than send the old values in the new slots.
+                            variableMapping: [],
+                          })
                         }
                       />
                     </div>
@@ -453,6 +1072,7 @@ export default function NewCampaignPage() {
                       min={0}
                       value={step.delayHours}
                       onChange={(e) => updateStep(i, { delayHours: e.target.value })}
+                      helperText={i === 0 ? 'Counted from launch' : 'After the previous step'}
                     />
                     <Select
                       label="Condition"
@@ -464,6 +1084,50 @@ export default function NewCampaignPage() {
                       clearable={false}
                     />
                   </div>
+                  {(() => {
+                    // Per-step template parameters. A drip step used to send NO
+                    // parameters, so a step whose template had {{n}} placeholders went
+                    // out blank — or was rejected by Meta when they were required.
+                    const stepTpl = step.templateId ? (step.template ?? null) : null;
+                    const stepSpec = stepTpl ? analyzeTemplate(stepTpl) : null;
+                    const n = stepSpec?.bodyPositional ?? 0;
+                    if (!stepTpl) return null;
+                    const stepMapping = Array.from(
+                      { length: n },
+                      (_, vi) => step.variableMapping?.[vi] ?? '',
+                    );
+                    return (
+                      <>
+                        {n > 0 && (
+                          <div className="mt-3 space-y-2 rounded-lg border border-[var(--border)] bg-[var(--bg)] p-3">
+                            <p className="text-xs font-semibold text-[var(--text-muted)]">
+                              Step {i + 1} variables — a literal, or {'{{name|there}}'} /{' '}
+                              {'{{phone}}'} / {'{{attr.city}}'}
+                            </p>
+                            {Array.from({ length: n }, (_, vi) => (
+                              <Input
+                                key={vi}
+                                label={`{{${vi + 1}}}`}
+                                value={step.variableMapping?.[vi] ?? ''}
+                                placeholder="{{name|there}}"
+                                onChange={(e) => {
+                                  const next = [...(step.variableMapping ?? [])];
+                                  next[vi] = e.target.value;
+                                  updateStep(i, { variableMapping: next });
+                                }}
+                              />
+                            ))}
+                          </div>
+                        )}
+                        <TemplatePreviewBubble
+                          className="mt-3"
+                          template={stepTpl}
+                          values={{ bodyParams: stepMapping.map(resolveSampleToken) }}
+                          note={usesSampleContact(stepMapping) ? SAMPLE_CONTACT_NOTE : undefined}
+                        />
+                      </>
+                    );
+                  })()}
                 </div>
               ))}
             </div>
@@ -532,9 +1196,42 @@ export default function NewCampaignPage() {
                   />
                 </div>
               )}
+              {!usingSavedSegment && (
+                <div className="border-t border-[var(--border)] pt-4">
+                  <SegmentRulesBuilder
+                    rules={rules}
+                    op={ruleOp}
+                    onChange={setRules}
+                    onOpChange={setRuleOp}
+                    campaignOptions={campaignOptions}
+                  />
+                </div>
+              )}
             </div>
           ) : (
             <div className="mt-4">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs text-[var(--text-muted)]">
+                  Upload a CSV, Excel (.xlsx), JSON or vCard file, or paste the numbers below — both
+                  fill the same list, and nothing is saved as a contact.
+                </p>
+                <input
+                  ref={phoneFileRef}
+                  type="file"
+                  accept=".csv,.xlsx,.xls,.json,.vcf,text/csv,application/json,text/vcard"
+                  onChange={onPhoneFile}
+                  className="hidden"
+                />
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  leftIcon={<FileUp className="h-4 w-4" />}
+                  isLoading={parsingPhoneFile}
+                  onClick={() => phoneFileRef.current?.click()}
+                >
+                  Upload a file
+                </Button>
+              </div>
               <Textarea
                 label="Phone numbers (one per line, with country code)"
                 value={phones}
@@ -542,7 +1239,95 @@ export default function NewCampaignPage() {
                 rows={6}
                 placeholder={'+919876543210\n+14155550123'}
               />
+              {/* The list rides inside the JSON body, so it is capped server-side.
+                  An over-large paste used to come back as a bare 413 rendered as
+                  "Failed to create campaign" — no number, nothing to act on. */}
+              <p
+                className={cn(
+                  'mt-1.5 text-xs',
+                  overPhoneCap || overPayloadCap
+                    ? 'text-[var(--error)]'
+                    : 'text-[var(--text-muted)]',
+                )}
+              >
+                {pastedPhoneCount.toLocaleString('en-IN')}{' '}
+                {pastedPhoneCount === 1 ? 'number' : 'numbers'}
+                {/* Only an uploaded file brings columns, and they are what push a
+                    body past the limit — so the size is on screen as soon as
+                    there are any, rather than being discovered by a failed
+                    submit. */}
+                {uploadPayloadBytes > 0 && ` · ${formatFileSize(uploadPayloadBytes)} of columns`} ·{' '}
+                {overPhoneCap
+                  ? `over the ${WA_UPLOAD_PHONE_MAX.toLocaleString('en-IN')} limit — split the list across campaigns, or import the numbers as contacts and target them with a segment`
+                  : overPayloadCap
+                    ? `over the ${formatFileSize(WA_UPLOAD_PAYLOAD_MAX_BYTES)} the API accepts — upload a file with fewer columns, or split the list across campaigns`
+                    : `max ${WA_UPLOAD_PHONE_MAX.toLocaleString('en-IN')}`}
+              </p>
             </div>
+          )}
+          {/* LIVE AUDIENCE SIZE + COST.
+              The count was only reachable after the draft existed, so the
+              operator picked tags and an opt-in status blind, submitted, and only
+              then learned whether this was three people or three hundred
+              thousand — and the edit modal cannot change audience fields, so
+              fixing it meant starting again. */}
+          <div className="mt-4 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-3">
+            {!canPreviewAudience ? (
+              <p className="text-xs text-[var(--text-muted)]">
+                Pick a template and an audience to see how many people this reaches and what it will
+                cost.
+              </p>
+            ) : previewQuery.isPending ? (
+              <p className="text-xs text-[var(--text-muted)]">Counting the audience…</p>
+            ) : previewQuery.isError ? (
+              <p className="text-xs text-[var(--error)]">
+                Could not size this audience —{' '}
+                {(previewQuery.error as unknown as ApiError)?.message ?? 'try again'}.
+              </p>
+            ) : (
+              <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+                <p className="text-sm font-semibold text-[var(--text)]">
+                  {(previewQuery.data?.data?.count ?? 0).toLocaleString('en-IN')} eligible recipient
+                  {previewQuery.data?.data?.count === 1 ? '' : 's'}
+                </p>
+                <p className="text-xs text-[var(--text-muted)]">
+                  estimated cost ₹
+                  {((previewQuery.data?.data?.estimatedCostPaise ?? 0) / 100).toLocaleString(
+                    'en-IN',
+                    { minimumFractionDigits: 2, maximumFractionDigits: 2 },
+                  )}
+                </p>
+                {previewQuery.data?.data?.exceedsTier && (
+                  <p className="flex items-center gap-1 text-xs text-amber-700">
+                    <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                    larger than today’s remaining Meta allowance — it will spread over several days
+                  </p>
+                )}
+                {(previewQuery.data?.data?.blankVariables ?? []).map((v) => (
+                  <p key={v.index} className="text-xs text-amber-700">
+                    {v.blankCount.toLocaleString('en-IN')} of them resolve {`{{${v.index}}}`} (
+                    {v.token}) to nothing — Meta fails the whole message on an empty parameter
+                  </p>
+                ))}
+              </div>
+            )}
+          </div>
+          {dailyTierLimit !== null && (
+            <p
+              className={cn(
+                'mt-4 flex items-start gap-1.5 text-xs',
+                overTier ? 'text-amber-700' : 'text-[var(--text-muted)]',
+              )}
+            >
+              <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" />
+              <span>
+                This number’s Meta messaging tier allows {dailyTierLimit.toLocaleString('en-IN')}{' '}
+                new contacts every 24 hours
+                {overTier
+                  ? ` — the ${pastedPhoneCount.toLocaleString('en-IN')} numbers above will go out over about ${Math.ceil(pastedPhoneCount / dailyTierLimit)} days.`
+                  : '; a bigger audience is sent over consecutive days rather than failing at Meta.'}
+              </span>
+            </p>
           )}
         </Card>
 
@@ -568,6 +1353,14 @@ export default function NewCampaignPage() {
               value={recurrenceDays}
               onChange={(e) => setRecurrenceDays(e.target.value)}
               placeholder="0"
+            />
+          </div>
+          <div className="mt-4">
+            <Switch
+              label="Only send during business hours"
+              description="Holds this campaign (and its drip steps) outside the business hours set in WhatsApp settings, releasing it when the next window opens. Recipients stay queued — nobody is dropped."
+              checked={respectBusinessHours}
+              onChange={(e) => setRespectBusinessHours(e.target.checked)}
             />
           </div>
           <p className="mt-2 text-xs text-[var(--text-muted)]">

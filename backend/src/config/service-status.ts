@@ -23,7 +23,7 @@ const services: Map<string, ServiceInfo> = new Map();
 // BigQuery, and 17 job-board queues) that no longer exist here.
 const SERVICE_CATEGORIES: Record<string, string[]> = {
   core: ['Express Server', 'Socket.IO', 'Compression', 'Cookie Parser'],
-  database: ['PostgreSQL (Prisma)', 'Redis', 'BullMQ Job Queue'],
+  database: ['PostgreSQL (Prisma)', 'Search Indexes', 'Redis', 'BullMQ Job Queue'],
   security: [
     'Helmet',
     'CORS',

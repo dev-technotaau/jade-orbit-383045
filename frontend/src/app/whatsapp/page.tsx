@@ -1,6 +1,14 @@
 'use client';
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import {
   Search,
@@ -27,9 +35,15 @@ import {
   Archive,
   ArchiveRestore,
   Star,
+  Hourglass,
   Copy,
   Trash2,
+  UserCog,
+  ShieldCheck,
+  Paperclip,
+  WifiOff,
 } from 'lucide-react';
+import Link from 'next/link';
 import DashboardLayout from '@/components/layout/DashboardLayout';
 import Avatar from '@/components/ui/Avatar';
 import Input from '@/components/ui/Input';
@@ -37,8 +51,10 @@ import Button from '@/components/ui/Button';
 import Select from '@/components/ui/Select';
 import Tooltip from '@/components/ui/Tooltip';
 import { showToast } from '@/components/ui/Toast';
+import api from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { stripWhatsAppFormatting, hasWaFormatting } from '@/lib/wa-format';
+import { useClickOutside } from '@/hooks/use-click-outside';
 import { useSocket } from '@/hooks/use-socket';
 import { whatsappService as svc } from '@/services/whatsapp.service';
 import type {
@@ -48,7 +64,7 @@ import type {
   WaMessageStatus,
   WaReaction,
 } from '@/types/whatsapp';
-import type { ApiError } from '@/types/api';
+import type { ApiError, ApiResponse } from '@/types/api';
 import TemplateComposeModal from '@/components/whatsapp/TemplateComposeModal';
 import InboxComposerTools from '@/components/whatsapp/InboxComposerTools';
 import Spinner from '@/components/ui/Spinner';
@@ -62,30 +78,37 @@ import MessageAttachment from '@/components/whatsapp/MessageAttachment';
 import MessageContact from '@/components/whatsapp/MessageContact';
 import MessageLocation from '@/components/whatsapp/MessageLocation';
 import MessageInteractive from '@/components/whatsapp/MessageInteractive';
+import MessageOrder from '@/components/whatsapp/MessageOrder';
 import MessageText from '@/components/whatsapp/MessageText';
+import HighlightText from '@/components/ui/HighlightText';
 import AttachMenu from '@/components/whatsapp/AttachMenu';
 import VoiceRecorder from '@/components/whatsapp/VoiceRecorder';
 import ContactComposeModal from '@/components/whatsapp/ContactComposeModal';
-import { getOpenConv, setOpenConv, subscribeOpenConv } from '@/lib/wa-open-conv';
+import LocationComposeModal from '@/components/whatsapp/LocationComposeModal';
+import MediaComposeModal from '@/components/whatsapp/MediaComposeModal';
+import { getOpenConv, restoreOpenConv, setOpenConv, subscribeOpenConv } from '@/lib/wa-open-conv';
+import {
+  drainOutbox,
+  enqueueOutbox,
+  listOutbox,
+  removeOutbox,
+  type OutboxMessage,
+} from '@/lib/offline-queue';
 import BulkActionBar from '@/components/whatsapp/BulkActionBar';
-import { ensureNotificationPermission, notifyInbound } from '@/components/whatsapp/wa-notify';
+import { ROUTES } from '@/constants/routes';
+import { assertWaMediaSize } from '@/constants/config';
 
 type StatusFilter = 'all' | WaConversationStatus;
 type AssigneeFilter = 'all' | 'me' | 'unassigned';
-
 /**
- * Who "me" is.
- *
- * There are no user accounts — one shared password gates the module — so
- * `WaConversation.assignedTo` is a free-text operator label rather than a user
- * id. This MUST match the backend's `APP_ACTOR.id`
- * (middleware/app-password.ts), which defaults to 'operator' and is overridden
- * by the OPERATOR_LABEL env var. If the two drift, "Assigned to me" silently
- * matches nothing.
+ * Which slice of the inbox the list shows. 'active' is the live queue (no
+ * archived, no still-snoozed threads); 'archived' and 'snoozed' are those two
+ * sets ON THEIR OWN, which the old pair of "include" toggles could not express.
  */
+type ScopeFilter = 'active' | 'archived' | 'snoozed' | 'all';
+
 /** Backend sentinel for "has no assignee" (whatsapp-conversation.service.ts). */
 const UNASSIGNED = '__none__';
-const OPERATOR = process.env.NEXT_PUBLIC_OPERATOR_LABEL || 'operator';
 
 const EMOJIS = [
   '😀',
@@ -121,8 +144,23 @@ function dayLabel(iso: string): string {
   return d.toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
+/** Under this much window left the countdown chip turns amber — the point at
+ *  which an agent should stop typing free-form and reach for a template. */
+const WINDOW_WARN_MS = 60 * 60 * 1000;
+
 function windowOpen(expiry: string | null): boolean {
   return !!expiry && new Date(expiry).getTime() > Date.now();
+}
+/** Milliseconds of free-form (non-template) replying left on the 24h window. */
+function windowRemaining(expiry: string | null, now: number): number {
+  if (!expiry) return 0;
+  return Math.max(0, new Date(expiry).getTime() - now);
+}
+/** Coarse "3h 12m" / "11m" label for the window countdown chip. */
+function fmtRemaining(ms: number): string {
+  const mins = Math.floor(ms / 60_000);
+  if (mins >= 60) return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+  return mins >= 1 ? `${mins}m` : '<1m';
 }
 function fmtTime(s: string | null): string {
   return s ? new Date(s).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
@@ -204,21 +242,92 @@ function makeOptimisticMessage(conversationId: string, contactId: string, text: 
 }
 
 /**
+ * Delivery-status progression, so a status that arrives out of order can never
+ * walk a message backwards (a late SENT overwriting a READ shows the customer's
+ * reply as unacknowledged). FAILED is terminal — nothing follows it.
+ */
+const STATUS_RANK: Record<WaMessageStatus, number> = {
+  QUEUED: 0,
+  SENT: 1,
+  DELIVERED: 2,
+  READ: 3,
+  FAILED: 4,
+};
+
+/**
  * Append a socket-pushed / just-sent message to the open thread's React Query
  * cache so it renders WITHOUT a refetch. Safe to call for any conversation: it
  * no-ops when that thread isn't loaded (returns undefined → React Query bails)
  * or the message is already present (dedup by id).
+ *
+ * `orphanStatuses` carries statuses that arrived BEFORE the row they describe —
+ * see `orphanStatusRef`. A `wa:status` event routinely beats the HTTP response
+ * of the send that produced it, and the patch it triggers finds nothing to
+ * update; without replaying it here the bubble would sit on the status the send
+ * response happened to carry (usually QUEUED) until the thread was refetched.
  */
-function mergeMessageIntoCache(qc: QueryClient, conversationId: string, message: WaMessage) {
-  qc.setQueryData(
-    ['wa-messages', conversationId],
+function mergeMessageIntoCache(
+  qc: QueryClient,
+  conversationId: string,
+  message: WaMessage,
+  orphanStatuses?: Map<string, WaMessageStatus>,
+) {
+  let row = message;
+  if (message.wamid && orphanStatuses?.size) {
+    const pending = orphanStatuses.get(message.wamid);
+    if (pending) {
+      orphanStatuses.delete(message.wamid);
+      if (STATUS_RANK[pending] > STATUS_RANK[message.status]) row = { ...message, status: pending };
+    }
+  }
+  // setQueriesData (prefix match), not setQueryData (exact): the thread key
+  // carries a third element — the search-hit anchor the page is centred on — so
+  // an exact key would miss the cache entry and the bubble would never appear.
+  qc.setQueriesData(
+    { queryKey: ['wa-messages', conversationId] },
     (old: { data?: { items?: WaMessage[] } } | undefined) => {
       if (!old?.data?.items) return old;
-      if (old.data.items.some((m) => m.id === message.id)) return old;
-      return { ...old, data: { ...old.data, items: [...old.data.items, message] } };
+      if (old.data.items.some((m) => m.id === row.id)) return old;
+      return { ...old, data: { ...old.data, items: [...old.data.items, row] } };
     },
   );
 }
+
+/**
+ * Is `a` older than `b` under the backend's compound (createdAt, id) keyset
+ * ordering? Inbound timestamps come from Meta at one-second resolution, so the
+ * id is the tie-break — exactly as `getThread` pages.
+ */
+function isOlderMessage(a: WaMessage, b: WaMessage): boolean {
+  const at = new Date(a.createdAt).getTime();
+  const bt = new Date(b.createdAt).getTime();
+  if (at !== bt) return at < bt;
+  return a.id < b.id;
+}
+
+/**
+ * Upper bound on how much thread history stays mounted.
+ *
+ * "Load older messages" pages 50 rows at a time into a client-held buffer and
+ * nothing used to stop it: twenty clicks left a thousand bubbles in the DOM —
+ * each with an actions menu, a reaction picker and a tooltip subtree — and every
+ * inbound socket event re-merged and re-sorted the whole accumulated array. The
+ * thread became too slow to scroll on exactly the long support conversations
+ * where history matters. Past the cap the load-older affordance is replaced by a
+ * note, so the limit is visible instead of being a button that quietly stops
+ * helping. The last page can overshoot it slightly — pages are fetched whole.
+ */
+const MAX_THREAD_MESSAGES = 500;
+
+/**
+ * How often the composer may tell the customer we are typing.
+ *
+ * Meta keeps the indicator up for 25 seconds (or until the next outbound
+ * message), so re-asserting it every 10s keeps it alive continuously while an
+ * agent writes a long reply, and costs one small request per 10s rather than one
+ * per keystroke.
+ */
+const TYPING_THROTTLE_MS = 10_000;
 
 const STATUS_LABEL: Record<WaMessageStatus, string> = {
   QUEUED: 'Queued',
@@ -246,6 +355,66 @@ function StatusTick({ status }: { status: WaMessageStatus }) {
   return <Loader2 className="h-3 w-3 animate-spin text-white/70" aria-label={label} role="img" />;
 }
 
+/**
+ * Where an outbound message came from: a campaign blast, an approved template
+ * an agent sent, or the bot.
+ *
+ * Every outbound message rendered as the same green bubble, so an agent picking
+ * a thread up could not tell whether the last thing the customer received was a
+ * colleague's reply, a keyword auto-reply, an away message or a marketing
+ * blast — which is exactly what they need to know before they answer, because
+ * it is what the customer is reacting to. The data was on every row already
+ * (campaignId / templateName / a null sentByUserId for automated sends) and
+ * simply never drawn.
+ *
+ * `sentByUserId === null` alone means "no human actor" — the auto-reply engine,
+ * the CSAT prompt, sequence steps. A campaign or a template names itself, so
+ * those are reported first and more precisely.
+ */
+function MessageProvenance({ message }: { message: WaMessage }) {
+  // An optimistic bubble carries a placeholder row whose sentByUserId is null,
+  // which is not a claim about provenance — labelling the agent's own reply
+  // "Auto-reply" for the second before the server row lands would be worse than
+  // showing nothing.
+  if (isOptimisticId(message.id)) return null;
+  const chip =
+    'inline-flex max-w-full items-center gap-1 truncate rounded-full bg-white/20 px-1.5 py-0.5 text-[10px] font-medium text-white/90';
+  const row = 'mt-1 flex justify-end';
+  if (message.campaignId) {
+    return (
+      <div className={row}>
+        <Link
+          href={ROUTES.SUPER_ADMIN.WHATSAPP_CAMPAIGN_DETAIL(message.campaignId)}
+          className={cn(chip, 'hover:bg-white/30')}
+          title="Sent by a campaign — open it"
+        >
+          <Send className="h-2.5 w-2.5 shrink-0" aria-hidden="true" />
+          Campaign
+        </Link>
+      </div>
+    );
+  }
+  if (message.templateName) {
+    return (
+      <div className={row}>
+        <span className={chip} title={`Approved template: ${message.templateName}`}>
+          <span className="truncate">Template · {message.templateName}</span>
+        </span>
+      </div>
+    );
+  }
+  if (message.sentByUserId === null) {
+    return (
+      <div className={row}>
+        <span className={chip} title="Sent automatically, not by an agent">
+          Auto-reply
+        </span>
+      </div>
+    );
+  }
+  return null;
+}
+
 function DaySeparator({ label }: { label: string }) {
   return (
     <div className="flex items-center justify-center py-1">
@@ -270,13 +439,34 @@ function MessageBubble({
   onCopy,
   onDelete,
   onStartSelect,
+  highlight,
+  canReact,
+  offlineQueued,
+  onDiscardQueued,
 }: {
   message: WaMessage;
   conversationId: string;
   /** Contact display name — labels the customer's side in the reactions popover. */
   contactName: string;
+  /**
+   * Whether an outbound send is possible at all right now (24h window open, the
+   * contact not blocked). A reaction is an ordinary outbound message, so without
+   * this the emoji picker was offered on every bubble of every conversation and
+   * clicking it on an older thread always came back as a red error toast.
+   */
+  canReact: boolean;
+  /** Search query to mark inside the body, when opened from a message search. */
+  highlight?: string;
   onRetry?: (text: string) => void;
   retrying?: boolean;
+  /**
+   * This bubble is a durable outbox entry, not a live send. It has no server row
+   * behind it and will go out on its own when the connection returns, so it must
+   * not look like the ordinary QUEUED spinner (which means "the server has it").
+   */
+  offlineQueued?: boolean;
+  /** Drop a queued-offline reply without sending it. */
+  onDiscardQueued?: () => void;
   onReply?: (message: WaMessage) => void;
   /** Resolved text/label of the message this one replies to (contextWamid). */
   quotedText?: string;
@@ -342,7 +532,11 @@ function MessageBubble({
                 {/* React to our own message (also shows on the customer's side). */}
                 {message.wamid && (
                   <div className="opacity-100 transition-opacity lg:opacity-0 lg:group-focus-within:opacity-100 lg:group-hover:opacity-100 lg:focus-visible:opacity-100">
-                    <ReactionPicker conversationId={conversationId} wamid={message.wamid} />
+                    <ReactionPicker
+                      conversationId={conversationId}
+                      wamid={message.wamid}
+                      disabled={!canReact}
+                    />
                   </div>
                 )}
               </div>
@@ -375,8 +569,34 @@ function MessageBubble({
                 <MessageLocation payload={message.payload} />
               ) : message.type === 'INTERACTIVE' ? (
                 <MessageInteractive message={message} outbound={outbound} />
+              ) : message.type === 'ORDER' ? (
+                <MessageOrder payload={message.payload} />
+              ) : message.type === 'SYSTEM' || message.type === 'UNSUPPORTED' ? (
+                // A number-change notice or a message type Meta added that we do
+                // not model yet. These carry no media id, and until the worker
+                // started labelling them they carried no text either — so the
+                // bubble rendered completely EMPTY while the conversation list
+                // preview said "[system]". The agent could see that something had
+                // arrived and could not see what.
+                <p
+                  className={cn(
+                    'text-[11px] italic',
+                    outbound ? 'text-white/80' : 'text-[var(--text-muted)]',
+                  )}
+                >
+                  {message.text ?? 'Unsupported message'}
+                </p>
+              ) : message.text ? (
+                <MessageText text={message.text} highlight={highlight} />
               ) : (
-                message.text && <MessageText text={message.text} />
+                <span
+                  className={cn(
+                    'text-[11px] italic',
+                    outbound ? 'text-white/80' : 'text-[var(--text-muted)]',
+                  )}
+                >
+                  Unsupported message
+                </span>
               )}
               {message.errorTitle && (
                 <p
@@ -388,6 +608,7 @@ function MessageBubble({
                   {message.errorTitle}
                 </p>
               )}
+              {outbound && <MessageProvenance message={message} />}
               <div
                 className={cn(
                   'mt-0.5 flex items-center justify-end gap-1 text-[10px]',
@@ -395,7 +616,14 @@ function MessageBubble({
                 )}
               >
                 {fmtTime(message.createdAt)}
-                {outbound && <StatusTick status={message.status} />}
+                {offlineQueued ? (
+                  <span className="inline-flex items-center gap-1" title="Waiting for connection">
+                    <WifiOff className="h-3 w-3" aria-hidden="true" />
+                    <span>Waiting to send</span>
+                  </span>
+                ) : (
+                  outbound && <StatusTick status={message.status} />
+                )}
               </div>
             </div>
             {/* Reply + react + actions affordances on the right of inbound bubbles */}
@@ -415,7 +643,11 @@ function MessageBubble({
                 )}
                 {message.wamid && (
                   <div className="opacity-100 transition-opacity lg:opacity-0 lg:group-focus-within:opacity-100 lg:group-hover:opacity-100 lg:focus-visible:opacity-100">
-                    <ReactionPicker conversationId={conversationId} wamid={message.wamid} />
+                    <ReactionPicker
+                      conversationId={conversationId}
+                      wamid={message.wamid}
+                      disabled={!canReact}
+                    />
                   </div>
                 )}
                 <div className="opacity-100 transition-opacity lg:opacity-0 lg:group-focus-within:opacity-100 lg:group-hover:opacity-100 lg:focus-visible:opacity-100">
@@ -437,7 +669,18 @@ function MessageBubble({
               reactions={reactions}
               contactName={contactName}
               align={outbound ? 'end' : 'start'}
+              disabled={!canReact}
             />
+          )}
+          {offlineQueued && onDiscardQueued && (
+            <button
+              type="button"
+              onClick={onDiscardQueued}
+              className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-[var(--text-muted)] hover:underline"
+            >
+              <X className="h-3 w-3" />
+              Discard
+            </button>
           )}
           {canRetry && (
             <button
@@ -460,25 +703,58 @@ function MessageBubble({
   );
 }
 
+/**
+ * Conversation rows are pinned to this exact height (px) so the windowed list
+ * below can size its spacers from a row count. It is the row's natural height
+ * (10-unit avatar + py-3 + the 1px divider) plus a few px of slack, so nothing
+ * shifts visually — but it must stay in sync with the row markup: a row that
+ * renders taller than this would drift the window's scroll math.
+ */
+const CONV_ROW_H = 68;
+/** Rows the render window steps by — also its overscan on either side. */
+const CONV_WINDOW_BLOCK = 8;
+/** Rows to render before the list viewport has been measured (hidden pane). */
+const CONV_WINDOW_FALLBACK_ROWS = 40;
+/**
+ * DOM id of a conversation row. The list is a listbox with a roving
+ * `aria-activedescendant`, which names the cursored row by id rather than moving
+ * DOM focus onto it — the rows carry their own focusable controls.
+ */
+const convOptionId = (id: string) => `wa-conv-opt-${id}`;
+
 function ConversationRow({
   conv,
   active,
   onClick,
   selected,
   onToggleSelect,
+  highlight,
+  cursor,
 }: {
   conv: WaConversation;
   active: boolean;
   onClick: () => void;
   selected: boolean;
   onToggleSelect: (checked: boolean) => void;
+  /** Current search query, marked inside the matched-message snippet. */
+  highlight?: string;
+  /** This row is where the list's keyboard cursor currently sits. */
+  cursor: boolean;
 }) {
   const archived = !!conv.archivedAt;
   const hasUnread = conv.unreadCount > 0;
   return (
+    // Fixed height, not content height — the windowed list's spacers are sized in
+    // whole rows, so a row of another height would shift every position below it.
     <div
+      id={convOptionId(conv.id)}
+      role="option"
+      aria-selected={active}
+      style={{ height: CONV_ROW_H }}
       className={cn(
         'flex w-full items-center gap-2 border-b border-[var(--border)] pr-3 transition-colors',
+        // The cursor is drawn inset so it does not shift the row's fixed height.
+        cursor && 'ring-primary ring-2 ring-inset',
         active
           ? 'bg-primary-light'
           : selected
@@ -533,14 +809,29 @@ function ConversationRow({
               </span>
             )}
           </div>
-          <p
-            className={cn(
-              'truncate text-xs',
-              hasUnread ? 'font-medium text-[var(--text)]' : 'text-[var(--text-muted)]',
-            )}
-          >
-            {stripWhatsAppFormatting(conv.lastMessagePreview ?? '') || conv.contact.phone}
-          </p>
+          {/* On a message-body search the row shows the line that MATCHED rather
+              than the last message — otherwise the operator is told a
+              conversation contains "invoice 4471" and shown an unrelated
+              preview, with no clue which message hit. */}
+          {conv.matchSnippet ? (
+            <p className="flex items-center gap-1 truncate text-xs text-[var(--text-secondary)]">
+              <Search className="h-3 w-3 shrink-0 text-amber-600" aria-hidden="true" />
+              <HighlightText
+                className="truncate"
+                text={stripWhatsAppFormatting(conv.matchSnippet)}
+                highlight={highlight}
+              />
+            </p>
+          ) : (
+            <p
+              className={cn(
+                'truncate text-xs',
+                hasUnread ? 'font-medium text-[var(--text)]' : 'text-[var(--text-muted)]',
+              )}
+            >
+              {stripWhatsAppFormatting(conv.lastMessagePreview ?? '') || conv.contact.phone}
+            </p>
+          )}
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1">
           <span className="text-[10px] text-[var(--text-muted)]">
@@ -560,13 +851,33 @@ function ConversationRow({
   );
 }
 
+/**
+ * Consent colours for the conversation header. Mirrors the contacts page so the
+ * same state does not read differently in two places.
+ */
+const INBOX_OPT_IN_STYLE: Record<string, string> = {
+  OPTED_IN: 'bg-emerald-100 text-emerald-700',
+  OPTED_OUT: 'bg-red-100 text-red-700',
+  UNKNOWN: 'bg-gray-100 text-gray-600',
+};
+
+/** Stable empty pick, so a thread with no attachments does not churn identity. */
+const NO_FILES: File[] = [];
+
 export default function SuperAdminWhatsappInboxPage() {
   const qc = useQueryClient();
   const { socket, emit } = useSocket();
-  // Persisted across reloads (per device): SSR snapshot is null (matches
-  // hydration), then reconciles to the stored id, reopening the last thread.
+  // The open thread is the `?c=` query parameter, so it can be bookmarked,
+  // shared and stepped back through. SSR snapshot is null (matches hydration),
+  // then reconciles to the id in the URL.
   const selectedId = useSyncExternalStore(subscribeOpenConv, getOpenConv, () => null);
   const setSelectedId = setOpenConv;
+  // Seed the selection once: an explicit `?c=` wins, otherwise the last thread
+  // this device had open is restored onto a bare /whatsapp (and written into the
+  // URL, so the address bar is shareable without opening the thread again).
+  useEffect(() => {
+    restoreOpenConv();
+  }, []);
   const [search, setSearch] = useState('');
   // Debounced search value: the input stays bound to `search` (immediate) while
   // the React Query key/queryFn use `debouncedSearch` so we don't fire a DB
@@ -580,10 +891,68 @@ export default function SuperAdminWhatsappInboxPage() {
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [assigneeFilter, setAssigneeFilter] = useState<AssigneeFilter>('all');
+  // Labels were write-only: LabelsEditor saved them and the thread header showed
+  // them, and nothing could filter by one — so tagging a conversation "billing"
+  // still meant scrolling the whole inbox to find the billing conversations.
+  const [labelFilter, setLabelFilter] = useState('');
+  // Which connected number to show. A WABA can carry several, each with its own
+  // thread per contact, and the inbox listed them in one undifferentiated queue —
+  // so a support number and a marketing number were impossible to work
+  // separately. Empty = every number (and the only state a one-number install
+  // ever has: the selector below hides itself).
+  const [channelFilter, setChannelFilter] = useState('');
   const [searchMessages, setSearchMessages] = useState(false);
-  const [includeArchived, setIncludeArchived] = useState(false);
+  // Which slice of the inbox to show. Archived and snoozed used to be two
+  // "include" toggles, so the only way to look at the archive was to mix it back
+  // into the live queue and scroll — there was no archived-only or snoozed-only
+  // view at all, and "what did I park last week?" had no answer.
+  const [scopeFilter, setScopeFilter] = useState<ScopeFilter>('active');
+  const includeArchived = scopeFilter === 'all' || scopeFilter === 'archived';
+  const archivedOnly = scopeFilter === 'archived';
+  // The archive shows everything filed away, snoozed or not; the snoozed scope
+  // deliberately excludes archived threads (those live in the archive).
+  const includeSnoozed = scopeFilter === 'all' || scopeFilter === 'archived';
+  const snoozedOnly = scopeFilter === 'snoozed';
   const [draft, setDraft] = useState('');
+  // The composer grows with the draft. `max-h-32` on the textarea always encoded
+  // the intent to grow, but `rows={1}` with no height handling pinned it at one
+  // line: anything longer than that was typed into a 40px box that scrolled
+  // internally, so the operator could not see the message they were about to
+  // commit — and Enter sends. Reset to `auto` first, otherwise scrollHeight can
+  // only ever report the current height and the box never shrinks back after a
+  // send. 128 is the same 8rem the class caps at, so the internal scroll only
+  // starts where the design says it should.
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+  // Layout effect so the height is right before paint (no one-frame flash), and
+  // keyed on `selectedId` as well as the draft: the draft survives a thread
+  // switch, so a composer that remounts with text already in it has to be sized
+  // on the way in too.
+  useLayoutEffect(() => {
+    const el = composerRef.current;
+    if (!el || !selectedId) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 128)}px`;
+  }, [draft, selectedId]);
   const [emojiOpen, setEmojiOpen] = useState(false);
+  // The emoji grid used to close ONLY by picking an emoji or clicking the
+  // trigger a second time, so clicking on into the thread left it floating
+  // over the message list and Escape did nothing. Both are wired up here: a
+  // mousedown outside the wrapper (trigger + panel), and a window-level
+  // Escape that also hands focus back to the trigger so a keyboard user is
+  // not dropped onto <body> when the panel unmounts.
+  const emojiRef = useRef<HTMLDivElement>(null);
+  const emojiBtnRef = useRef<HTMLButtonElement>(null);
+  useClickOutside(emojiRef, () => setEmojiOpen(false), emojiOpen);
+  useEffect(() => {
+    if (!emojiOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      setEmojiOpen(false);
+      emojiBtnRef.current?.focus();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [emojiOpen]);
   // Message the composer text-send will quote (contextWamid).
   const [replyTo, setReplyTo] = useState<WaMessage | null>(null);
   // Selected conversation ids for bulk actions.
@@ -592,13 +961,29 @@ export default function SuperAdminWhatsappInboxPage() {
   const [allMatchingConv, setAllMatchingConv] = useState(false);
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [contactOpen, setContactOpen] = useState(false);
+  const [locationOpen, setLocationOpen] = useState(false);
   const [mediaGalleryOpen, setMediaGalleryOpen] = useState(false);
+  // The message a search result deep-linked to. A body search used to find the
+  // CONVERSATION and stop there: the thread opened at the bottom and the only
+  // way to reach a hit from last month was "Load older messages", repeatedly.
+  const [searchAnchor, setSearchAnchor] = useState<{ convId: string; messageId: string } | null>(
+    null,
+  );
   // Mobile single-pane navigation: which pane is visible below `lg`.
   const [mobilePane, setMobilePane] = useState<'list' | 'thread' | 'details'>('list');
-  const [olderMessages, setOlderMessages] = useState<WaMessage[]>([]);
+  // NOTE: pages of older history are NOT held here. They are merged into the
+  // same React Query entry as the newest page (see loadOlderMut and msgQuery's
+  // queryFn), because a separate client buffer is invisible to the socket
+  // patches — delivery ticks and reactions on scrolled-back messages simply
+  // stopped updating until the thread was reloaded.
   const [hasMoreOlder, setHasMoreOlder] = useState(true);
   // Optimistic (not-yet-acked) outbound bubbles for the open conversation.
   const [pendingMessages, setPendingMessages] = useState<WaMessage[]>([]);
+  // Replies typed with no connection, mirrored from the durable IndexedDB
+  // outbox. Held separately from `pendingMessages` precisely because that buffer
+  // is wiped on every conversation switch — surviving a switch, a navigation and
+  // a reload is the entire point of queueing.
+  const [outbox, setOutbox] = useState<OutboxMessage[]>([]);
   // Extra conversation-list pages appended below the first page.
   const [extraConvPages, setExtraConvPages] = useState<WaConversation[]>([]);
   const [convPage, setConvPage] = useState(1);
@@ -627,19 +1012,62 @@ export default function SuperAdminWhatsappInboxPage() {
   // Whether the thread is at/near the bottom — gates auto-scroll on new messages
   // (a ref so reads in socket/scroll handlers are always current, no re-render).
   const isAtBottomRef = useRef(true);
+  /**
+   * `wa:status` events whose message is not in the cache yet, keyed by wamid.
+   *
+   * The status webhook routinely beats the send's own HTTP response: the socket
+   * patch then finds no row to update and the update was simply lost, leaving a
+   * just-sent bubble stuck on its optimistic tick until something refetched the
+   * thread. They are replayed by `mergeMessageIntoCache` when the row lands.
+   * Bounded because entries for messages that never arrive (a status for a
+   * thread page we do not hold) would otherwise accumulate for the session.
+   */
+  const orphanStatusRef = useRef(new Map<string, WaMessageStatus>());
+
+  /**
+   * The single gate every read receipt goes through.
+   *
+   * markRead blue-ticks the customer, and "read" has to mean an operator actually
+   * saw the message. Three separate call sites used to send it — the socket
+   * handler, the on-select effect and the visibility handler — with three
+   * different (or no) conditions, so a console left in a background tab, or one
+   * restored on load with a conversation still open in the URL, acknowledged
+   * messages nobody had looked at.
+   */
+  const maybeMarkRead = useCallback(() => {
+    if (!selectedId) return;
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+    // Scrolled away from the bottom means the new message is off-screen.
+    if (!isAtBottomRef.current) return;
+    void svc
+      .markRead(selectedId)
+      .then(() => {
+        qc.invalidateQueries({ queryKey: ['wa-conversations'] });
+        // Clear the sidebar unread badge instantly in this tab (the socket echo
+        // would also do it, but this avoids the round-trip lag).
+        qc.invalidateQueries({ queryKey: ['wa-inbox-unread-total'] });
+      })
+      .catch(() => {});
+  }, [selectedId, qc]);
+
   const handleThreadScroll = () => {
     const el = scrollContainerRef.current;
     if (!el) return;
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     isAtBottomRef.current = distanceFromBottom < 120;
     setShowScrollBtn(distanceFromBottom > 200);
-    // Caught back up to the bottom → clear the "new messages" badge.
-    if (distanceFromBottom < 120) setNewMsgCount(0);
+    // Caught back up to the bottom → clear the "new messages" badge, and flush any
+    // receipt deferred while the agent was scrolled away.
+    if (distanceFromBottom < 120) {
+      setNewMsgCount(0);
+      maybeMarkRead();
+    }
   };
   const scrollThreadToBottom = () => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
     isAtBottomRef.current = true;
     setNewMsgCount(0);
+    maybeMarkRead();
   };
   // Message multi-select (delete / copy) state + helpers.
   const [selectionMode, setSelectionMode] = useState(false);
@@ -667,20 +1095,58 @@ export default function SuperAdminWhatsappInboxPage() {
     setSelectionMode(false);
     setSelectedMessageIds(new Set());
   };
-  // Request browser-notification permission once on mount (best effort).
-  useEffect(() => {
-    ensureNotificationPermission();
-  }, []);
-
-  // "Assigned to me" maps to the operator label. With a single shared password
-  // there is only one operator, so `assignedTo` is a free-text label rather than
-  // a user id — see the WaConversation.assignedTo note in schema.prisma.
+  /**
+   * Who "me" is, straight from the backend.
+   *
+   * `WaConversation.assignedTo` is a free-text operator label rather than a user
+   * id — see the note in schema.prisma — and which label this session stamps is
+   * decided server-side, by the password that unlocked it (OPERATOR_PASSWORDS,
+   * middleware/app-password.ts). This page cannot work it out locally, and both
+   * attempts to do so anyway were wrong the same way: first a SECOND environment
+   * variable (NEXT_PUBLIC_OPERATOR_LABEL) that had to be kept in step with the
+   * backend's by hand, then the first entry of `GET /whatsapp/agents` — which is
+   * the whole roster now, so "the first one is me" stops being true the moment a
+   * second operator exists. Both end identically: "Assign to me" writes label A
+   * while "Assigned to me" queries label B, the filter silently returns an empty
+   * inbox, and nothing anywhere says why.
+   *
+   * `GET /unlock/whoami` is the server answering the one question that matters
+   * here. It is not on whatsappService because it is not a WhatsApp endpoint,
+   * and it deliberately holds nothing stale: after a lock and unlock in the same
+   * tab, the session can belong to a different person.
+   */
+  const whoamiQuery = useQuery({
+    queryKey: ['wa-whoami'],
+    queryFn: async () =>
+      (await api.get<ApiResponse<{ operator: string | null }>>('/unlock/whoami')).data,
+    staleTime: 0,
+  });
+  const operatorLabel = whoamiQuery.data?.data?.operator ?? undefined;
   // 'unassigned' is a real backend filter now (the `__none__` sentinel), so it
   // paginates and counts like every other filter instead of being applied to
   // whatever happened to be on the loaded page.
   const assignedToParam =
-    assigneeFilter === 'me' ? OPERATOR : assigneeFilter === 'unassigned' ? UNASSIGNED : undefined;
+    assigneeFilter === 'me'
+      ? operatorLabel
+      : assigneeFilter === 'unassigned'
+        ? UNASSIGNED
+        : undefined;
+  // "Assigned to me" cannot be asked before the label is known: sending no
+  // `assignedTo` at all would quietly list the WHOLE inbox under a filter that
+  // says it is showing one person's work.
+  const awaitingOperatorLabel = assigneeFilter === 'me' && !operatorLabel;
   const statusParam = statusFilter === 'all' ? undefined : statusFilter;
+  const labelsParam = labelFilter ? [labelFilter] : undefined;
+
+  // Connected numbers, only so the channel selector can exist. Rarely changes,
+  // so it is cached hard and shared with the details panel's "On …" badge.
+  const channelsQuery = useQuery({
+    queryKey: ['wa-channels'],
+    queryFn: () => svc.listChannels(),
+    staleTime: 5 * 60_000,
+  });
+  const channels = channelsQuery.data?.data ?? [];
+  const channelParam = channelFilter || undefined;
 
   const convQuery = useQuery({
     queryKey: [
@@ -690,8 +1156,10 @@ export default function SuperAdminWhatsappInboxPage() {
         unreadOnly,
         status: statusParam,
         assignedTo: assignedToParam,
+        labels: labelFilter,
+        channelId: channelParam,
         searchMessages,
-        includeArchived,
+        scope: scopeFilter,
       },
     ],
     queryFn: () =>
@@ -700,11 +1168,17 @@ export default function SuperAdminWhatsappInboxPage() {
         unread: unreadOnly,
         status: statusParam,
         assignedTo: assignedToParam,
+        labels: labelsParam,
+        channelId: channelParam,
         searchMessages,
         includeArchived,
+        includeSnoozed,
+        archivedOnly,
+        snoozedOnly,
         page: 1,
         limit: 50,
       }),
+    enabled: !awaitingOperatorLabel,
     refetchInterval: 60_000,
   });
   const firstPage = convQuery.data?.data;
@@ -712,7 +1186,7 @@ export default function SuperAdminWhatsappInboxPage() {
   // filter/search) changes. Render-time adjustment to avoid an effect cascade.
   const [convPageKey, setConvPageKey] = useState<string | undefined>(undefined);
   const firstPageKey = convQuery.dataUpdatedAt
-    ? `${debouncedSearch}|${unreadOnly}|${statusParam}|${assignedToParam}|${searchMessages}|${includeArchived}`
+    ? `${debouncedSearch}|${unreadOnly}|${statusParam}|${assignedToParam}|${labelFilter}|${channelFilter}|${searchMessages}|${scopeFilter}`
     : undefined;
   if (firstPageKey !== convPageKey) {
     setConvPageKey(firstPageKey);
@@ -735,17 +1209,96 @@ export default function SuperAdminWhatsappInboxPage() {
   }, [firstPage, extraConvPages]);
   const conversations = allConversations;
 
+  // ── Windowed conversation list ──
+  // "Load more" appends 50 rows at a time with no upper bound, so ten clicks used
+  // to leave 500 full rows (avatar + checkbox + two text nodes each) mounted, and
+  // every scroll frame had to lay all of them out. Only the slice around the
+  // viewport is mounted now; the rows above and below are represented by two
+  // spacers of exactly CONV_ROW_H per row, so the scrollbar, the scroll position
+  // and "Load more" all behave as if the whole list were there.
+  const convScrollRef = useRef<HTMLDivElement>(null);
+  const convRowsRef = useRef<HTMLDivElement>(null);
+  const [convWindow, setConvWindow] = useState({ start: 0, end: CONV_WINDOW_FALLBACK_ROWS });
+  // Reads the DOM only (no props/state), so it stays stable for the observer and
+  // can be handed straight to onScroll. The window is quantised to blocks of
+  // CONV_WINDOW_BLOCK rows so a scroll gesture re-renders the page a handful of
+  // times instead of once per frame.
+  const syncConvWindow = useCallback(() => {
+    const el = convScrollRef.current;
+    if (!el) return;
+    // Unmeasurable (the pane is display:none below lg, or this is the first
+    // paint): keep the window we have. It is either the initial head of the list
+    // or the last good one, and a hidden pane keeps its scroll position, so both
+    // still line up when it comes back.
+    const height = el.clientHeight;
+    if (height <= 0) return;
+    // The rows block can sit below an error banner inside the same scroller, so
+    // measure where it actually starts instead of assuming scrollTop 0.
+    const rows = convRowsRef.current;
+    const rowsOffset = rows
+      ? rows.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop
+      : 0;
+    const scrolled = Math.max(0, el.scrollTop - rowsOffset);
+    const start = Math.max(
+      0,
+      (Math.floor(scrolled / (CONV_ROW_H * CONV_WINDOW_BLOCK)) - 1) * CONV_WINDOW_BLOCK,
+    );
+    const end = start + Math.ceil(height / CONV_ROW_H) + CONV_WINDOW_BLOCK * 3;
+    setConvWindow((prev) => (prev.start === start && prev.end === end ? prev : { start, end }));
+  }, []);
+  useEffect(() => {
+    const el = convScrollRef.current;
+    if (!el) return;
+    syncConvWindow();
+    // The pane resizes with the viewport and on the mobile pane switch, both of
+    // which change how many rows fit.
+    const observer = new ResizeObserver(syncConvWindow);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [syncConvWindow]);
+  // Clamped here rather than in the window state: appending to or filtering the
+  // list changes its length without a scroll event, and the spacers must still
+  // add up. A filter that shrinks the list out from under the window falls back
+  // to the head, so the list never paints empty for the frame between the shrink
+  // and the browser clamping scrollTop.
+  const convVisible =
+    convWindow.start < conversations.length
+      ? convWindow
+      : { start: 0, end: CONV_WINDOW_FALLBACK_ROWS };
+  const convVisibleStart = convVisible.start;
+  const convVisibleEnd = Math.min(convVisible.end, conversations.length);
+  const convPadTop = convVisibleStart * CONV_ROW_H;
+  const convPadBottom = (conversations.length - convVisibleEnd) * CONV_ROW_H;
+
+  // Label options come from what is actually loaded, plus whatever is currently
+  // selected — so a filter stays selectable after it has narrowed the list down to
+  // conversations that all share it.
+  const knownLabels = useMemo(() => {
+    const set = new Set<string>();
+    for (const c of allConversations) for (const l of c.labels ?? []) set.add(l);
+    if (labelFilter) set.add(labelFilter);
+    return [...set].sort();
+  }, [allConversations, labelFilter]);
+
   // Load the next conversation-list page and append it.
   const loadMoreConvMut = useMutation({
     mutationFn: () => {
       const next = convPage + 1;
+      // Every filter the first page was fetched with has to be repeated here.
+      // `labels` was missing, so pressing "Load more" under an active label
+      // filter appended conversations that did not carry the label at all.
       return svc.listConversations({
         q: debouncedSearch,
         unread: unreadOnly,
         status: statusParam,
         assignedTo: assignedToParam,
+        labels: labelsParam,
+        channelId: channelParam,
         searchMessages,
         includeArchived,
+        includeSnoozed,
+        archivedOnly,
+        snoozedOnly,
         page: next,
         limit: 50,
       });
@@ -767,20 +1320,170 @@ export default function SuperAdminWhatsappInboxPage() {
   });
   const selected: WaConversation | null =
     detailQuery.data?.data ?? conversations.find((c) => c.id === selectedId) ?? null;
+  const selectedContactId = selected?.contactId ?? '';
+
+  // The anchor only applies to the conversation it was captured on, so switching
+  // threads drops it without any reset bookkeeping.
+  const anchorMessageId = searchAnchor?.convId === selectedId ? searchAnchor.messageId : null;
+
+  /**
+   * Open a conversation from the list. A row produced by a message-body search
+   * carries the message that matched, and opening ON it is the whole point of the
+   * search — otherwise the operator lands at the bottom of a thread that can be
+   * thousands of messages long with no idea where the hit is.
+   */
+  const openConversation = (conv: WaConversation) => {
+    if (conv.matchMessageId) {
+      setSearchAnchor({ convId: conv.id, messageId: conv.matchMessageId });
+      // An anchored page is a different slice of the thread entirely, and it
+      // lives under its own query key — so only the "is there more history"
+      // flag needs resetting.
+      setHasMoreOlder(true);
+    } else {
+      setSearchAnchor(null);
+    }
+    setSelectedId(conv.id);
+  };
+
+  /** Leave an anchored (search-hit) page and go back to the newest messages. */
+  const jumpToLatest = () => {
+    setSearchAnchor(null);
+    setHasMoreOlder(true);
+  };
+
+  // ── Keyboard navigation over the conversation list ──
+  // The list was reachable only by Tab, and every row carries two focusable
+  // controls, so walking to the 200th conversation of a queue cost 400 Tab
+  // presses and there was no way to open one without landing on its button
+  // first. The rows block is a listbox with a keyboard cursor: Arrow keys (and
+  // j/k) move it, Home/End jump to the ends, Enter or Space opens the thread.
+  const [convCursor, setConvCursor] = useState(0);
+  const [convListFocused, setConvListFocused] = useState(false);
+  // Clamped on read rather than reset on change: filtering, "Load more" and the
+  // socket-driven reorder all change the list length with no single event this
+  // component could hang a reset off, and a cursor past the end would point
+  // `aria-activedescendant` at an id that is not in the document.
+  const convCursorIndex =
+    conversations.length === 0 ? -1 : Math.min(convCursor, conversations.length - 1);
+
+  // Bring a row into view before the cursor lands on it. The list is windowed, so
+  // a row outside the mounted slice has no element to scroll into view — the
+  // offset is computed from the fixed row height instead. Syncing the window here
+  // rather than waiting for the scroll event mounts the row in the same render as
+  // the `aria-activedescendant` that names it, so it is never dangling.
+  const revealConvRow = useCallback(
+    (index: number) => {
+      const el = convScrollRef.current;
+      if (!el) return;
+      const rows = convRowsRef.current;
+      const rowsOffset = rows
+        ? rows.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop
+        : 0;
+      const top = rowsOffset + index * CONV_ROW_H;
+      if (top < el.scrollTop) {
+        el.scrollTop = top;
+      } else if (top + CONV_ROW_H > el.scrollTop + el.clientHeight) {
+        el.scrollTop = top + CONV_ROW_H - el.clientHeight;
+      }
+      syncConvWindow();
+    },
+    [syncConvWindow],
+  );
+
+  const onConvListKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    // Only when the listbox itself holds focus — a row's checkbox or open button
+    // keeps its native keys (Space toggles, Enter activates).
+    if (e.target !== e.currentTarget) return;
+    if (conversations.length === 0) return;
+    const move = (next: number) => {
+      e.preventDefault();
+      const idx = Math.min(Math.max(next, 0), conversations.length - 1);
+      setConvCursor(idx);
+      revealConvRow(idx);
+    };
+    switch (e.key) {
+      case 'ArrowDown':
+      case 'j':
+        move(convCursorIndex + 1);
+        break;
+      case 'ArrowUp':
+      case 'k':
+        move(convCursorIndex - 1);
+        break;
+      case 'Home':
+        move(0);
+        break;
+      case 'End':
+        move(conversations.length - 1);
+        break;
+      case 'Enter':
+      case ' ': {
+        const conv = conversations[convCursorIndex];
+        if (!conv) break;
+        // Space would otherwise page-scroll the list out from under the cursor.
+        e.preventDefault();
+        openConversation(conv);
+        break;
+      }
+      default:
+        break;
+    }
+  };
+
+  // The active thread's cache key, shared by the query, the load-older prepend
+  // and the delete patch so all three address exactly one entry.
+  const msgQueryKey = useMemo(
+    () => ['wa-messages', selectedId, anchorMessageId] as const,
+    [selectedId, anchorMessageId],
+  );
 
   const msgQuery = useQuery({
-    queryKey: ['wa-messages', selectedId],
-    queryFn: () => svc.getMessages(selectedId as string),
+    // The anchor is part of the key: opening on a hit fetches a DIFFERENT page of
+    // the thread (centred on it), so it must not read a cached newest page.
+    queryKey: msgQueryKey,
+    /**
+     * Fetches the newest (or anchored) page and KEEPS any older history already
+     * merged into this entry.
+     *
+     * Older pages live in this cache entry rather than in component state, which
+     * is what lets one socket patch cover the whole thread. The cost of that is
+     * that a plain refetch — triggered by a media send, a delete, a socket
+     * reconnect — would replace the entry with just the newest 50 rows and
+     * collapse the history the operator had scrolled back through. So anything
+     * strictly older than the freshly-fetched page is carried over; anything
+     * inside the fetched window is dropped and replaced by the server's version,
+     * so a message deleted or updated there cannot survive as a stale copy.
+     *
+     * An empty response is taken at face value (nothing is retained): that is
+     * "clear chat history", and the thread must actually come back empty.
+     */
+    queryFn: async () => {
+      const res = await svc.getMessages(
+        selectedId as string,
+        undefined,
+        undefined,
+        anchorMessageId ?? undefined,
+      );
+      const fetched = res.data?.items ?? [];
+      if (fetched.length === 0) return res;
+      const prev =
+        qc.getQueryData<ApiResponse<{ items: WaMessage[] }>>(msgQueryKey)?.data?.items ?? [];
+      if (prev.length === 0) return res;
+      const oldestFetched = fetched[0];
+      const retained = prev.filter((m) => isOlderMessage(m, oldestFetched));
+      if (retained.length === 0) return res;
+      return { ...res, data: { ...res.data, items: [...retained, ...fetched] } };
+    },
     enabled: !!selectedId,
   });
-  // Merge older (prepended) + current page + optimistic pending bubbles;
-  // dedupe by id; keep newest-at-bottom order. Pending bubbles whose text now
-  // appears in a real server outbound message are dropped (reconciliation).
+  // Merge the loaded thread (newest page + any older pages prepended into the
+  // same entry) with the optimistic pending bubbles; dedupe by id; keep
+  // newest-at-bottom order.
   const messages = useMemo(() => {
     const current = msgQuery.data?.data?.items ?? [];
     const seen = new Set<string>();
     const merged: WaMessage[] = [];
-    for (const m of [...olderMessages, ...current]) {
+    for (const m of current) {
       if (seen.has(m.id)) continue;
       // Reactions are not bubbles — they render on their target message via
       // `reactions`. Skip any REACTION-typed rows (incl. legacy orphans created
@@ -799,8 +1502,26 @@ export default function SuperAdminWhatsappInboxPage() {
     for (const p of pendingMessages) {
       merged.push(p);
     }
+    // Queued-offline replies for this thread, rebuilt from the durable outbox on
+    // every render — which is why they are still on screen after a conversation
+    // switch or a reload, instead of vanishing with the page state.
+    for (const q of outbox) {
+      if (q.conversationId !== selectedId) continue;
+      if (seen.has(q.id)) continue;
+      const bubble = makeOptimisticMessage(q.conversationId, selectedContactId, q.text);
+      bubble.id = q.id;
+      bubble.createdAt = q.createdAt;
+      bubble.contextWamid = q.contextWamid ?? null;
+      merged.push(bubble);
+    }
     return merged.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-  }, [msgQuery.data, olderMessages, pendingMessages]);
+  }, [msgQuery.data, pendingMessages, outbox, selectedId, selectedContactId]);
+
+  /** Ids rendered from the outbox — the bubbles that say "waiting to send". */
+  const outboxIds = useMemo(() => new Set(outbox.map((m) => m.id)), [outbox]);
+
+  // Past the cap, stop offering more history — see MAX_THREAD_MESSAGES.
+  const threadAtCap = messages.length >= MAX_THREAD_MESSAGES;
 
   // Lookup from a message's wamid → its preview text, for resolving quoted
   // (contextWamid) replies into a small inline preview.
@@ -838,7 +1559,6 @@ export default function SuperAdminWhatsappInboxPage() {
   const [prevSelectedId, setPrevSelectedId] = useState(selectedId);
   if (selectedId !== prevSelectedId) {
     setPrevSelectedId(selectedId);
-    setOlderMessages([]);
     setHasMoreOlder(true);
     setEmojiOpen(false);
     setPendingMessages([]);
@@ -867,33 +1587,34 @@ export default function SuperAdminWhatsappInboxPage() {
   useEffect(() => {
     if (!socket) return;
     const onMessage = (data: { conversationId: string; message?: WaMessage }) => {
-      // Merge the pushed message straight into the thread cache — the socket
+      // A wa:message carrying NO message means "this thread changed, refetch" —
+      // which is exactly what delete-for-me and clear-history emit. The handler only
+      // ever merged an incoming message, so those events did nothing and a deletion
+      // stayed on screen in every other open session until a manual reload.
+      if (!data.message && data.conversationId === selectedId) {
+        void qc.invalidateQueries({ queryKey: ['wa-messages', selectedId] });
+      } // Merge the pushed message straight into the thread cache — the socket
       // already carries the full row, so render it with zero extra round-trip.
-      if (data.message) mergeMessageIntoCache(qc, data.conversationId, data.message);
+      if (data.message)
+        mergeMessageIntoCache(qc, data.conversationId, data.message, orphanStatusRef.current);
       qc.invalidateQueries({ queryKey: ['wa-conversations'] });
       if (data.conversationId === selectedId) {
         if (data.message?.direction === 'INBOUND') {
-          // We're actively viewing this conversation, so the message is "seen":
-          // mark read immediately (clears the panel row + sidebar unread counts
-          // instead of letting them accumulate). If the agent is scrolled up,
-          // bump the jump-button badge instead of yanking them to the bottom.
-          svc
-            .markRead(selectedId)
-            .then(() => {
-              qc.invalidateQueries({ queryKey: ['wa-conversations'] });
-              qc.invalidateQueries({ queryKey: ['wa-inbox-unread-total'] });
-            })
-            .catch(() => {});
+          // Mark read ONLY if the operator can actually see the thread.
+          //
+          // markRead blue-ticks the customer. This fired on every inbound event for
+          // the open conversation regardless of whether the tab was even visible, so
+          // a console left open in a background tab told customers their messages had
+          // been read when nobody had looked. The visibilitychange handler below
+          // flushes the receipt when the operator does come back.
+          maybeMarkRead();
           if (!isAtBottomRef.current) setNewMsgCount((c) => c + 1);
         }
-      } else if (data.message?.direction === 'INBOUND') {
-        // New inbound message in a conversation that isn't open → notify
-        // (short beep + best-effort browser Notification).
-        const body =
-          stripWhatsAppFormatting(data.message.text ?? '').trim() ||
-          (data.message.type ? `New ${data.message.type.toLowerCase()} message` : 'New message');
-        notifyInbound('New WhatsApp message', body);
       }
+      // Alerting for messages in OTHER conversations (beep + browser
+      // notification) lives in WaNotificationsProvider, mounted by the section
+      // layout — here it only fired while this page was the one on screen, so an
+      // operator on any other /whatsapp/* page was never told anything arrived.
     };
     const onStatus = (data: {
       conversationId: string;
@@ -904,21 +1625,32 @@ export default function SuperAdminWhatsappInboxPage() {
       // Patch the matching bubble's status in place (grey → ✓ → ✓✓ → blue) —
       // the payload carries {wamid,status}, so no thread refetch is needed.
       const { wamid, status } = data;
-      qc.setQueryData(
-        ['wa-messages', selectedId],
+      let matched = false;
+      qc.setQueriesData(
+        { queryKey: ['wa-messages', selectedId] },
         (old: { data?: { items?: WaMessage[] } } | undefined) => {
           if (!old?.data?.items) return old;
           let changed = false;
           const items = old.data.items.map((m) => {
-            if (m.wamid === wamid && m.status !== status) {
-              changed = true;
-              return { ...m, status };
-            }
-            return m;
+            if (m.wamid !== wamid) return m;
+            matched = true;
+            // Never walk a message backwards: Meta can deliver a late SENT after
+            // a READ, and re-applying it would show an answered message as
+            // merely sent.
+            if (STATUS_RANK[status] <= STATUS_RANK[m.status]) return m;
+            changed = true;
+            return { ...m, status };
           });
           return changed ? { ...old, data: { ...old.data, items } } : old;
         },
       );
+      // Nothing to patch yet — hold it for the row that is still in flight.
+      if (!matched) {
+        const orphans = orphanStatusRef.current;
+        if (orphans.size >= 200) orphans.clear();
+        const held = orphans.get(wamid);
+        if (!held || STATUS_RANK[status] > STATUS_RANK[held]) orphans.set(wamid, status);
+      }
     };
     // Conversation-level updates: unread counts, assignment, status changes.
     const onConversation = (data: { conversationId: string }) => {
@@ -942,8 +1674,8 @@ export default function SuperAdminWhatsappInboxPage() {
       // Patch the target message's reactions in place (mirrors the backend merge:
       // one reaction per side; empty emoji = removed) — no thread refetch.
       const { targetWamid, emoji, from, side = 'in' } = data;
-      qc.setQueryData(
-        ['wa-messages', selectedId],
+      qc.setQueriesData(
+        { queryKey: ['wa-messages', selectedId] },
         (old: { data?: { items?: WaMessage[] } } | undefined) => {
           if (!old?.data?.items) return old;
           let changed = false;
@@ -975,10 +1707,20 @@ export default function SuperAdminWhatsappInboxPage() {
       qc.invalidateQueries({ queryKey: ['wa-inbox-unread-total'] });
       if (selectedId) {
         emit('wa:open', selectedId);
+
         qc.invalidateQueries({ queryKey: ['wa-messages', selectedId] });
         qc.invalidateQueries({ queryKey: ['wa-conversation', selectedId] });
       }
     };
+
+    // Receipts deferred while the tab was hidden are flushed on return, so a
+    // customer is not left permanently unacknowledged just because the operator had
+    // the console in a background tab when their message landed.
+    //
+    // Declared in the EFFECT BODY, not inside onConnect: registering it there added
+    // a fresh listener on every socket reconnect, and none of them were removable.
+    const flushOnVisible = () => maybeMarkRead();
+    document.addEventListener('visibilitychange', flushOnVisible);
 
     socket.on('connect', onConnect);
     socket.on('wa:message', onMessage);
@@ -986,13 +1728,17 @@ export default function SuperAdminWhatsappInboxPage() {
     socket.on('wa:conversation', onConversation);
     socket.on('wa:reaction', onReaction);
     return () => {
+      // Without this the listener leaks on every conversation switch, and each
+      // stale copy still holds its own selectedId - so returning to the tab would
+      // fire a read receipt for every thread visited this session.
+      document.removeEventListener('visibilitychange', flushOnVisible);
       socket.off('connect', onConnect);
       socket.off('wa:message', onMessage);
       socket.off('wa:status', onStatus);
       socket.off('wa:conversation', onConversation);
       socket.off('wa:reaction', onReaction);
     };
-  }, [socket, selectedId, qc, emit]);
+  }, [socket, selectedId, qc, emit, maybeMarkRead]);
 
   // On select: join the thread room + mark read.
   useEffect(() => {
@@ -1001,17 +1747,13 @@ export default function SuperAdminWhatsappInboxPage() {
     // treat it as "at bottom" until the user actually scrolls up.
     isAtBottomRef.current = true;
     emit('wa:open', selectedId);
-    svc
-      .markRead(selectedId)
-      .then(() => {
-        qc.invalidateQueries({ queryKey: ['wa-conversations'] });
-        // Clear the sidebar unread badge instantly in this tab (the socket
-        // echo would also do it, but this avoids the round-trip lag).
-        qc.invalidateQueries({ queryKey: ['wa-inbox-unread-total'] });
-      })
-      .catch(() => {});
+    // Gated like every other receipt. This path was completely ungated, and
+    // `selectedId` is restored from the URL on mount — so a console reopened in
+    // a background tab, or a session restored by the browser, blue-ticked the
+    // customer without anyone having looked at the thread.
+    maybeMarkRead();
     return () => emit('wa:close', selectedId);
-  }, [selectedId, emit, qc]);
+  }, [selectedId, emit, qc, maybeMarkRead]);
 
   // Keep a live reference to the merged messages so the scroll layout-effect can
   // read them without `messages` being a dependency (which would scroll on every
@@ -1032,6 +1774,10 @@ export default function SuperAdminWhatsappInboxPage() {
   // override's native fast-path (scrolls the panel, not the page).
   const lastMessageId = messages[messages.length - 1]?.id;
   const initialScrolledConvRef = useRef<string | null>(null);
+  // The anchor we have already scrolled to. Clicking a second search hit in the
+  // conversation that is ALREADY open is not a conversation switch, so without
+  // this the thread would refetch around the new message and never move.
+  const scrolledAnchorRef = useRef<string | null>(null);
   // Layout effect: position the scroll BEFORE the browser paints, so the thread
   // appears already at the right spot (bottom / first unread) with no visible
   // "land at top then jump" flash — like the WhatsApp app.
@@ -1040,7 +1786,9 @@ export default function SuperAdminWhatsappInboxPage() {
     if (!el || !selectedId) return;
     const msgs = messagesRef.current;
     if (msgs.length === 0) return;
-    const isInitial = initialScrolledConvRef.current !== selectedId;
+    const isInitial =
+      initialScrolledConvRef.current !== selectedId ||
+      scrolledAnchorRef.current !== anchorMessageId;
     if (!isInitial) {
       // Only follow new messages when already near the bottom, or when WE sent
       // the latest one. If the agent scrolled up to read history, leave the
@@ -1052,6 +1800,16 @@ export default function SuperAdminWhatsappInboxPage() {
       return;
     }
     initialScrolledConvRef.current = selectedId;
+    scrolledAnchorRef.current = anchorMessageId;
+    // A search hit wins over the unread marker: the operator asked for THIS
+    // message, so centre it rather than opening at the unread block or the end.
+    if (anchorMessageId) {
+      const hit = document.getElementById(`wa-msg-${anchorMessageId}`);
+      if (hit) {
+        hit.scrollIntoView({ behavior: 'instant', block: 'center' });
+        return;
+      }
+    }
     const unread = openUnread?.convId === selectedId ? openUnread.count : 0;
     if (unread > 0) {
       // First unread = the `unread`-th INBOUND message counting from the end.
@@ -1072,14 +1830,106 @@ export default function SuperAdminWhatsappInboxPage() {
       }
     }
     el.scrollIntoView({ behavior: 'instant', block: 'end' });
-  }, [lastMessageId, selectedId, openUnread]);
+  }, [lastMessageId, selectedId, openUnread, anchorMessageId]);
+
+  // ── Offline outbox ────────────────────────────────────────────────────────
+  //
+  // Pull the durable queue into render state.
+  const refreshOutbox = useCallback(async () => {
+    setOutbox(await listOutbox());
+  }, []);
+
+  /** Park a reply in the outbox and reset the composer as if it had gone out. */
+  const queueOffline = useCallback(
+    async (conversationId: string, text: string, contextWamid?: string) => {
+      await enqueueOutbox({
+        id: makeOptimisticMessage('', '', text).id,
+        conversationId,
+        text,
+        contextWamid,
+        createdAt: new Date().toISOString(),
+      });
+      await refreshOutbox();
+      setDraft('');
+      setReplyTo(null);
+      showToast.info('No connection — queued. It will send by itself once you are back online.');
+    },
+    [refreshOutbox],
+  );
+
+  /** Drop a queued reply the operator no longer wants sent. */
+  const discardQueued = useCallback(
+    async (id: string) => {
+      await removeOutbox(id);
+      await refreshOutbox();
+    },
+    [refreshOutbox],
+  );
+
+  /**
+   * Push whatever is queued, then say what happened to it.
+   *
+   * Every outcome is reported: a queued reply that silently disappears is the
+   * exact failure the outbox exists to end, so an expired or rejected entry has
+   * to surface rather than being swept up by the drain.
+   */
+  const runDrain = useCallback(async () => {
+    const result = await drainOutbox((entry) =>
+      svc.sendMessage(entry.conversationId, entry.text, entry.contextWamid),
+    );
+    await refreshOutbox();
+    if (!result) return; // another tab holds the drain lock — it is sending them
+    if (result.sent > 0) {
+      showToast.success(
+        `${result.sent} queued message${result.sent > 1 ? 's' : ''} sent now that you are back online`,
+      );
+      void qc.invalidateQueries({ queryKey: ['wa-messages'] });
+      void qc.invalidateQueries({ queryKey: ['wa-conversations'] });
+    }
+    for (const drop of result.dropped) {
+      const preview = drop.entry.text.slice(0, 40);
+      if (drop.reason === 'expired') {
+        showToast.error(
+          `Queued reply "${preview}" expired — WhatsApp only accepts free-form replies for 24 hours. Send it as a template.`,
+        );
+      } else if (drop.reason === 'exhausted') {
+        showToast.error(`Queued reply "${preview}" could not be sent and was discarded.`);
+      } else {
+        showToast.error(drop.message || `Queued reply "${preview}" was rejected.`);
+      }
+    }
+  }, [qc, refreshOutbox]);
+
+  // Drain on mount as well as on `online`: an entry outlives the tab that queued
+  // it, so a reload while offline (then online) must not strand it.
+  useEffect(() => {
+    const onOnline = () => void runDrain();
+    window.addEventListener('online', onOnline);
+    // The mount kick runs on the next tick rather than inside the effect body:
+    // the drain reports its outcome through toasts and query invalidation, and
+    // firing that synchronously with mount cascades a second render before the
+    // inbox has painted once.
+    const kick = window.setTimeout(onOnline, 0);
+    return () => {
+      window.clearTimeout(kick);
+      window.removeEventListener('online', onOnline);
+    };
+  }, [runDrain]);
 
   // Optimistic text send: insert a temporary QUEUED bubble immediately, then
   // reconcile (drop it; the real server message arrives via refetch) on
   // success, or flip it to FAILED on error so it can be retried in-place.
   const sendMut = useMutation({
-    mutationFn: (vars: { text: string; optimisticId: string; contextWamid?: string }) =>
-      svc.sendMessage(selectedId as string, vars.text, vars.contextWamid),
+    // `conversationId` travels with the send instead of being read off
+    // `selectedId` again in the callbacks: onError resolves asynchronously, and
+    // the operator can have switched threads by then — queueing the failed reply
+    // against whatever is open NOW would deliver it to a different customer.
+    mutationFn: (vars: {
+      conversationId: string;
+      text: string;
+      optimisticId: string;
+      contextWamid?: string;
+    }) => svc.sendMessage(vars.conversationId, vars.text, vars.contextWamid),
     onMutate: (vars) => {
       if (!selected) return;
       const optimistic = makeOptimisticMessage(selected.id, selected.contactId, vars.text);
@@ -1096,11 +1946,25 @@ export default function SuperAdminWhatsappInboxPage() {
       // place of the optimistic bubble with no gap (no refetch, no disappear/
       // reappear flicker), THEN drop the optimistic bubble.
       const real = res?.data;
-      if (real) mergeMessageIntoCache(qc, real.conversationId, real);
+      if (real) mergeMessageIntoCache(qc, real.conversationId, real, orphanStatusRef.current);
       setPendingMessages((prev) => prev.filter((m) => m.id !== vars.optimisticId));
       qc.invalidateQueries({ queryKey: ['wa-conversations'] });
     },
     onError: (e, vars) => {
+      // No network at all, so the request never left the machine and cannot have
+      // reached Meta: park it in the durable outbox rather than leaving a red
+      // bubble that disappears at the next conversation switch.
+      //
+      // Deliberately NOT extended to every transport-level error. A `statusCode
+      // 0` while the browser still believes it is online may be a connection
+      // dropped mid-flight, and the send endpoint carries no idempotency key —
+      // auto-replaying a request that might have landed shows the customer the
+      // same reply twice. Those keep the manual-retry bubble.
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        setPendingMessages((prev) => prev.filter((m) => m.id !== vars.optimisticId));
+        void queueOffline(vars.conversationId, vars.text, vars.contextWamid);
+        return;
+      }
       // Rollback to a FAILED bubble (keeps the text for one-tap retry).
       setPendingMessages((prev) =>
         prev.map((m) =>
@@ -1117,22 +1981,40 @@ export default function SuperAdminWhatsappInboxPage() {
   const submitDraft = (text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
+    if (!selectedId) return;
+    const contextWamid = replyTo?.wamid ?? undefined;
+    // Known-offline: skip the request the browser would refuse to make anyway and
+    // queue straight away, so the composer clears and the operator can carry on
+    // working the thread instead of collecting red bubbles.
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      void queueOffline(selectedId, trimmed, contextWamid);
+      return;
+    }
     sendMut.mutate({
+      conversationId: selectedId,
       text: trimmed,
       optimisticId: makeOptimisticMessage('', '', trimmed).id,
-      contextWamid: replyTo?.wamid ?? undefined,
+      contextWamid,
     });
   };
 
   // Re-send a FAILED message: remove the failed bubble, fire a fresh send.
   const retrySend = (text: string, failedId?: string) => {
+    if (!selectedId) return;
     if (failedId) setPendingMessages((prev) => prev.filter((m) => m.id !== failedId));
-    sendMut.mutate({ text, optimisticId: makeOptimisticMessage('', '', text).id });
+    sendMut.mutate({
+      conversationId: selectedId,
+      text,
+      optimisticId: makeOptimisticMessage('', '', text).id,
+    });
   };
 
   const workflowMut = useMutation({
-    mutationFn: (vars: { type: 'assign' } | { type: 'status'; status: 'OPEN' | 'RESOLVED' }) => {
-      if (vars.type === 'assign') return svc.assign(selectedId as string, OPERATOR);
+    mutationFn: (vars: { type: 'assign' } | { type: 'status'; status: WaConversationStatus }) => {
+      // The label the SERVER says this session stamps, not one this page
+      // reconstructed — see `operatorLabel` above. The button is disabled until
+      // it is known, so this cannot assign a thread to a name nothing matches.
+      if (vars.type === 'assign') return svc.assign(selectedId as string, operatorLabel as string);
       return svc.setStatus(selectedId as string, vars.status);
     },
     onSuccess: () => {
@@ -1142,11 +2024,16 @@ export default function SuperAdminWhatsappInboxPage() {
     onError: (e) => showToast.error((e as unknown as ApiError).message || 'Action failed'),
   });
 
-  // Load older messages: fetch before the oldest currently-loaded createdAt, prepend + dedupe.
+  // Load older messages: page on a COMPOUND cursor (oldest createdAt + its id).
+  //
+  // Meta stamps inbound messages to the second, so paging on the timestamp alone
+  // skipped every other message sharing that boundary second — on a busy thread
+  // "Load older" quietly lost messages and nothing indicated a gap.
   const loadOlderMut = useMutation({
     mutationFn: () => {
       const oldest = messages[0]?.createdAt;
-      return svc.getMessages(selectedId as string, oldest);
+      const oldestId = messages[0]?.id;
+      return svc.getMessages(selectedId as string, oldest, oldestId);
     },
     onSuccess: (res) => {
       const older = res.data?.items ?? [];
@@ -1154,16 +2041,17 @@ export default function SuperAdminWhatsappInboxPage() {
         setHasMoreOlder(false);
         return;
       }
-      setOlderMessages((prev) => {
-        const seen = new Set(prev.map((m) => m.id));
-        const next = [...prev];
-        for (const m of older) {
-          if (!seen.has(m.id)) {
-            seen.add(m.id);
-            next.push(m);
-          }
-        }
-        return next;
+      // Prepended into the SAME query entry as the newest page, not into a
+      // separate component buffer. The buffer was invisible to the `wa:status`
+      // and `wa:reaction` cache patches, so once an operator scrolled back
+      // through history the ticks and reactions on those bubbles silently
+      // stopped updating until the thread was reloaded.
+      qc.setQueryData(msgQueryKey, (old: ApiResponse<{ items: WaMessage[] }> | undefined) => {
+        if (!old?.data?.items) return old;
+        const seen = new Set(old.data.items.map((m) => m.id));
+        const add = older.filter((m) => !seen.has(m.id));
+        if (add.length === 0) return old;
+        return { ...old, data: { ...old.data, items: [...add, ...old.data.items] } };
       });
     },
     onError: (e) =>
@@ -1176,12 +2064,92 @@ export default function SuperAdminWhatsappInboxPage() {
   // had happened.
   const [uploadingName, setUploadingName] = useState<string | null>(null);
 
-  const sendMediaMut = useMutation({
-    mutationFn: ({ file, voice }: { file: File; voice?: boolean }) => {
-      setUploadingName(file.name);
-      return svc.sendMedia(selectedId as string, file, undefined, voice);
+  // Bytes-sent percentage for that same indicator. A filename on its own cannot
+  // distinguish a 4 MB attachment crawling up a slow uplink from an upload that
+  // has stalled outright, so the operator's only options were to wait blindly or
+  // to send it again. null while a percentage is not yet known.
+  const [uploadPct, setUploadPct] = useState<number | null>(null);
+
+  // A multi-file attach / drop / paste, in the order it was picked, together with
+  // the thread it was picked FOR. Sending five screenshots meant five round trips
+  // through the attach menu; now one pick fills this and each file still gets its
+  // own preview and its own caption.
+  //
+  // The conversation id rides along so a switch discards the pick by derivation
+  // instead of by an effect — attachments belong to the thread they were dropped
+  // into, and carrying them across would open the next preview against whoever
+  // the agent moved on to, then send that customer someone else's screenshot.
+  const [mediaPick, setMediaPick] = useState<{ convId: string | null; files: File[] }>({
+    convId: null,
+    files: [],
+  });
+  const mediaFiles = mediaPick.convId === selectedId ? mediaPick.files : NO_FILES;
+  /** Drop the file at the head of the pick — sent, or cancelled. */
+  const advanceMedia = useCallback(() => {
+    setMediaPick((p) => ({ ...p, files: p.files.slice(1) }));
+  }, []);
+
+  /**
+   * Funnel for EVERY way a file can arrive — attach menu, paste, drop. Oversized
+   * files are reported and dropped individually rather than failing the whole
+   * batch, which would make the operator re-pick the ones that were fine.
+   */
+  const queueMedia = useCallback(
+    (files: File[]) => {
+      const accepted: File[] = [];
+      for (const file of files) {
+        try {
+          assertWaMediaSize(file);
+          accepted.push(file);
+        } catch (err) {
+          showToast.error(err instanceof Error ? err.message : 'File is too large');
+        }
+      }
+      if (accepted.length === 0) return;
+      setMediaPick((p) => ({
+        convId: selectedId,
+        // A pick left over from another thread is replaced, never appended to.
+        files: p.convId === selectedId ? [...p.files, ...accepted] : accepted,
+      }));
     },
-    onSettled: () => setUploadingName(null),
+    [selectedId],
+  );
+
+  // One idempotency key per PICKED FILE, held for as long as that file is around.
+  //
+  // A large attachment on a slow uplink can outlive the client timeout while the
+  // backend goes on to upload it to Meta and deliver it. The operator sees
+  // "Failed to send media" and sends again — and without a key the second
+  // request is indistinguishable from a genuine second send, so the customer got
+  // the file twice and the account was billed twice. Keyed on the File object so
+  // re-picking the same file later is still a real second send.
+  const mediaSendKeys = useRef(new WeakMap<File, string>());
+  const idempotencyKeyFor = (file: File): string => {
+    let key = mediaSendKeys.current.get(file);
+    if (!key) {
+      key = crypto.randomUUID();
+      mediaSendKeys.current.set(file, key);
+    }
+    return key;
+  };
+
+  const sendMediaMut = useMutation({
+    mutationFn: ({ file, caption, voice }: { file: File; caption?: string; voice?: boolean }) => {
+      setUploadingName(file.name);
+      setUploadPct(0);
+      return svc.sendMedia(
+        selectedId as string,
+        file,
+        caption,
+        voice,
+        idempotencyKeyFor(file),
+        setUploadPct,
+      );
+    },
+    onSettled: () => {
+      setUploadingName(null);
+      setUploadPct(null);
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['wa-messages', selectedId] });
       qc.invalidateQueries({ queryKey: ['wa-conversations'] });
@@ -1190,14 +2158,75 @@ export default function SuperAdminWhatsappInboxPage() {
     onError: (e) => showToast.error((e as unknown as ApiError).message || 'Failed to send media'),
   });
 
+  // The file on the pre-send sheet (preview + caption) is simply the head of the
+  // pick, and the sheet steps to the next one only once the previous file has
+  // left the queue AND its upload has finished — so a five-file pick is five
+  // ordered sends, each with its own preview and its own caption, rather than a
+  // second preview opening over an upload the operator is still watching.
+  //
+  // The picker used to fire straight into the upload, so a mis-picked file
+  // reached the customer before anyone could see it, and media could never carry
+  // a caption even though the API accepts one.
+  const pendingMedia = sendMediaMut.isPending ? null : (mediaFiles[0] ?? null);
+  /** The files still waiting behind the sheet, for the "+N queued" badge. */
+  const mediaQueuedCount = Math.max(0, mediaFiles.length - (pendingMedia ? 1 : 0));
+
+  // Drag-and-drop onto the open thread.
+  //
+  // `dragDepth` counts enter/leave pairs. dragleave fires as the pointer crosses
+  // each message bubble inside the pane, so a single boolean made the highlight
+  // flicker off and on for the whole traverse.
+  const [dropActive, setDropActive] = useState(false);
+  const dragDepth = useRef(0);
+  const dragHasFiles = (dt: DataTransfer | null) => !!dt && Array.from(dt.types).includes('Files');
+  const onThreadDragEnter = (e: React.DragEvent) => {
+    if (!dragHasFiles(e.dataTransfer)) return;
+    dragDepth.current += 1;
+    setDropActive(true);
+  };
+  const onThreadDragOver = (e: React.DragEvent) => {
+    if (!dragHasFiles(e.dataTransfer)) return;
+    // Without this the browser treats the drop as navigation and replaces the
+    // inbox with the dropped file.
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  };
+  const onThreadDragLeave = (e: React.DragEvent) => {
+    if (!dragHasFiles(e.dataTransfer)) return;
+    dragDepth.current -= 1;
+    if (dragDepth.current <= 0) {
+      dragDepth.current = 0;
+      setDropActive(false);
+    }
+  };
+  const onThreadDrop = (e: React.DragEvent) => {
+    if (!dragHasFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    dragDepth.current = 0;
+    setDropActive(false);
+    queueMedia(Array.from(e.dataTransfer.files));
+  };
+
   // "Delete for me" — soft-delete single/selected messages from the inbox view.
   const deleteMessagesMut = useMutation({
     mutationFn: (ids: string[]) => svc.deleteMessages(selectedId as string, ids),
     onSuccess: (_res, ids) => {
       const del = new Set(ids);
-      // The refetch excludes deleted rows, but olderMessages + pendingMessages
-      // are client-held buffers, so drop the ids from them too.
-      setOlderMessages((prev) => prev.filter((m) => !del.has(m.id)));
+      // Patch the cache directly as well as invalidating. The refetch only
+      // covers the newest page, and history older than it is RETAINED across a
+      // refetch (see msgQuery's queryFn) — so a deleted message scrolled back to
+      // would otherwise stay on screen even though the server no longer returns
+      // it. pendingMessages is a client-held buffer and needs the same.
+      qc.setQueriesData(
+        { queryKey: ['wa-messages', selectedId] },
+        (old: ApiResponse<{ items: WaMessage[] }> | undefined) => {
+          if (!old?.data?.items) return old;
+          const items = old.data.items.filter((m) => !del.has(m.id));
+          return items.length === old.data.items.length
+            ? old
+            : { ...old, data: { ...old.data, items } };
+        },
+      );
       setPendingMessages((prev) => prev.filter((m) => !del.has(m.id)));
       qc.invalidateQueries({ queryKey: ['wa-messages', selectedId] });
       qc.invalidateQueries({ queryKey: ['wa-conversations'] });
@@ -1229,6 +2258,19 @@ export default function SuperAdminWhatsappInboxPage() {
     onError: (e) => showToast.error((e as unknown as ApiError).message || 'Failed to archive'),
   });
 
+  // "Verified" on the identity-change banner. Clearing the flag is a security
+  // decision an agent takes after checking, so it is audited server-side rather
+  // than reset by the next inbound message.
+  const identityAckMut = useMutation({
+    mutationFn: (id: string) => svc.acknowledgeIdentityChange(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['wa-conversation', selectedId] });
+      qc.invalidateQueries({ queryKey: ['wa-conversations'] });
+    },
+    onError: (e) =>
+      showToast.error((e as unknown as ApiError).message || 'Failed to clear the warning'),
+  });
+
   // Request a CSAT rating from the contact (only while the 24h window is open).
   const csatMut = useMutation({
     mutationFn: () => svc.requestCsat(selectedId as string),
@@ -1250,13 +2292,22 @@ export default function SuperAdminWhatsappInboxPage() {
   const pageConvIds = conversations.map((c) => c.id);
   const allConvSelected = pageConvIds.length > 0 && pageConvIds.every((id) => selectedIds.has(id));
   const someConvSelected = selectedIds.size > 0 && !allConvSelected;
+  // Must mirror the list filters exactly: anything omitted here is not applied
+  // when "select all N matching" runs, so the action lands on a WIDER set than
+  // the operator can see. `labels` was missing, which meant a bulk archive under
+  // a label filter archived the whole inbox.
   const convBulkFilters = {
     q: debouncedSearch || undefined,
     unreadOnly,
     status: statusParam,
     assignedTo: assignedToParam,
+    labels: labelsParam,
+    channelId: channelParam,
     searchMessages,
     includeArchived,
+    includeSnoozed,
+    archivedOnly,
+    snoozedOnly,
   };
   const totalMatchingConv = firstPage?.total ?? conversations.length;
   const canSelectAllMatchingConv = true;
@@ -1296,6 +2347,28 @@ export default function SuperAdminWhatsappInboxPage() {
   const canReply = selected
     ? windowOpen(selected.windowExpiresAt) && !selected.contact.isBlocked
     : false;
+
+  /**
+   * "typing…" on the customer's phone, at most once per TYPING_THROTTLE_MS per
+   * conversation.
+   *
+   * The customer previously had no signal at all while an agent composed a long
+   * reply — the thread just went quiet, which reads as being ignored. Gated on
+   * `canReply` because the indicator rides on a read receipt Meta refuses once
+   * the 24h window has closed, and fire-and-forget because a cosmetic signal must
+   * never interrupt someone mid-sentence with an error toast.
+   */
+  const typingSentRef = useRef<{ convId: string; at: number }>({ convId: '', at: 0 });
+  const notifyTyping = useCallback(() => {
+    if (!selectedId || !canReply) return;
+    const now = Date.now();
+    const last = typingSentRef.current;
+    // Keyed on the conversation as well as the time: switching threads must be
+    // able to signal immediately rather than inherit the previous thread's clock.
+    if (last.convId === selectedId && now - last.at < TYPING_THROTTLE_MS) return;
+    typingSentRef.current = { convId: selectedId, at: now };
+    void svc.sendTyping(selectedId).catch(() => {});
+  }, [selectedId, canReply]);
   const [nowTs, setNowTs] = useState(0);
   useEffect(() => {
     const tick = () => setNowTs(Date.now());
@@ -1308,6 +2381,11 @@ export default function SuperAdminWhatsappInboxPage() {
   }, []);
   const selectedSnoozed =
     !!selected?.snoozedUntil && new Date(selected.snoozedUntil).getTime() > nowTs;
+  // Time left on the 24h free-form window, recomputed on the same 60s tick so the
+  // header chip counts down live. `nowTs` starts unset so the first paint matches
+  // the server; measuring against 0 would flash a ~500,000h countdown, so the chip
+  // stays hidden until the mount tick lands a frame later.
+  const windowMsLeft = selected && nowTs > 0 ? windowRemaining(selected.windowExpiresAt, nowTs) : 0;
 
   return (
     <DashboardLayout
@@ -1393,21 +2471,24 @@ export default function SuperAdminWhatsappInboxPage() {
                   Search messages
                 </button>
               </Tooltip>
-              <button
-                type="button"
-                onClick={() => setIncludeArchived((v) => !v)}
-                aria-pressed={includeArchived}
-                className={cn(
-                  'rounded-full px-3 py-1 text-xs font-medium transition-colors',
-                  includeArchived
-                    ? 'bg-emerald-600 text-white'
-                    : 'bg-[var(--bg-secondary)] text-[var(--text-secondary)]',
-                )}
-              >
-                Include archived
-              </button>
             </div>
-            <div className="mt-2 grid grid-cols-3 gap-1.5">
+            <div className="mt-2 grid grid-cols-2 gap-1.5">
+              {/* Archived and snoozed are SCOPES, not "also show" checkboxes:
+                  the archive is its own view, and "what did I snooze?" is a
+                  question the two old toggles could not ask. */}
+              <Select
+                id="wa-scope-filter"
+                size="sm"
+                clearable={false}
+                value={scopeFilter}
+                onChange={(v) => setScopeFilter(v as ScopeFilter)}
+                options={[
+                  { value: 'active', label: 'Active' },
+                  { value: 'snoozed', label: 'Snoozed' },
+                  { value: 'archived', label: 'Archived' },
+                  { value: 'all', label: 'All conversations' },
+                ]}
+              />
               <Select
                 size="sm"
                 clearable={false}
@@ -1431,7 +2512,35 @@ export default function SuperAdminWhatsappInboxPage() {
                   { value: 'unassigned', label: 'Unassigned' },
                 ]}
               />
+              <Select
+                size="sm"
+                value={labelFilter}
+                onChange={setLabelFilter}
+                options={[
+                  { value: '', label: 'All labels' },
+                  ...knownLabels.map((l) => ({ value: l, label: l })),
+                ]}
+              />
             </div>
+            {/* Only worth screen space once a second number is connected — on a
+                single-number install "All numbers" is the only possible answer. */}
+            {channels.length > 1 && (
+              <div className="mt-1.5">
+                <Select
+                  size="sm"
+                  clearable={false}
+                  value={channelFilter}
+                  onChange={setChannelFilter}
+                  options={[
+                    { value: '', label: 'All numbers' },
+                    ...channels.map((c) => ({
+                      value: c.id,
+                      label: c.displayName || c.displayPhone,
+                    })),
+                  ]}
+                />
+              </div>
+            )}
           </div>
           {/* Persistent select-all (page) toggle so a selection can be started. */}
           <div className="flex items-center gap-2 border-b border-[var(--border)] bg-[var(--bg)] px-3 py-1.5">
@@ -1459,8 +2568,8 @@ export default function SuperAdminWhatsappInboxPage() {
             onClear={clearConvSelection}
             onDone={onConvBulkDone}
           />
-          <div className="flex-1 overflow-y-auto">
-            {convQuery.isLoading && (
+          <div ref={convScrollRef} onScroll={syncConvWindow} className="flex-1 overflow-y-auto">
+            {(convQuery.isLoading || awaitingOperatorLabel) && (
               <p className="p-4 text-center text-sm text-[var(--text-muted)]">Loading…</p>
             )}
             {convQuery.isError && (
@@ -1475,21 +2584,68 @@ export default function SuperAdminWhatsappInboxPage() {
                 </button>
               </div>
             )}
-            {!convQuery.isLoading && !convQuery.isError && conversations.length === 0 && (
-              <p className="p-6 text-center text-sm text-[var(--text-muted)]">
-                No conversations yet. They appear here when someone messages your WhatsApp number.
-              </p>
-            )}
-            {conversations.map((c) => (
-              <ConversationRow
-                key={c.id}
-                conv={c}
-                active={c.id === selectedId}
-                onClick={() => setSelectedId(c.id)}
-                selected={selectedIds.has(c.id)}
-                onToggleSelect={(checked) => toggleSelect(c.id, checked)}
-              />
-            ))}
+            {!convQuery.isLoading &&
+              !awaitingOperatorLabel &&
+              !convQuery.isError &&
+              conversations.length === 0 && (
+                <p className="p-6 text-center text-sm text-[var(--text-muted)]">
+                  No conversations yet. They appear here when someone messages your WhatsApp number.
+                </p>
+              )}
+            {/* Only the slice around the viewport is mounted; the two spacers
+                stand in for the rows above and below it (see CONV_ROW_H). */}
+            <div
+              ref={convRowsRef}
+              role="listbox"
+              aria-label="Conversations"
+              aria-activedescendant={
+                convCursorIndex >= 0 ? convOptionId(conversations[convCursorIndex].id) : undefined
+              }
+              tabIndex={0}
+              onKeyDown={onConvListKeyDown}
+              onFocus={(e) => {
+                if (e.target !== e.currentTarget) return;
+                setConvListFocused(true);
+                // Start from the open thread rather than the top, so a list
+                // focused after a `?c=` restore does not arrow away from where
+                // the operator already is. Every other path (click, Enter) has
+                // already put the cursor there, so this is a no-op for them.
+                const open = conversations.findIndex((c) => c.id === selectedId);
+                if (open >= 0) {
+                  setConvCursor(open);
+                  // Also scrolled into the window, so the row the
+                  // `aria-activedescendant` names is actually mounted.
+                  revealConvRow(open);
+                }
+              }}
+              onBlur={(e) => {
+                if (e.target === e.currentTarget) setConvListFocused(false);
+              }}
+              className="focus-visible:ring-primary/40 outline-none focus-visible:ring-2 focus-visible:ring-inset"
+            >
+              {convPadTop > 0 && <div style={{ height: convPadTop }} aria-hidden="true" />}
+              {conversations.slice(convVisibleStart, convVisibleEnd).map((c, i) => {
+                const index = convVisibleStart + i;
+                return (
+                  <ConversationRow
+                    key={c.id}
+                    conv={c}
+                    active={c.id === selectedId}
+                    cursor={convListFocused && index === convCursorIndex}
+                    onClick={() => {
+                      // Clicking is also a cursor move, so arrowing on from a row
+                      // the operator just clicked continues from that row.
+                      setConvCursor(index);
+                      openConversation(c);
+                    }}
+                    selected={selectedIds.has(c.id)}
+                    onToggleSelect={(checked) => toggleSelect(c.id, checked)}
+                    highlight={debouncedSearch}
+                  />
+                );
+              })}
+              {convPadBottom > 0 && <div style={{ height: convPadBottom }} aria-hidden="true" />}
+            </div>
             {convHasMore && (
               <div className="p-3">
                 <button
@@ -1555,7 +2711,13 @@ export default function SuperAdminWhatsappInboxPage() {
                         </Tooltip>
                       )}
                       {typeof selected.csatScore === 'number' && (
-                        <Tooltip content={`Customer satisfaction: ${selected.csatScore}/5`}>
+                        <Tooltip
+                          content={
+                            selected.csatComment
+                              ? `Customer satisfaction: ${selected.csatScore}/5 — “${selected.csatComment}”`
+                              : `Customer satisfaction: ${selected.csatScore}/5`
+                          }
+                        >
                           <span
                             className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800"
                             aria-label={`Customer rating ${selected.csatScore} out of 5`}
@@ -1568,11 +2730,38 @@ export default function SuperAdminWhatsappInboxPage() {
                           </span>
                         </Tooltip>
                       )}
+                      {/* Live 24h-window countdown. Enforcement was already exact
+                          but invisible: the agent only learned the window had shut
+                          when the composer vanished mid-draft, so the last minutes
+                          were spent typing a reply that could no longer be sent. */}
+                      {canReply && windowMsLeft > 0 && (
+                        <Tooltip
+                          content={`Free-form replies for another ${fmtRemaining(windowMsLeft)} (until ${fmtTime(selected.windowExpiresAt)}). After that only approved templates can be sent.`}
+                        >
+                          <span
+                            className={cn(
+                              'inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium',
+                              windowMsLeft < WINDOW_WARN_MS
+                                ? 'bg-amber-100 text-amber-800'
+                                : 'bg-[var(--bg-secondary)] text-[var(--text-secondary)]',
+                            )}
+                            aria-label={`Free replies for ${fmtRemaining(windowMsLeft)}`}
+                          >
+                            <Hourglass className="h-3 w-3" aria-hidden="true" />
+                            Free replies {fmtRemaining(windowMsLeft)}
+                          </span>
+                        </Tooltip>
+                      )}
                     </div>
-                    <p className="text-xs text-[var(--text-muted)]">
-                      {selected.contact.phone}
-                      {selected.contact.optInStatus === 'OPTED_OUT' && ' · opted out'}
-                    </p>
+                    <p className="text-xs text-[var(--text-muted)]">{selected.contact.phone}</p>
+                    <span
+                      className={cn(
+                        'mt-0.5 inline-block rounded-full px-1.5 py-0.5 text-[10px] font-semibold',
+                        INBOX_OPT_IN_STYLE[selected.contact.optInStatus],
+                      )}
+                    >
+                      {selected.contact.optInStatus.replace('_', ' ')}
+                    </span>
                     {selected.labels?.length > 0 && (
                       <div className="mt-1 flex flex-wrap items-center gap-1">
                         <TagIcon className="h-3 w-3 text-[var(--text-muted)]" />
@@ -1640,27 +2829,35 @@ export default function SuperAdminWhatsappInboxPage() {
                   <button
                     type="button"
                     onClick={() => workflowMut.mutate({ type: 'assign' })}
-                    className="hidden rounded-md border border-[var(--border)] px-2 py-1 text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] sm:block"
+                    disabled={!operatorLabel}
+                    className="hidden rounded-md border border-[var(--border)] px-2 py-1 text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] disabled:opacity-60 sm:block"
                   >
                     Assign to me
                   </button>
-                  {selected.status === 'RESOLVED' ? (
-                    <button
-                      type="button"
-                      onClick={() => workflowMut.mutate({ type: 'status', status: 'OPEN' })}
-                      className="rounded-md border border-[var(--border)] px-2 py-1 text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]"
-                    >
-                      Reopen
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => workflowMut.mutate({ type: 'status', status: 'RESOLVED' })}
-                      className="rounded-md bg-emerald-600 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-700"
-                    >
-                      Resolve
-                    </button>
-                  )}
+                  {/* All three states, not a Resolve/Reopen pair. PENDING
+                      ("waiting on the customer") was reachable only from the
+                      bulk bar even though the list filters by it, so the one
+                      status an agent sets while working a single thread was the
+                      one the thread header could not set. */}
+                  <div className="w-28">
+                    <label htmlFor="wa-thread-status" className="sr-only">
+                      Conversation status
+                    </label>
+                    <Select
+                      id="wa-thread-status"
+                      size="sm"
+                      clearable={false}
+                      value={selected.status}
+                      onChange={(v) =>
+                        workflowMut.mutate({ type: 'status', status: v as WaConversationStatus })
+                      }
+                      options={[
+                        { value: 'OPEN', label: 'Open' },
+                        { value: 'PENDING', label: 'Pending' },
+                        { value: 'RESOLVED', label: 'Resolved' },
+                      ]}
+                    />
+                  </div>
                   <Tooltip content="Conversation details">
                     <button
                       type="button"
@@ -1727,10 +2924,37 @@ export default function SuperAdminWhatsappInboxPage() {
 
               {/* Messages (scrollable) + floating scroll-to-latest button */}
               <div className="relative flex min-h-0 flex-1 flex-col">
+                {/* An anchored page is a slice from the MIDDLE of the thread, so
+                    the newest messages aren't loaded — say so, and offer the way
+                    back, instead of leaving the operator scrolling for a bottom
+                    that isn't there. */}
+                {anchorMessageId && (
+                  <div className="flex items-center justify-between gap-2 border-b border-amber-200 bg-amber-50 px-4 py-1.5 text-[11px] text-amber-900">
+                    <span className="flex items-center gap-1.5">
+                      <Search className="h-3 w-3 shrink-0" aria-hidden="true" />
+                      Showing the search result in context
+                    </span>
+                    <button
+                      type="button"
+                      onClick={jumpToLatest}
+                      className="shrink-0 font-medium underline hover:no-underline"
+                    >
+                      Jump to latest
+                    </button>
+                  </div>
+                )}
                 <div
                   ref={scrollContainerRef}
                   onScroll={handleThreadScroll}
-                  className="min-h-0 flex-1 space-y-2 overflow-y-auto p-4"
+                  {...(canReply
+                    ? {
+                        onDragEnter: onThreadDragEnter,
+                        onDragOver: onThreadDragOver,
+                        onDragLeave: onThreadDragLeave,
+                        onDrop: onThreadDrop,
+                      }
+                    : {})}
+                  className="relative min-h-0 flex-1 space-y-2 overflow-y-auto p-4"
                 >
                   {msgQuery.isLoading && !msgQuery.isError && (
                     <p className="text-center text-sm text-[var(--text-muted)]">
@@ -1757,26 +2981,45 @@ export default function SuperAdminWhatsappInboxPage() {
                     messages.length > 0 &&
                     hasMoreOlder && (
                       <div className="flex justify-center">
-                        <button
-                          type="button"
-                          onClick={() => loadOlderMut.mutate()}
-                          disabled={loadOlderMut.isPending}
-                          className="inline-flex items-center gap-1.5 rounded-full bg-[var(--bg)] px-3 py-1 text-xs font-medium text-[var(--text-secondary)] shadow-sm ring-1 ring-[var(--border)] hover:bg-[var(--bg-secondary)] disabled:opacity-60"
-                        >
-                          {loadOlderMut.isPending ? (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          ) : (
-                            <ChevronUp className="h-3.5 w-3.5" />
-                          )}
-                          Load older messages
-                        </button>
+                        {threadAtCap ? (
+                          <Tooltip content="Older messages aren't loaded, so the thread stays quick to scroll.">
+                            <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--bg)] px-3 py-1 text-[11px] font-medium text-[var(--text-muted)] shadow-sm ring-1 ring-[var(--border)]">
+                              <Hourglass className="h-3.5 w-3.5" aria-hidden="true" />
+                              Showing the most recent {messages.length} messages
+                            </span>
+                          </Tooltip>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => loadOlderMut.mutate()}
+                            disabled={loadOlderMut.isPending}
+                            className="inline-flex items-center gap-1.5 rounded-full bg-[var(--bg)] px-3 py-1 text-xs font-medium text-[var(--text-secondary)] shadow-sm ring-1 ring-[var(--border)] hover:bg-[var(--bg-secondary)] disabled:opacity-60"
+                          >
+                            {loadOlderMut.isPending ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <ChevronUp className="h-3.5 w-3.5" />
+                            )}
+                            Load older messages
+                          </button>
+                        )}
                       </div>
                     )}
                   {messages.map((m, i) => {
                     const showDay =
                       i === 0 || dayKey(messages[i - 1].createdAt) !== dayKey(m.createdAt);
                     return (
-                      <div key={m.id} id={`wa-msg-${m.id}`} className="space-y-2">
+                      <div
+                        key={m.id}
+                        id={`wa-msg-${m.id}`}
+                        className={cn(
+                          'space-y-2',
+                          // The matched message, called out so the operator can
+                          // see WHICH bubble the search landed on.
+                          m.id === anchorMessageId &&
+                            'rounded-lg bg-amber-50 ring-2 ring-amber-300',
+                        )}
+                      >
                         {showDay && <DaySeparator label={dayLabel(m.createdAt)} />}
                         {m.id === unreadDividerBeforeId && (
                           <div
@@ -1797,6 +3040,10 @@ export default function SuperAdminWhatsappInboxPage() {
                           conversationId={selected.id}
                           contactName={displayName(selected.contact)}
                           retrying={sendMut.isPending}
+                          offlineQueued={outboxIds.has(m.id)}
+                          onDiscardQueued={
+                            outboxIds.has(m.id) ? () => void discardQueued(m.id) : undefined
+                          }
                           onRetry={(text) =>
                             retrySend(text, isOptimisticId(m.id) ? m.id : undefined)
                           }
@@ -1808,11 +3055,31 @@ export default function SuperAdminWhatsappInboxPage() {
                           onCopy={copyMessageText}
                           onDelete={deleteOneMessage}
                           onStartSelect={enterMessageSelection}
+                          highlight={anchorMessageId ? debouncedSearch : undefined}
+                          // The same state the composer is gated on — the page
+                          // already knew reacting was impossible; the bubble did
+                          // not, so it kept offering it.
+                          canReact={canReply}
                         />
                       </div>
                     );
                   })}
                   <div ref={endRef} />
+                  {/* Drop target feedback. Rendered last and pinned with an
+                      explicit marginTop because the container's `space-y-2`
+                      would otherwise push this absolutely-positioned overlay
+                      down by one gap. */}
+                  {dropActive && (
+                    <div
+                      style={{ marginTop: 0 }}
+                      className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-lg border-2 border-dashed border-[var(--primary)] bg-[var(--bg)]/85"
+                    >
+                      <span className="flex items-center gap-2 text-sm font-medium text-[var(--primary)]">
+                        <Paperclip className="h-4 w-4" aria-hidden="true" />
+                        Drop to attach
+                      </span>
+                    </div>
+                  )}
                 </div>
                 {(showScrollBtn || newMsgCount > 0) && (
                   <button
@@ -1875,13 +3142,64 @@ export default function SuperAdminWhatsappInboxPage() {
                 )}
                 {/* Upload in flight. Without this a media send showed nothing at
                     all while a large file went up — the operator could not tell
-                    whether their click had registered. */}
+                    whether their click had registered. The percentage and the bar
+                    answer the next question: whether it is still moving. */}
                 {uploadingName && (
-                  <div className="mb-2 flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5">
-                    <Spinner size="sm" />
-                    <span className="min-w-0 truncate text-xs text-[var(--text-secondary)]">
-                      Sending {uploadingName}…
-                    </span>
+                  <div className="mb-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5">
+                    <div className="flex items-center gap-2">
+                      <Spinner size="sm" />
+                      <span className="min-w-0 flex-1 truncate text-xs text-[var(--text-secondary)]">
+                        Sending {uploadingName}…
+                      </span>
+                      {uploadPct !== null && (
+                        <span className="shrink-0 text-xs text-[var(--text-muted)] tabular-nums">
+                          {uploadPct}%
+                        </span>
+                      )}
+                      {mediaQueuedCount > 0 && (
+                        <span className="shrink-0 text-xs text-[var(--text-muted)]">
+                          +{mediaQueuedCount} queued
+                        </span>
+                      )}
+                    </div>
+                    {uploadPct !== null && (
+                      <div
+                        role="progressbar"
+                        aria-label={`Uploading ${uploadingName}`}
+                        aria-valuenow={uploadPct}
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        className="mt-1.5 h-1 overflow-hidden rounded-full bg-[var(--bg)]"
+                      >
+                        <div
+                          className="h-full rounded-full bg-[var(--primary)] transition-all duration-200"
+                          style={{ width: `${uploadPct}%` }}
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
+                {/* Meta says this customer re-registered WhatsApp on another
+                    device. Same number, same thread — possibly a different
+                    person, which is exactly what an agent about to share account
+                    details needs to be told before they type. Sits above the
+                    composer rather than in the header so it cannot scroll away. */}
+                {selected.identityChangedAt && (
+                  <div className="mb-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2.5 text-xs text-amber-900">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <span>
+                        This customer&apos;s WhatsApp identity changed (new device or security
+                        code). Verify who you are talking to before sharing anything sensitive.
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => identityAckMut.mutate(selected.id)}
+                        disabled={identityAckMut.isPending}
+                        className="inline-flex shrink-0 items-center gap-1 rounded-md border border-amber-400 bg-white px-2.5 py-1 font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-60"
+                      >
+                        <ShieldCheck className="h-3.5 w-3.5" /> Verified
+                      </button>
+                    </div>
                   </div>
                 )}
                 {canReply ? (
@@ -1901,23 +3219,32 @@ export default function SuperAdminWhatsappInboxPage() {
                       }}
                     />
                     {/* Emoji picker */}
-                    <div className="relative">
+                    <div className="relative" ref={emojiRef}>
                       <Tooltip content="Emoji">
                         <button
+                          ref={emojiBtnRef}
                           type="button"
                           onClick={() => setEmojiOpen((v) => !v)}
                           aria-label="Emoji"
+                          aria-haspopup="menu"
+                          aria-expanded={emojiOpen}
                           className="flex h-10 items-center rounded-lg px-2 text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text)]"
                         >
                           <Smile className="h-5 w-5" />
                         </button>
                       </Tooltip>
                       {emojiOpen && (
-                        <div className="absolute bottom-12 left-0 z-20 grid w-44 grid-cols-8 gap-1 rounded-lg border border-[var(--border)] bg-white p-2 shadow-lg">
+                        <div
+                          className="absolute bottom-12 left-0 z-20 grid w-44 grid-cols-8 gap-1 rounded-lg border border-[var(--border)] bg-white p-2 shadow-lg"
+                          role="menu"
+                          aria-label="Emoji"
+                        >
                           {EMOJIS.map((e) => (
                             <button
                               key={e}
                               type="button"
+                              role="menuitem"
+                              aria-label={`Insert ${e}`}
                               onClick={() => {
                                 setDraft((d) => d + e);
                                 setEmojiOpen(false);
@@ -1932,8 +3259,9 @@ export default function SuperAdminWhatsappInboxPage() {
                     </div>
                     {/* Attach menu: Photos & Videos / Audio / Document (any file) */}
                     <AttachMenu
-                      onPickFile={(file) => sendMediaMut.mutate({ file })}
+                      onPickFiles={queueMedia}
                       onContact={() => setContactOpen(true)}
+                      onLocation={() => setLocationOpen(true)}
                       disabled={sendMediaMut.isPending}
                     />
                     {/* Schedule (send later) */}
@@ -1948,17 +3276,32 @@ export default function SuperAdminWhatsappInboxPage() {
                       </button>
                     </Tooltip>
                     <textarea
+                      ref={composerRef}
                       value={draft}
-                      onChange={(e) => setDraft(e.target.value)}
+                      onChange={(e) => {
+                        setDraft(e.target.value);
+                        notifyTyping();
+                      }}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' && !e.shiftKey) {
                           e.preventDefault();
                           submitDraft(draft);
                         }
                       }}
+                      onPaste={(e) => {
+                        // Paste-to-send. Support work is screenshot-heavy and the
+                        // only route before this was: save the screenshot to disk,
+                        // open the attach menu, find it again in a file dialog.
+                        // Text pastes carry no files and fall through untouched.
+                        const files = Array.from(e.clipboardData.files);
+                        if (files.length === 0) return;
+                        e.preventDefault();
+                        queueMedia(files);
+                      }}
                       rows={1}
                       placeholder="Type a message…"
-                      className="max-h-32 min-h-[40px] flex-1 resize-none rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm text-[var(--text)] outline-none focus:border-[var(--primary)]"
+                      aria-label="Message"
+                      className="max-h-32 min-h-[40px] flex-1 resize-none overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm text-[var(--text)] outline-none focus:border-[var(--primary)]"
                     />
                     {/* Record + send a voice message (overlays the row while active) */}
                     <VoiceRecorder
@@ -1975,29 +3318,70 @@ export default function SuperAdminWhatsappInboxPage() {
                   </form>
                 ) : selected.contact.isBlocked ? (
                   <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2.5 text-xs text-red-800">
-                    This contact is blocked — you cannot message them.
-                  </div>
-                ) : (
-                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2.5 text-xs text-amber-800">
-                    <span>
-                      The 24-hour reply window is closed. Send an approved template to re-engage.
-                    </span>
-                    <div className="flex shrink-0 items-center gap-2">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <span>This contact is blocked — you cannot message them.</span>
+                      {/* Was a dead end: the only way to lift a block a colleague
+                          (or you, by mistake) applied was to leave the thread for
+                          the contacts page and find the number there. */}
                       <button
                         type="button"
-                        onClick={() => setScheduleOpen(true)}
-                        className="inline-flex items-center gap-1 rounded-md border border-amber-400 bg-white px-2.5 py-1 font-medium text-amber-900 hover:bg-amber-100"
+                        onClick={() => {
+                          setDetailsOpen(true);
+                          setMobilePane('details');
+                        }}
+                        className="inline-flex shrink-0 items-center gap-1 rounded-md border border-red-400 bg-white px-2.5 py-1 font-medium text-red-900 hover:bg-red-100"
                       >
-                        <CalendarClock className="h-3.5 w-3.5" /> Schedule
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setCompose({ mode: 'reply', conversationId: selected.id })}
-                        className="rounded-md bg-emerald-600 px-2.5 py-1 font-medium text-white hover:bg-emerald-700"
-                      >
-                        Send template
+                        <UserCog className="h-3.5 w-3.5" /> Manage contact
                       </button>
                     </div>
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2.5 text-xs text-amber-800">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <span>
+                        The 24-hour reply window is closed. Send an approved template to re-engage.
+                      </span>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setScheduleOpen(true)}
+                          className="inline-flex items-center gap-1 rounded-md border border-amber-400 bg-white px-2.5 py-1 font-medium text-amber-900 hover:bg-amber-100"
+                        >
+                          <CalendarClock className="h-3.5 w-3.5" /> Schedule
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setCompose({ mode: 'reply', conversationId: selected.id })}
+                          className="rounded-md bg-emerald-600 px-2.5 py-1 font-medium text-white hover:bg-emerald-700"
+                        >
+                          Send template
+                        </button>
+                      </div>
+                    </div>
+                    {/* The composer unmounts the instant the window shuts, taking a
+                        half-typed reply off screen with it. Schedule already carries
+                        the draft; keep it visible and copyable so it can be pasted
+                        into a template variable instead of retyped from memory. */}
+                    {draft.trim() && (
+                      <div className="mt-2 flex items-start gap-2 rounded-md border border-amber-200 bg-white px-2.5 py-1.5">
+                        <div className="min-w-0 flex-1">
+                          <p className="mb-0.5 text-[10px] font-semibold tracking-wide text-amber-700 uppercase">
+                            Unsent draft
+                          </p>
+                          <p className="line-clamp-3 break-words whitespace-pre-wrap text-amber-900">
+                            {draft}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => copyMessageText(draft)}
+                          aria-label="Copy unsent draft"
+                          className="shrink-0 rounded-md border border-amber-400 bg-white p-1 text-amber-900 hover:bg-amber-100"
+                        >
+                          <Copy className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -2017,8 +3401,16 @@ export default function SuperAdminWhatsappInboxPage() {
             }}
             onOpenMedia={() => setMediaGalleryOpen(true)}
             onCleared={() => {
-              // Drop client-held buffers the query refetch wouldn't clear.
-              setOlderMessages([]);
+              // "Clear chat history" soft-deletes every message in the thread, so
+              // empty the cached thread outright rather than waiting for the
+              // refetch behind the invalidate — otherwise the history the
+              // operator just cleared stays on screen for a beat. Optimistic
+              // bubbles are a client-held buffer no refetch can clear.
+              qc.setQueriesData(
+                { queryKey: ['wa-messages', selectedId] },
+                (old: ApiResponse<{ items: WaMessage[] }> | undefined) =>
+                  old?.data?.items ? { ...old, data: { ...old.data, items: [] } } : old,
+              );
               setPendingMessages([]);
               setOpenUnread(null);
               setSelectionMode(false);
@@ -2033,6 +3425,11 @@ export default function SuperAdminWhatsappInboxPage() {
         <TemplateComposeModal
           mode={compose.mode}
           conversationId={compose.conversationId}
+          contact={
+            compose.conversationId && compose.conversationId === selected?.id
+              ? selected?.contact
+              : undefined
+          }
           onClose={() => setCompose(null)}
           onSent={(id) => {
             if (id) setSelectedId(id);
@@ -2049,7 +3446,10 @@ export default function SuperAdminWhatsappInboxPage() {
       )}
 
       {mediaGalleryOpen && selected && (
-        <MediaGalleryModal messages={messages} onClose={() => setMediaGalleryOpen(false)} />
+        <MediaGalleryModal
+          conversationId={selected.id}
+          onClose={() => setMediaGalleryOpen(false)}
+        />
       )}
 
       {contactOpen && selected && (
@@ -2057,6 +3457,35 @@ export default function SuperAdminWhatsappInboxPage() {
           conversationId={selected.id}
           onClose={() => setContactOpen(false)}
           onSent={() => setContactOpen(false)}
+        />
+      )}
+
+      {pendingMedia && selected && (
+        <MediaComposeModal
+          file={pendingMedia}
+          initialCaption={draft}
+          sending={sendMediaMut.isPending}
+          // Discards the whole pick, not just this file. The sheet gives no sign
+          // that more files are behind it, so advancing to a second preview after
+          // the operator pressed Cancel would read as the dialog refusing to close.
+          onCancel={() => setMediaPick((p) => ({ ...p, files: [] }))}
+          onSend={(caption) => {
+            const file = pendingMedia;
+            advanceMedia();
+            // Whatever was typed in the composer becomes the caption, so the
+            // agent's message rides WITH the file instead of arriving as a
+            // separate bubble a moment later.
+            if (caption && caption === draft.trim()) setDraft('');
+            sendMediaMut.mutate({ file, caption: caption || undefined });
+          }}
+        />
+      )}
+
+      {locationOpen && selected && (
+        <LocationComposeModal
+          conversationId={selected.id}
+          onClose={() => setLocationOpen(false)}
+          onSent={() => setLocationOpen(false)}
         />
       )}
     </DashboardLayout>

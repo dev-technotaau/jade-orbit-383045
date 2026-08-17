@@ -1,8 +1,11 @@
 /**
  * Best-effort new-message notifications for the WhatsApp inbox: a short beep
- * (tiny embedded WAV) plus a browser Notification. Everything here is guarded
- * and swallows failures — sound/notifications are nice-to-have, never required.
+ * (tiny embedded WAV) plus a clickable browser Notification that opens the
+ * conversation it is about. Everything here is guarded and swallows failures —
+ * sound/notifications are nice-to-have, never required.
  */
+
+import { OPEN_CONV_PARAM, setOpenConv } from '@/lib/wa-open-conv';
 
 // A very short, quiet sine-ish blip encoded as a base64 WAV data URI. Kept
 // tiny on purpose so it ships inline without a network/asset dependency.
@@ -12,7 +15,6 @@ const BEEP_DATA_URI =
   '9/f39/f39/f39/f39/f39/f39/f39/f39/f3+AgICAgICAgICAgICAgICAgICAgICAgIA=';
 
 let cachedAudio: HTMLAudioElement | null = null;
-let permissionRequested = false;
 
 function getAudio(): HTMLAudioElement | null {
   if (typeof Audio === 'undefined') return null;
@@ -85,34 +87,133 @@ export function playTestBeep(): void {
   playAudio();
 }
 
-/** Request Notification permission once per session (no-op if unsupported). */
-export function ensureNotificationPermission(): void {
-  if (permissionRequested) return;
-  if (typeof window === 'undefined' || !('Notification' in window)) return;
-  permissionRequested = true;
+/* ── Browser notifications ──────────────────────────────────────────────── */
+
+/** Notification permission, plus an explicit state for browsers without the API. */
+export type NotificationPermissionState = NotificationPermission | 'unsupported';
+
+const permissionListeners = new Set<() => void>();
+
+/** Current Notification permission ('unsupported' when the API is absent). */
+export function getNotificationPermission(): NotificationPermissionState {
+  if (typeof window === 'undefined' || !('Notification' in window)) return 'unsupported';
   try {
-    if (Notification.permission === 'default') {
-      void Notification.requestPermission().catch(() => {});
-    }
+    return Notification.permission;
   } catch {
-    /* ignore */
+    return 'unsupported';
   }
 }
 
-/** Show a browser notification if permission is already granted. */
-export function showBrowserNotification(title: string, body: string): void {
+/** Subscribe to permission changes (fires once a request resolves). */
+export function subscribeNotificationPermission(cb: () => void): () => void {
+  permissionListeners.add(cb);
+  return () => {
+    permissionListeners.delete(cb);
+  };
+}
+
+/**
+ * Ask for Notification permission. MUST be triggered by a user gesture — the
+ * settings toggle. This used to run automatically on inbox mount, and Chrome
+ * auto-denies a gesture-less prompt: notifications were silently dead for the
+ * operator from then on, with no in-app way to re-ask.
+ */
+export async function requestNotificationPermission(): Promise<NotificationPermissionState> {
+  if (typeof window === 'undefined' || !('Notification' in window)) return 'unsupported';
+  try {
+    const result = await Notification.requestPermission();
+    permissionListeners.forEach((cb) => cb());
+    return result;
+  } catch {
+    return getNotificationPermission();
+  }
+}
+
+/** The inbox route — a notification click lands on the thread's permalink there. */
+const INBOX_PATH = '/whatsapp';
+
+/**
+ * Open `conversationId` in response to a notification click.
+ *
+ * On the inbox itself the permalink store switches the thread in place; from any
+ * other /whatsapp/* page (campaigns, contacts, settings…) there is no inbox
+ * mounted to switch, so navigate to it carrying the `?c=` permalink.
+ */
+function openConversationFromNotification(conversationId: string): void {
+  if (window.location.pathname.replace(/\/+$/, '') === INBOX_PATH) {
+    setOpenConv(conversationId);
+    return;
+  }
+  window.location.assign(`${INBOX_PATH}?${OPEN_CONV_PARAM}=${encodeURIComponent(conversationId)}`);
+}
+
+/**
+ * Show a browser notification if permission is already granted.
+ *
+ * `conversationId` is what makes the notification useful: it used to carry a
+ * constant `tag: 'wa-inbox'` and no click handler, so ten messages from ten
+ * different customers collapsed into a single alert that named no thread and did
+ * nothing when clicked — the operator had to find the tab and hunt the inbox by
+ * hand.
+ */
+export function showBrowserNotification(
+  title: string,
+  body: string,
+  options?: { conversationId?: string; tag?: string; href?: string },
+): void {
   if (typeof window === 'undefined' || !('Notification' in window)) return;
   try {
     if (Notification.permission !== 'granted') return;
 
-    new Notification(title, { body, tag: 'wa-inbox' });
+    const conversationId = options?.conversationId;
+    const notification = new Notification(title, {
+      body,
+      // Per-conversation tag: a follow-up in the SAME thread still replaces its
+      // predecessor (one chatty customer can't stack five alerts), while a
+      // different thread gets a notification of its own. Non-inbox alerts pass
+      // their own tag for the same reason (one per campaign).
+      tag: conversationId ? `wa-conv-${conversationId}` : (options?.tag ?? 'wa-inbox'),
+      icon: '/icon-192x192.png',
+      badge: '/icon-96x96.png',
+      data: conversationId ? { conversationId } : undefined,
+    });
+    notification.onclick = () => {
+      try {
+        window.focus();
+        if (conversationId) openConversationFromNotification(conversationId);
+        else if (options?.href) window.location.assign(options.href);
+      } finally {
+        notification.close();
+      }
+    };
   } catch {
     /* ignore */
   }
 }
 
 /** Fire the full beep + notification combo for a new inbound message. */
-export function notifyInbound(title: string, body: string): void {
+export function notifyInbound(
+  title: string,
+  body: string,
+  options?: { conversationId?: string },
+): void {
   playBeep();
-  showBrowserNotification(title, body);
+  showBrowserNotification(title, body, options);
+}
+
+/**
+ * Alert that a campaign has finished; a click opens that campaign's report.
+ *
+ * A send takes minutes to hours, so the operator who launched it is by then on
+ * another tab or another machine — completion (and, more to the point, a run
+ * that completed with every message failing) was reported nowhere at all, and
+ * was only discoverable by going back to the campaign and reading its counters.
+ * Tagged per campaign so two runs finishing together do not overwrite each other.
+ */
+export function notifyCampaignComplete(title: string, body: string, campaignId: string): void {
+  playBeep();
+  showBrowserNotification(title, body, {
+    tag: `wa-campaign-${campaignId}`,
+    href: `/whatsapp/campaigns/${campaignId}`,
+  });
 }

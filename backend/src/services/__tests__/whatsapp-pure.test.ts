@@ -39,9 +39,17 @@ jest.mock('../storage.service', () => ({
 }));
 
 import { verifyWhatsappSignature, classifyWhatsappEvent } from '../whatsapp-webhook.service';
-import { normalizeWaPhone, isOptOutMessage } from '../whatsapp-contact.service';
+import {
+  normalizeWaPhone,
+  isOptOutMessage,
+  segmentContactWhere,
+  tagListQ,
+} from '../whatsapp-contact.service';
 import { windowOpen } from '../whatsapp-conversation.service';
 import { buildTemplateSendComponents } from '../whatsapp-template.service';
+// "This JSON path is SQL NULL" — how an `attr.<key> is set` rule is compiled.
+import { Prisma } from '@prisma/client';
+const PrismaDbNull = Prisma.DbNull;
 
 describe('verifyWhatsappSignature', () => {
   const body = Buffer.from(JSON.stringify({ hello: 'world' }));
@@ -115,6 +123,159 @@ describe('normalizeWaPhone', () => {
   });
 });
 
+describe('segmentContactWhere', () => {
+  // One predicate, three callers: the contacts list, GET /segments/:id/count and
+  // a campaign launch. They used to disagree — the contacts page applied only
+  // the segment's FIRST tag while a campaign ORed all of them, so the count an
+  // operator sanity-checked before launching was for a different, smaller set.
+  it('matches ANY of the segment tags', () => {
+    expect(segmentContactWhere({ tags: ['vip', 'mumbai'] })).toEqual({
+      isBlocked: false,
+      tags: { hasSome: ['vip', 'mumbai'] },
+    });
+  });
+
+  it('narrows by opt-in status when the segment names one', () => {
+    expect(segmentContactWhere({ optInStatus: 'OPTED_IN' })).toEqual({
+      isBlocked: false,
+      optInStatus: 'OPTED_IN',
+    });
+  });
+
+  it('never reaches a blocked contact, even with an empty filter', () => {
+    expect(segmentContactWhere({})).toEqual({ isBlocked: false });
+    expect(segmentContactWhere(null)).toEqual({ isBlocked: false });
+  });
+
+  it('matches imported attributes exactly, one JSON path per key', () => {
+    expect(segmentContactWhere({ attributes: { city: 'Mumbai', plan: 'Gold' } })).toEqual({
+      isBlocked: false,
+      AND: [
+        { attributes: { path: ['city'], equals: 'Mumbai' } },
+        { attributes: { path: ['plan'], equals: 'Gold' } },
+      ],
+    });
+  });
+
+  it('ignores an attribute with no value rather than matching on empty', () => {
+    expect(segmentContactWhere({ attributes: { city: '' } })).toEqual({ isBlocked: false });
+  });
+
+  // The rule grammar. Targeting was tag-OR plus an opt-in status and nothing
+  // else on WaContact was reachable, so every audience beyond that had to be
+  // assembled outside the product and pasted back in as a phone list.
+  it('ANDs tags, which tag-OR could never express', () => {
+    expect(
+      segmentContactWhere({
+        rules: [{ field: 'tags', operator: 'all', value: ['mumbai', 'premium'] }],
+      })
+    ).toEqual({ isBlocked: false, AND: [{ tags: { hasEvery: ['mumbai', 'premium'] } }] });
+  });
+
+  it('excludes tags with `none`', () => {
+    expect(
+      segmentContactWhere({ rules: [{ field: 'tags', operator: 'none', value: ['churned'] }] })
+    ).toEqual({ isBlocked: false, AND: [{ NOT: { tags: { hasSome: ['churned'] } } }] });
+  });
+
+  it('counts a contact who has never messaged us as "not in the last 30 days"', () => {
+    const now = Date.UTC(2026, 7, 12);
+    // A bare `lt` on a null column matches nothing in SQL, so without the null
+    // arm the most obvious member of "has not messaged us recently" — someone who
+    // has never messaged us at all — would be silently excluded.
+    expect(
+      segmentContactWhere(
+        { rules: [{ field: 'lastInboundAt', operator: 'notWithin', value: 30 }] },
+        now
+      )
+    ).toEqual({
+      isBlocked: false,
+      AND: [
+        {
+          OR: [
+            { lastInboundAt: null },
+            { lastInboundAt: { lt: new Date(now - 30 * 24 * 60 * 60 * 1000) } },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('targets an imported column by key', () => {
+    expect(
+      segmentContactWhere({ rules: [{ field: 'attr.city', operator: 'equals', value: 'Mumbai' }] })
+    ).toEqual({ isBlocked: false, AND: [{ attributes: { path: ['city'], equals: 'Mumbai' } }] });
+  });
+
+  it('excludes everyone who did not reply to a past campaign', () => {
+    expect(
+      segmentContactWhere({
+        rules: [{ field: 'campaign', operator: 'notReplied', value: 'camp-1' }],
+      })
+    ).toEqual({
+      isBlocked: false,
+      AND: [{ campaignRecipients: { none: { campaignId: 'camp-1', repliedAt: { not: null } } } }],
+    });
+  });
+
+  it('combines rules with OR when the segment asks for it', () => {
+    expect(
+      segmentContactWhere({
+        op: 'or',
+        rules: [
+          { field: 'tags', operator: 'any', value: ['vip'] },
+          { field: 'optInSource', operator: 'equals', value: 'form' },
+        ],
+      })
+    ).toEqual({
+      isBlocked: false,
+      OR: [{ tags: { hasSome: ['vip'] } }, { optInSource: 'form' }],
+    });
+  });
+
+  it('drops a half-filled rule instead of letting it match everyone', () => {
+    expect(segmentContactWhere({ rules: [{ field: 'tags', operator: 'all', value: [] }] })).toEqual(
+      {
+        isBlocked: false,
+      }
+    );
+    expect(
+      segmentContactWhere({ rules: [{ field: 'nonsense', operator: 'equals', value: 'x' }] })
+    ).toEqual({ isBlocked: false });
+  });
+
+  it('keeps the legacy keys narrowing alongside a rule', () => {
+    // Every segment saved before the grammar existed still carries the flat keys.
+    // They are ANDed on top, never folded into an OR group — adding a rule to an
+    // existing segment must not silently widen the audience it already had.
+    expect(
+      segmentContactWhere({
+        tags: ['vip'],
+        optInStatus: 'OPTED_IN',
+        rules: [{ field: 'attr.plan', operator: 'exists' }],
+      })
+    ).toEqual({
+      isBlocked: false,
+      optInStatus: 'OPTED_IN',
+      tags: { hasSome: ['vip'] },
+      AND: [{ NOT: { attributes: { path: ['plan'], equals: PrismaDbNull } } }],
+    });
+  });
+});
+
+describe('tagListQ', () => {
+  it('accepts the comma form and the repeated-key form', () => {
+    expect(tagListQ('vip, mumbai')).toEqual(['vip', 'mumbai']);
+    expect(tagListQ(['vip', 'mumbai'])).toEqual(['vip', 'mumbai']);
+  });
+
+  it('is undefined when nothing usable was passed', () => {
+    expect(tagListQ('')).toBeUndefined();
+    expect(tagListQ(' , ')).toBeUndefined();
+    expect(tagListQ(undefined)).toBeUndefined();
+  });
+});
+
 describe('isOptOutMessage', () => {
   it('detects opt-out keywords case-insensitively + trimmed', () => {
     expect(isOptOutMessage('STOP')).toBe(true);
@@ -175,6 +336,68 @@ describe('buildTemplateSendComponents', () => {
       sub_type: 'url',
       index: '0',
       parameters: [{ type: 'text', text: 'abc123' }],
+    });
+  });
+  it('takes the copy-code button index from the template it is sending', () => {
+    // The template builder appends COPY_CODE after the operator's own buttons, so
+    // the coupon button of a real marketing template is rarely index 0. Sending
+    // '0' for a button that sits at index 1 is rejected by Meta with (#131008).
+    const out = buildTemplateSendComponents({
+      couponCode: 'SAVE20',
+      templateComponents: [
+        { type: 'BODY', text: 'Your code is inside' },
+        {
+          type: 'BUTTONS',
+          buttons: [
+            { type: 'QUICK_REPLY', text: 'Not now' },
+            { type: 'COPY_CODE', example: 'SAVE20' },
+          ],
+        },
+      ],
+    });
+    expect(out).toContainEqual({
+      type: 'button',
+      sub_type: 'copy_code',
+      index: '1',
+      parameters: [{ type: 'coupon_code', coupon_code: 'SAVE20' }],
+    });
+  });
+  it('indexes a dynamic URL button by its authored position, ignoring static ones', () => {
+    const out = buildTemplateSendComponents({
+      buttonUrlParam: 'abc123',
+      couponCode: 'SAVE20',
+      templateComponents: [
+        {
+          type: 'BUTTONS',
+          buttons: [
+            { type: 'QUICK_REPLY', text: 'Not now' },
+            { type: 'URL', text: 'Help', url: 'https://example.com/help' },
+            { type: 'URL', text: 'Track', url: 'https://example.com/t/{{1}}' },
+            { type: 'COPY_CODE', example: 'SAVE20' },
+          ],
+        },
+      ],
+    });
+    expect(out).toContainEqual({
+      type: 'button',
+      sub_type: 'url',
+      index: '2',
+      parameters: [{ type: 'text', text: 'abc123' }],
+    });
+    expect(out).toContainEqual({
+      type: 'button',
+      sub_type: 'copy_code',
+      index: '3',
+      parameters: [{ type: 'coupon_code', coupon_code: 'SAVE20' }],
+    });
+  });
+  it('falls back to positional indexes when no template components are supplied', () => {
+    const out = buildTemplateSendComponents({ buttonUrlParam: 'abc123', couponCode: 'SAVE20' });
+    expect(out).toContainEqual({
+      type: 'button',
+      sub_type: 'copy_code',
+      index: '1',
+      parameters: [{ type: 'coupon_code', coupon_code: 'SAVE20' }],
     });
   });
 });

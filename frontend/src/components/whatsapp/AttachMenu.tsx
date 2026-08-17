@@ -1,24 +1,33 @@
 'use client';
 
 import { useRef, useState } from 'react';
-import { Paperclip, Image as ImageIcon, Music, FileText, Contact } from 'lucide-react';
-import { assertUploadSize } from '@/constants/config';
+import { Paperclip, Image as ImageIcon, Music, FileText, Contact, MapPin } from 'lucide-react';
+import { assertWaMediaSize } from '@/constants/config';
 import { showToast } from '@/components/ui/Toast';
 
 /**
  * Composer attach button + popup menu of attachment categories.
  * Replaces a single generic file input with category-scoped pickers that set
  * the right `accept` filter per option (Photos & Videos / Audio / Document).
- * The chosen file is handed back via `onPickFile` for the composer to upload.
+ * The chosen files are handed back via `onPickFiles` for the composer to queue
+ * and upload.
  */
 export default function AttachMenu({
-  onPickFile,
+  onPickFiles,
   onContact,
+  onLocation,
   disabled,
 }: {
-  onPickFile: (file: File) => void;
+  /**
+   * Every file the operator selected, in the order they were listed. Sending five
+   * photos used to mean five separate trips through this menu because the inputs
+   * took one file each.
+   */
+  onPickFiles: (files: File[]) => void;
   /** Opens the contact composer (sends a WhatsApp contact card). */
   onContact?: () => void;
+  /** Opens the location composer (sends a WhatsApp location pin). */
+  onLocation?: () => void;
   disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
@@ -32,19 +41,27 @@ export default function AttachMenu({
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+    const picked = Array.from(e.target.files ?? []);
+    e.target.value = '';
+    if (picked.length === 0) return;
+
     // Check the size HERE, not after a full upload. Without this a 30 MB video
     // uploaded all the way to the BFF and came back as a generic "Something
-    // went wrong" — no size mentioned, nothing to act on.
-    if (file) {
+    // went wrong" — no size mentioned, nothing to act on. The limit is WhatsApp's
+    // own, per kind: a document may be 100 MB, an image only 5.
+    //
+    // One oversized file in a multi-file pick is reported and dropped on its own;
+    // refusing the whole selection would make the operator re-pick everything.
+    const accepted: File[] = [];
+    for (const file of picked) {
       try {
-        assertUploadSize(file);
-        onPickFile(file);
+        assertWaMediaSize(file);
+        accepted.push(file);
       } catch (err) {
         showToast.error(err instanceof Error ? err.message : 'File is too large');
       }
     }
-    e.target.value = '';
+    if (accepted.length > 0) onPickFiles(accepted);
   };
 
   const options: Array<{
@@ -75,6 +92,7 @@ export default function AttachMenu({
       <input
         ref={mediaInputRef}
         type="file"
+        multiple
         accept="image/*,video/mp4,video/3gpp"
         onChange={handleChange}
         className="hidden"
@@ -82,6 +100,7 @@ export default function AttachMenu({
       <input
         ref={audioInputRef}
         type="file"
+        multiple
         accept="audio/*"
         onChange={handleChange}
         className="hidden"
@@ -89,6 +108,7 @@ export default function AttachMenu({
       <input
         ref={documentInputRef}
         type="file"
+        multiple
         accept="*/*"
         onChange={handleChange}
         className="hidden"
@@ -132,6 +152,23 @@ export default function AttachMenu({
               >
                 <Contact className="h-4 w-4 text-[var(--text-muted)]" />
                 Contact
+              </button>
+            )}
+            {/* Sending a pin was fully implemented server-side and had no UI at
+                all, so an agent could see a customer's location and had no way to
+                send the shop's back. */}
+            {onLocation && (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setOpen(false);
+                  onLocation();
+                }}
+                className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm text-[var(--text)] hover:bg-[var(--bg-secondary)]"
+              >
+                <MapPin className="h-4 w-4 text-[var(--text-muted)]" />
+                Location
               </button>
             )}
           </div>

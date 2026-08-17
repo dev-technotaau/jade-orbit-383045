@@ -105,6 +105,14 @@ Open <http://localhost:3000>, enter your `APP_PASSWORD`, and you land on the inb
 > boots. `db push` is idempotent, so this is a no-op once the database matches. If
 > you start without it, the server boots and the status banner reports PostgreSQL as
 > `error — the schema has never been applied`.
+>
+> **Search indexes:** contact and message search are leading-wildcard `ILIKE`s, which
+> only a `pg_trgm` GIN index can serve. The server creates the extension and the three
+> indexes itself at boot (`CONCURRENTLY`, idempotent, re-checked every boot because
+> `db push` drops indexes the Prisma schema does not declare) and reports them as
+> **Search Indexes** in the status banner. If your database role may not
+> `CREATE EXTENSION`, run `CREATE EXTENSION pg_trgm;` once as a superuser — otherwise
+> every search falls back to a full table scan.
 
 ---
 
@@ -136,6 +144,8 @@ Environment lives with each workspace: `backend/.env` and `frontend/.env`.
 | `REDIS_URL` / `REDIS_HOST`  | `localhost`               | Queues, caching, Socket.IO fan-out                             |
 | `DEFAULT_COUNTRY_CODE`      | `91`                      | Applied to numbers supplied without one                        |
 | `WHATSAPP_OPT_OUT_KEYWORDS` | `STOP,UNSUBSCRIBE,CANCEL` | Inbound auto opt-out                                           |
+| `WA_WEBHOOK_STALE_MINUTES`  | `120`                     | Silence after which the inbound webhook is reported broken     |
+| `WA_CONVERSION_API_KEY`     | —                         | Enables the conversion postback route (see below); ≥24 chars   |
 | `R2_*`                      | —                         | Cloudflare R2 media storage                                    |
 
 ### Frontend
@@ -163,15 +173,82 @@ wordmark is used instead.
 2. Generate a **system user token** with `whatsapp_business_messaging` and
    `whatsapp_business_management`.
 3. Point the webhook at `https://<your-api-host>/api/v1/webhooks/whatsapp` and
-   subscribe to the `messages` field. Meta's verification handshake hits the same
+   subscribe to **every field below**. Meta's verification handshake hits the same
    path with `GET`; use the same value for `META_WHATSAPP_WEBHOOK_VERIFY_TOKEN` in
    Meta and in `.env`.
+
+   | Field                            | Drives                                              |
+   | -------------------------------- | --------------------------------------------------- |
+   | `messages`                       | The inbox: inbound messages, delivery/read receipts  |
+   | `message_template_status_update` | Template approve/reject/pause, campaign launch gate  |
+   | `message_template_quality_update`| Per-template quality rating on the templates list    |
+   | `template_category_update`       | Category re-classification (price + consent rules)   |
+   | `phone_number_quality_update`    | Channel quality + messaging tier on Settings         |
+   | `user_preferences`               | Marketing opt-out/resume made inside WhatsApp itself |
+   | `account_alerts`, `account_update` | WABA-level policy and account notices              |
+
+   Subscribing to `messages` alone is not an error you will notice: templates
+   simply never leave PENDING, and an opt-out a customer makes through WhatsApp's
+   own UI never reaches the contact record.
 4. Templates must be created and approved in Meta before they can send. Build and
    submit them from **Templates**, or sync ones you already have.
 
 The webhook route is deliberately exempt from the app-password gate and from CSRF,
 and is mounted before the global JSON parser so the raw bytes survive
 `X-Hub-Signature-256` HMAC verification — that signature is its authentication.
+
+### Outbound webhooks (your subscribers)
+
+Deliveries carry `x-webhook-signature: t=<unix-seconds>,v1=<hex>`. Verify it by
+recomputing `HMAC-SHA256(secret, "<t>.<raw-body>")` and comparing in constant
+time, then rejecting anything where `t` is outside a tolerance window (five
+minutes is typical) — the timestamp is what stops a captured delivery being
+replayed at you forever. `x-webhook-signature-legacy` carries the previous
+bare-body HMAC for one release; do not add new verifications against it.
+
+Delivery is retried eight times with exponential backoff (~11 hours of cover).
+After ten consecutive failed events an endpoint is auto-disabled — an audit row
+records it, and re-enabling from **Webhooks** clears the strike count.
+
+### Conversion postbacks (your website / CRM)
+
+Recording a conversion used to be possible only from the console, which meant
+handing a checkout page the one password that unlocks everything — so in practice
+nobody did, and the ROI figures stayed at zero. Set `WA_CONVERSION_API_KEY` and
+post to `POST /api/v1/whatsapp/ingest/conversions` with `X-Conversion-Key`
+(or `Authorization: Bearer …`):
+
+```json
+{
+  "externalId": "order_10231",
+  "phone": "+919876543210",
+  "valuePaise": 499000,
+  "note": "Premium annual",
+  "occurredAt": "2026-08-15T09:12:00.000Z"
+}
+```
+
+`externalId` is required and unique: a retried postback returns the original row
+with `duplicate: true` and a 200 instead of double-counting. Name a `campaignId`
+to attribute explicitly, or leave it out and the conversion is credited to the
+most recent campaign that actually reached that contact in the last 7 days. The
+route is exempt from the app-password gate and from CSRF — the API key is its
+authentication — and it fails closed when the key is unset.
+
+Corrections are possible too: `DELETE /whatsapp/conversions/:id` from the console
+removes an entry and gives the campaign its `convertedCount` back.
+
+### Not supported / out of scope
+
+Two Cloud API surfaces are deliberately **not** implemented, so that the gap is a
+documented boundary rather than something you discover mid-integration:
+
+- **WhatsApp Pay** — the `order_details` / `order_status` interactive messages and
+  the `payments` webhook field. Nothing in this console can request or track a
+  payment.
+- **Native commerce** — catalogs, carts, single/multi-product messages and the
+  inbound `order` message type. A template authored with a catalog button will be
+  approved by Meta and then have nowhere to go here.
 
 ---
 

@@ -1,9 +1,23 @@
 import type { Request, Response, NextFunction } from 'express';
-import { listNotes, createNote, deleteNote } from '../services/whatsapp-notes.service';
+import { listNotes, createNote, updateNote, deleteNote } from '../services/whatsapp-notes.service';
 
 export const list = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    res.json({ success: true, data: await listNotes(String(req.params.id)) });
+    // Newest first, bounded by the service (the panel renders the top of the
+    // list; a thread that has collected thousands of notes must not be read and
+    // decrypted in full to draw it). `?before`/`?beforeId` walk the older ones.
+    const parsedLimit = parseInt(String(req.query.limit), 10);
+    const before = req.query.before ? new Date(String(req.query.before)) : null;
+    res.json({
+      success: true,
+      data: await listNotes(String(req.params.id), {
+        limit: Number.isFinite(parsedLimit) ? parsedLimit : undefined,
+        before:
+          before && !Number.isNaN(before.getTime())
+            ? { at: before, id: String(req.query.beforeId ?? '') }
+            : undefined,
+      }),
+    });
   } catch (e) {
     next(e);
   }
@@ -18,9 +32,24 @@ export const create = async (req: Request, res: Response, next: NextFunction): P
   }
 };
 
+export const patch = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const note = await updateNote(
+      String(req.params.id),
+      String(req.params.noteId),
+      String(req.body.body)
+    );
+    res.json({ success: true, data: note });
+  } catch (e) {
+    next(e);
+  }
+};
+
 export const remove = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    await deleteNote(String(req.params.noteId));
+    // Both ids: the note is addressed within the conversation it belongs to, so
+    // a stale/foreign noteId 404s instead of deleting another thread's note.
+    await deleteNote(String(req.params.id), String(req.params.noteId));
     res.json({ success: true });
   } catch (e) {
     next(e);

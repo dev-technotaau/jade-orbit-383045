@@ -42,6 +42,11 @@ enum WaMessageType {
   REACTION
   TEMPLATE
   SYSTEM
+  /// A cart submitted from a catalog / product message. Meta delivers it as
+  /// `type: "order"` with catalog_id + product_items[]; without a member of its
+  /// own every cart landed as UNSUPPORTED with the line items in a payload blob
+  /// nothing rendered, so an operator saw an empty bubble instead of an order.
+  ORDER
   UNSUPPORTED
 }
 
@@ -103,21 +108,108 @@ enum WaCampaignRecipientStatus {
   SKIPPED
 }
 
+/// The four closed sets below were free `String` columns guarded only by zod at
+/// the HTTP boundary, so anything that wrote to the database another way — a
+/// data fix, a restore, a future import path — could leave a row in a state the
+/// code then reinterpreted. `audienceType` is the dangerous one: every value
+/// that is not `upload` or `manual` is treated as "segment", i.e. EVERY CONTACT
+/// IN THE TABLE, so one typo turns a targeted campaign into a full-list
+/// marketing blast that cannot be recalled.
+///
+/// The members are lower-case on purpose: they are the exact strings already on
+/// disk and on the wire, so promoting the columns changes nothing an API client
+/// or an existing row can observe — it only makes the database refuse the
+/// values the code was never able to handle.
+enum WaAudienceType {
+  segment
+  upload
+  manual
+}
+
+/// Branch condition on a drip step: send it to everyone, only to recipients who
+/// have not replied, or only to those who have.
+enum WaStepCondition {
+  any
+  no_reply
+  replied
+}
+
+/// How a keyword rule's `match` is compared against an inbound message.
+enum WaKeywordMatchType {
+  exact
+  contains
+  starts
+  substring
+  regex
+}
+
+/// What a send-later row carries: free text, an approved template, or media
+/// staged in R2.
+enum WaScheduledMessageKind {
+  text
+  template
+  media
+}
+
 /// A connected WhatsApp Business number (channel). Usually one; modelled as
 /// many so multiple numbers / a Chatwoot pilot number can coexist.
 
 model WaChannel {
-  id            String            @id @default(uuid())
-  phoneNumberId String            @unique // META_WHATSAPP_PHONE_ID
-  wabaId        String
-  displayPhone  String // E.164 for display
-  displayName   String?
-  isActive      Boolean           @default(true)
-  isDefault     Boolean           @default(false)
-  messagingTier String? // 250 | 1K | 10K | 100K | UNLIMITED (from Meta)
-  qualityRating WaTemplateQuality @default(UNKNOWN)
-  createdAt     DateTime          @default(now())
-  updatedAt     DateTime          @updatedAt
+  id              String            @id @default(uuid())
+  phoneNumberId   String            @unique // META_WHATSAPP_PHONE_ID
+  wabaId          String
+  displayPhone    String // E.164 for display
+  displayName     String?
+  isActive        Boolean           @default(true)
+  isDefault       Boolean           @default(false)
+  messagingTier   String? // 250 | 1K | 10K | 100K | UNLIMITED (from Meta)
+  qualityRating   WaTemplateQuality @default(UNKNOWN)
+  /// This number's own Cloud API access token, encrypted at rest (utils/encryption).
+  ///
+  /// Null means "use META_WHATSAPP_TOKEN", which is what every existing install
+  /// does. A second number on another WABA needs its own token, and rotating an
+  /// expired one used to mean redeploying the backend with new environment
+  /// variables — the whole reason channels were unmanageable from the console.
+  accessToken     String?
+  /// When the token was last written. The token itself is NEVER returned by the
+  /// API; this is what lets the settings page say whether one is configured.
+  tokenUpdatedAt  DateTime?
+  /// What Meta's /debug_token says about the credential this number sends with,
+  /// refreshed by the channel-health cron.
+  ///
+  /// Nothing ever asked Meta whether the token was still good. An operator who
+  /// pasted a 24-hour or 60-day USER token instead of a system-user token had a
+  /// console that worked for a day and then failed every send with an OAuth
+  /// error that surfaced only as per-message FAILED rows. tokenExpiresAt null
+  /// with tokenValid true means a never-expiring system-user token (Meta reports
+  /// expires_at 0), which is the configuration this product wants.
+  tokenExpiresAt  DateTime?
+  tokenScopes     String[]
+  tokenValid      Boolean?
+  tokenCheckedAt  DateTime?
+  /// When this number was last registered with Meta (`/register`) and when its
+  /// mandatory 6-digit two-step PIN was last set. The PIN itself is deliberately
+  /// NOT stored — Meta is the only place it needs to live — but "when did we last
+  /// rotate it" is otherwise unanswerable from inside the console, which is the
+  /// question an operator actually has after a number migration.
+  registeredAt    DateTime?
+  pinUpdatedAt    DateTime?
+  /// Meta catalog bound to this number, for single/multi-product messages. Read
+  /// back from `/{phone_number_id}/whatsapp_commerce_settings` on sync; a product
+  /// message cannot be addressed without it.
+  catalogId       String?
+  /// Meta's own send eligibility for this number (`health_status`), refreshed by
+  /// the channel-health sync: AVAILABLE / LIMITED / BLOCKED, plus the per-entity
+  /// detail (number, WABA, business) behind it.
+  ///
+  /// This is the check that reports BEFORE a campaign whether the number is even
+  /// allowed to send. Without it the first sign of an ineligible number was a
+  /// wall of failed recipients, after the audience had already been materialized.
+  healthStatus    String?
+  healthEntities  Json?
+  healthCheckedAt DateTime?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
 
   conversations WaConversation[]
   messages      WaMessage[]
@@ -129,30 +221,123 @@ model WaChannel {
 /// A person we talk to. May be on-platform (userId set) or off-platform.
 
 model WaContact {
-  id              String        @id @default(uuid())
-  phone           String        @unique // E.164, normalized
-  waId            String? // Meta wa_id
-  name            String? // profile name from inbound, or admin-set
-  optInStatus     WaOptInStatus @default(UNKNOWN)
-  optInAt         DateTime?
-  optInSource     String? // form | reply | import | api
-  optOutAt        DateTime?
-  tags            String[]
-  attributes      Json? // arbitrary fields for personalization
-  lastInboundAt   DateTime? // drives 24h customer-service window
-  lastOutboundAt  DateTime?
-  lastMarketingAt DateTime? // for per-contact marketing frequency cap
-  consentEvidence Json? // provenance: source channel, original opt-in timestamp, ip/ref
-  isBlocked       Boolean       @default(false)
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  id                   String        @id @default(uuid())
+  /// E.164, normalized. Globally unique, NOT unique per channel: a person is one
+  /// contact however many of our numbers they write to, so their consent, tags
+  /// and suppression state are one record rather than one per number. The
+  /// per-number split lives on the thread instead (WaConversation is
+  /// @@unique([channelId, contactId])), which is what actually has to differ.
+  phone                String        @unique
+  waId                 String? // Meta wa_id
+  name                 String? // profile name from inbound, or admin-set
+  /// Defaults to OPTED_IN by product decision, so a newly added contact is
+  /// immediately reachable by MARKETING templates (the campaign path requires
+  /// OPTED_IN, and UNKNOWN silently excluded every new contact from it).
+  ///
+  /// A DEFAULTED opt-in is distinguishable from a real one: consent that was
+  /// actually collected also carries optInAt / optInSource / consentEvidence,
+  /// so an audit can tell "they replied to an opt-in keyword" from "this row
+  /// was created and inherited the default". Note this default applies to
+  /// EVERY creation path, including contacts auto-created from an inbound
+  /// webhook. It does not change existing rows.
+  optInStatus          WaOptInStatus @default(OPTED_IN)
+  optInAt              DateTime?
+  optInSource          String? // form | reply | import | api
+  optOutAt             DateTime?
+  /// Where the opt-OUT came from: reply | meta_preference | manual | bulk.
+  /// Kept apart from optInSource so an audit can tell "they replied STOP" from
+  /// "they turned marketing off inside WhatsApp".
+  optOutSource         String?
+  /// Set the first (and only) time a welcome auto-reply is sent to this contact.
+  ///
+  /// First contact used to be inferred from "this conversation has exactly one
+  /// message", which two concurrent inbound messages both observed as true (so
+  /// both got a welcome), and which the retention prune made true again for any
+  /// dormant contact whose history had aged out (so long-standing customers were
+  /// re-welcomed). A durable per-contact marker cannot be raced or pruned back.
+  welcomedAt           DateTime?
+  tags                 String[]
+  attributes           Json? // arbitrary fields for personalization
+  lastInboundAt        DateTime? // drives 24h customer-service window
+  lastOutboundAt       DateTime?
+  lastMarketingAt      DateTime? // for per-contact marketing frequency cap
+  /// When Meta last DELIBERATELY refused a marketing message to this contact
+  /// (131049 per-user cap / 131050 opted out), and which code it was.
+  ///
+  /// Stored on the contact rather than derived from the message table so the
+  /// check is O(1) on the send path and so the campaign audience preview can
+  /// apply it too -- otherwise the preview counts recipients the launch will
+  /// then skip.
+  marketingRefusedAt   DateTime?
+  marketingRefusedCode String?
+  consentEvidence      Json? // provenance: source channel, original opt-in timestamp, ip/ref
+  /// Click-to-WhatsApp (CTWA) acquisition, denormalised out of the encrypted
+  /// consentEvidence blob.
+  ///
+  /// The ad identifiers were only ever written inside consentEvidence (encrypted)
+  /// and `attributes` (a free-form JSON bag), so "which ad produced these
+  /// conversations?" was unanswerable — you cannot GROUP BY a ciphertext. These
+  /// four are plain, indexed columns for exactly that report; the evidence blob
+  /// keeps the full referral payload for audit.
+  ctwaSourceId         String?
+  ctwaSourceType       String? // ad | post
+  ctwaHeadline         String?
+  /// Meta's click id — the join key for offline conversion upload to Ads Manager.
+  ctwaClid             String?
+  isBlocked            Boolean       @default(false)
+  /// When Meta last CONFIRMED this contact's block state through
+  /// `/{phone_number_id}/block_users`, and what it said if it refused.
+  ///
+  /// `isBlocked` alone only ever meant "we refuse to reply": the harasser kept
+  /// messaging in, kept firing auto-replies and kept opening service
+  /// conversations. Meta's block is the half that actually stops the inbound,
+  /// and it can fail per user (never messaged us, unknown wa_id), so the console
+  /// has to be able to say which of the two is in force.
+  blockSyncedAt        DateTime?
+  blockSyncError       String?
+  /// Mirror of this contact's row in WaSuppression, denormalised so the contacts
+  /// list can FILTER on it.
+  ///
+  /// WaSuppression is keyed by phone and has no relation to WaContact (it holds
+  /// numbers with no contact row at all), so "show me who is suppressed" was not
+  /// expressible as a Prisma predicate and the contacts page rendered a green
+  /// OPTED IN badge for people every send is refused to. Every write to the
+  /// suppression list goes through `markContactsSuppressed`, and the three contact
+  /// creation paths inherit it, so the two cannot drift.
+  suppressedAt         DateTime?
+  /// Merge tombstone. Set on the LOSING row of a contact merge; it points at the
+  /// survivor that now holds this person's conversations, consent and history.
+  ///
+  /// Duplicates are produced routinely by the normalisation rules themselves (a
+  /// number stored before DEFAULT_COUNTRY_CODE prefixing existed, an inbound
+  /// waId differing from the stored phone), and phone is the sole identity — so
+  /// without a merge one human had two consent states and an opt-out honoured on
+  /// one of them was ignored on the other. The loser's `phone` is rewritten to a
+  /// non-dialable `merged:<id>` sentinel, exactly like the erasure tombstone, so
+  /// the @unique still holds and no future inbound re-attaches to the dead row.
+  mergedIntoId         String?
+  mergedAt             DateTime?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
 
   conversations      WaConversation[]
   messages           WaMessage[]
   campaignRecipients WaCampaignRecipient[]
+  conversions        WaConversion[]
+  consentEvents      WaConsentEvent[]
+  linkClicks         WaLinkClick[]
+  // `name` and `phone` additionally carry pg_trgm GIN indexes
+  // (wa_contact_name_trgm / wa_contact_phone_trgm), created outside Prisma by
+  // config/service-init.ts — see the note on WaMessage.text for why. The unique
+  // btree on `phone` cannot serve the contacts search, which is a `contains`.
 
   @@index([optInStatus])
+  @@index([ctwaSourceId])
   @@index([lastInboundAt])
+  /// The contacts list's suppression filter, and the "who did we merge away"
+  /// audit. Both are sparse columns, so the index is small.
+  @@index([suppressedAt])
+  @@index([mergedIntoId])
   /// GIN, not btree. Every tag query uses array containment — `has` compiles to
   /// `ARRAY[$1] <@ tags` and `hasSome` (the campaign audience resolver) to
   /// `tags && ARRAY[...]` — and only a GIN index can answer those. The default
@@ -181,22 +366,98 @@ model WaConversation {
   archivedAt         DateTime? // soft-archive (hidden from default views)
   csatRequestedAt    DateTime? // when a CSAT survey was sent
   csatScore          Int? // 1-5 customer satisfaction rating
-  csatComment        String?
+  csatComment        String? // first inbound text within 15 min of the rating (the "why")
   csatAt             DateTime? // when the CSAT rating was received
   lastMessageAt      DateTime?
   lastMessagePreview String?
+  /// Meta's own conversation id from the status webhook, for cross-referencing a
+  /// billed conversation against this thread.
+  metaConversationId String?
+  /// Suppress every automated reply on this thread until this time.
+  ///
+  /// The bot had no handoff concept at all: an agent could be mid-conversation
+  /// with an escalating customer and a keyword rule would still cut in with a
+  /// canned answer. Set from the inbox ("Pause bot"), and automatically whenever
+  /// a human sends a reply.
+  botPausedUntil     DateTime?
+  /// In-progress bot-flow session: `{ flowId, stepKey, slots, startedAt }`.
+  ///
+  /// The automation engine was entirely stateless — one keyword in, one canned
+  /// message out — so nothing past a single exchange could be built: no "ask for
+  /// your name, then your email, then raise a ticket" capture, and no menu that
+  /// branched on the previous answer. This column is that memory. Null means no
+  /// flow is running, which is the state every conversation starts and ends in.
+  flowState          Json?
+  /// When flowState last moved. A customer who walks away mid-flow must not be
+  /// answered as though they were still in it a week later, so the engine
+  /// abandons a session that has not advanced within its flow's timeout.
+  flowStateUpdatedAt DateTime?
+  /// Meta told us this customer's WhatsApp IDENTITY changed (a re-registered
+  /// device, or the same number on a new phone) and we have not shown anybody.
+  ///
+  /// The signal arrives on `messages[].identity` with `acknowledged: false` and
+  /// was dropped on the floor, which matters because the end-to-end guarantee
+  /// this system leans on is "this number is this person": after a SIM swap it
+  /// is the same thread, the same history and a different human. Cleared when an
+  /// agent dismisses the banner, so it is a one-time prompt to re-verify rather
+  /// than a permanent badge.
+  identityChangedAt  DateTime?
+  /// Meta's `identity.hash` for the change above — the identity key it belongs
+  /// to, kept AFTER the banner is dismissed.
+  ///
+  /// It is the memory that makes "Verified" stick. Meta hangs the identity block
+  /// off ordinary inbound messages rather than sending it once, so without a key
+  /// to compare against, the customer's next message re-raised a banner an agent
+  /// had just cleared — a warning that cannot be dismissed is a warning nobody
+  /// reads. A different hash is a genuinely different identity and does raise it
+  /// again.
+  identityHash       String?
   createdAt          DateTime             @default(now())
   updatedAt          DateTime             @updatedAt
 
-  messages WaMessage[]
-  notes    WaConversationNote[]
+  messages             WaMessage[]
+  notes                WaConversationNote[]
+  /// EPISODE-BASED SLA.
+  ///
+  /// There is exactly one WaConversation per contact, forever
+  /// (@@unique([channelId, contactId])), so "firstResponseAt - createdAt"
+  /// measured from that person's FIRST EVER message. A customer who first wrote
+  /// in January and got a two-minute reply today produced a first-response time
+  /// of several months, and the mean was meaningless.
+  ///
+  /// awaitingReplySince is stamped when an inbound arrives and nothing is already
+  /// pending, and cleared when an agent replies. The elapsed time is accumulated
+  /// into the two counters below, so the average is over RESPONSES rather than
+  /// over conversation rows, and every episode counts - not just the first.
+  awaitingReplySince   DateTime?
+  responseCount        Int                  @default(0)
+  responseTotalSeconds Int                  @default(0)
+
+  /// Start of the CURRENT resolution episode. Set when a resolved conversation is
+  /// reopened, so resolution time is measured from the reopen rather than from the
+  /// contact's original creation date.
+  reopenedAt DateTime?
+
+  scheduledMessages WaScheduledMessage[]
 
   @@unique([channelId, contactId])
+  /// The composite unique above leads on channelId, so it cannot answer a lookup
+  /// that knows only the contact — and several do. getConversationForOutbound()
+  /// resolves the thread for every send that names no channel of its own, and the
+  /// DPDP paths in whatsapp-contact.service.ts (exportContactData, and steps (c)
+  /// and (f) of eraseContactData) read, blank the previews on, and delete the
+  /// notes of every thread belonging to one contact. Each of those sequentially
+  /// scanned the whole conversation table; a timeout on the erasure path leaves a
+  /// data-subject request half-applied.
+  @@index([contactId])
   @@index([status])
   @@index([assignedTo])
-  /// Declared DESC to match the inbox's `ORDER BY lastMessageAt DESC NULLS LAST`.
-  /// An ASC index scanned backwards yields DESC NULLS FIRST, which does not
-  /// match, so Postgres sorted the whole filtered set on every page load.
+  /// Declared DESC to match the inbox's `ORDER BY lastMessageAt DESC`.
+  ///
+  /// Postgres gives a DESC index column NULLS FIRST, so the query MUST NOT ask
+  /// for NULLS LAST — it did, which meant none of the four declarations below
+  /// could be used in either scan direction and every page load sorted the whole
+  /// filtered set. See the orderBy in whatsapp-conversation.service.ts:list().
   @@index([lastMessageAt(sort: Desc)])
   @@index([status, lastMessageAt(sort: Desc)])
   @@index([assignedTo, lastMessageAt(sort: Desc)])
@@ -206,45 +467,98 @@ model WaConversation {
 }
 
 model WaMessage {
-  id               String          @id @default(uuid())
-  wamid            String?         @unique // Meta message id — dedup + status keying
-  channelId        String
-  channel          WaChannel       @relation(fields: [channelId], references: [id], onDelete: Cascade)
-  conversationId   String
-  conversation     WaConversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  contactId        String
-  contact          WaContact       @relation(fields: [contactId], references: [id], onDelete: Cascade)
-  direction        WaDirection
-  type             WaMessageType
-  status           WaMessageStatus @default(QUEUED)
-  text             String? // body / caption
-  payload          Json? // type-specific payload (interactive, location, template vars, etc.)
-  mediaId          String? // Meta media id (inbound)
-  mediaUrl         String? // R2 URL after download / for outbound
-  mediaMime        String?
-  templateName     String?
-  contextWamid     String? // reply-to (threading)
-  errorCode        String?
-  errorTitle       String?
-  pricingCategory  String? // marketing|utility|authentication|service (from status webhook)
-  costPaise        Int? // actual billable cost (from status webhook pricing)
-  billable         Boolean? // whether Meta billed this message
-  pricingModel     String? // CBP | PMP (from status webhook)
-  templateLanguage String? // language of the template used (per-language analytics)
-  referral         Json? // click-to-WhatsApp (CTWA) referral payload
-  reactions        Json? // emoji reactions applied to this message
-  sentByUserId     String? // operator label (free text)
-  campaignId       String?
-  campaign         WaCampaign?     @relation(fields: [campaignId], references: [id], onDelete: SetNull)
-  sentAt           DateTime?
-  deliveredAt      DateTime?
-  readAt           DateTime?
-  deletedAt        DateTime? // soft-delete: hidden from the admin inbox ("delete for me")
-  createdAt        DateTime        @default(now())
+  id                 String              @id @default(uuid())
+  wamid              String?             @unique // Meta message id — dedup + status keying
+  channelId          String
+  channel            WaChannel           @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  conversationId     String
+  conversation       WaConversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  contactId          String
+  contact            WaContact           @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  direction          WaDirection
+  type               WaMessageType
+  status             WaMessageStatus     @default(QUEUED)
+  text               String? // body / caption
+  payload            Json? // type-specific payload (interactive, location, template vars, etc.)
+  mediaId            String? // Meta media id (inbound)
+  mediaUrl           String? // R2 URL after download / for outbound
+  /// R2 key of a small WebP derivative of `mediaUrl` (images only).
+  ///
+  /// Every image bubble pulled the full-resolution original through the proxy:
+  /// opening a thread with twenty customer photos downloaded twenty originals —
+  /// potentially several megabytes each — and the media gallery was worse still,
+  /// firing one full-size fetch per tile the moment it opened. The derivative is
+  /// ~320px wide and a fraction of the bytes; the original stays the only thing
+  /// the lightbox and the download link ever serve.
+  mediaThumbUrl      String?
+  mediaMime          String?
+  /// How the durable archive of `mediaId` went: PENDING | OK | SKIPPED | FAILED.
+  ///
+  /// A permanently failed archive used to be invisible — one log line, no metric,
+  /// no state on the row — so nobody learned that archival was broken (bad R2
+  /// key, expired token, full bucket) until a customer's photo was asked for
+  /// weeks later and Meta's own 30-day copy had expired too. With the state here
+  /// the bubble can say "the original is no longer available" instead of the
+  /// generic "couldn't load image", which is the difference between a bug the
+  /// operator retries forever and a fact they can act on.
+  mediaArchiveStatus String?
+  templateName       String?
+  /// Category of the template that was sent, copied onto the row at send time.
+  ///
+  /// The per-contact 24h marketing cap counted "messages whose templateName is
+  /// one of the MARKETING template names", which meant re-categorising or
+  /// renaming a template at Meta silently reset a contact's cap — earlier sends
+  /// stopped counting and the recipient could be messaged all over again. The
+  /// category the message ACTUALLY went out under cannot change after the fact.
+  templateCategory   WaTemplateCategory?
+  contextWamid       String? // reply-to (threading)
+  errorCode          String?
+  errorTitle         String?
+  pricingCategory    String? // marketing|utility|authentication|service (from status webhook)
+  /// Meta's amount ROUNDED to whole minor units, kept for the existing sums.
+  ///
+  /// Meta quotes per-message prices with 4-6 decimals (0.0383), so this column
+  /// alone lost several percent per row to rounding and, on a WABA that bills in
+  /// anything but INR, silently mixed foreign cents into a paise total. Read
+  /// `costAmount` + `costCurrency` for anything that has to be accurate.
+  costPaise          Int? // actual billable cost (from status webhook pricing)
+  /// Meta's amount exactly as quoted, in MAJOR units of `costCurrency`.
+  costAmount         Decimal?            @db.Decimal(12, 6)
+  /// The WABA's billing currency for this message (ISO 4217, e.g. INR / USD).
+  /// Null on rows written before the column existed, and on the common case
+  /// where Meta's status callback carries no amount at all.
+  costCurrency       String?
+  billable           Boolean? // whether Meta billed this message
+  pricingModel       String? // CBP | PMP (from status webhook)
+  metaConversationId String? // Meta conversation id (from status webhook)
+  conversationOrigin String? // marketing|utility|authentication|service|referral_conversion
+  templateLanguage   String? // language of the template used (per-language analytics)
+  referral           Json? // click-to-WhatsApp (CTWA) referral payload
+  reactions          Json? // emoji reactions applied to this message
+  sentByUserId       String? // operator label (free text)
+  campaignId         String?
+  campaign           WaCampaign?         @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  sentAt             DateTime?
+  deliveredAt        DateTime?
+  readAt             DateTime?
+  deletedAt          DateTime? // soft-delete: hidden from the admin inbox ("delete for me")
+  createdAt          DateTime            @default(now())
+  // `text` additionally carries a pg_trgm GIN index (wa_message_text_trgm) that
+  // is NOT declared here: the operator class needs the pg_trgm extension, and
+  // declaring an extension in Prisma is still a preview feature, so a fresh
+  // `db push` would fail before anything could create it. The inbox body search
+  // is a leading-wildcard ILIKE over this column and no btree can serve one.
+  // config/service-init.ts creates it at boot — which is also what puts it back
+  // after a `db push` drops indexes this schema does not declare.
 
   @@index([conversationId, createdAt])
   @@index([contactId])
-  @@index([status])
+  /// No standalone @@index([status]): nothing reads one. Every status filter in
+  /// the codebase pairs it with a far more selective column that already leads an
+  /// index — direction (analytics funnel), templateName (template analytics),
+  /// contactId (the marketing frequency cap) — so a status-only btree over the
+  /// biggest, hottest table was maintained on every inbound message and every
+  /// outbound send while answering no query at all.
   @@index([campaignId])
   @@index([direction])
   @@index([templateName])
@@ -255,6 +569,11 @@ model WaMessage {
   @@index([createdAt])
   /// Inbound-only time windows (keyword breakdown, response-time analytics).
   @@index([direction, createdAt])
+  /// The per-contact marketing frequency cap: count this contact's MARKETING
+  /// template sends in the last 24h. Runs on every marketing send (console,
+  /// campaign batch, drip tick, Chatwoot bridge), so it must not fall back to
+  /// the contactId-only index and filter the contact's whole history in memory.
+  @@index([contactId, templateCategory, createdAt])
 }
 
 /// Mirror of a Meta message template + lifecycle/quality/analytics.
@@ -275,7 +594,18 @@ model WaTemplate {
   createdAt       DateTime           @default(now())
   updatedAt       DateTime           @updatedAt
 
-  campaigns WaCampaign[]
+  campaigns         WaCampaign[]
+  /// Real relations, not bare id strings. A template referenced only by an A/B
+  /// variant, a drip step, a blueprint, a keyword rule or a scheduled message
+  /// could be deleted with nothing objecting, and the campaign then failed
+  /// recipient-by-recipient at send time (WA_TEMPLATE_NOT_FOUND) instead of at
+  /// configuration time. Restrict for the references that must not vanish;
+  /// SetNull for the scheduled-message history, which only records what WAS sent.
+  variants          WaCampaignVariant[]
+  steps             WaCampaignStep[]
+  blueprints        WaCampaignTemplate[]
+  keywordRules      WaKeywordRule[]
+  scheduledMessages WaScheduledMessage[]
 
   @@unique([name, language])
   @@index([status])
@@ -283,78 +613,135 @@ model WaTemplate {
 }
 
 model WaCampaign {
-  id                 String           @id @default(uuid())
-  name               String
-  description        String?
-  channelId          String
-  channel            WaChannel        @relation(fields: [channelId], references: [id], onDelete: Cascade)
-  templateId         String
-  template           WaTemplate       @relation(fields: [templateId], references: [id])
-  status             WaCampaignStatus @default(DRAFT)
+  id                   String           @id @default(uuid())
+  name                 String
+  description          String?
+  channelId            String
+  channel              WaChannel        @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  templateId           String
+  template             WaTemplate       @relation(fields: [templateId], references: [id])
+  status               WaCampaignStatus @default(DRAFT)
   // Audience
-  audienceType       String // segment | upload | manual
-  audienceFilter     Json? // tag/optIn/attribute filter for segment
-  variableMapping    Json? // template var -> contact attribute mapping
+  audienceType         WaAudienceType
+  audienceFilter       Json? // tag/optIn/attribute filter for segment
+  /// The saved segment this campaign's audience was sourced from, when it was
+  /// sourced from one. `audienceFilter` above stays a SNAPSHOT taken at create
+  /// time — this only records the provenance, so "save as blueprint" can keep the
+  /// link. Without it a blueprint froze the segment's filter forever: editing the
+  /// segment changed nothing about campaigns launched from the blueprint, and no
+  /// UI said the link had been broken.
+  segmentId            String?
+  variableMapping      Json? // template var -> contact attribute mapping
+  /// Campaign-level template SEND parameters: header media, header text and the
+  /// dynamic URL-button suffix. Body variables stay per-recipient (variableMapping
+  /// -> WaCampaignRecipient.variables); these three are constant for the whole
+  /// send. Without them a media-header template — the dominant marketing form —
+  /// went out body-only and Meta rejected every recipient with (#131008)
+  /// Required parameter is missing.
+  /// Shape: { headerText?, headerMediaUrl?, headerMediaType?, buttonUrlParam? }
+  templateParams       Json?
   // Scheduling + throttle
-  scheduledAt        DateTime?
-  batchSize          Int              @default(100)
-  throttlePerSec     Int              @default(15)
+  scheduledAt          DateTime?
+  /// Hold sends outside WaSettings.businessHours instead of firing them.
+  ///
+  /// `scheduledAt` is one absolute instant, so a campaign armed for 10:00 IST
+  /// reached an international list in the middle of the night and a drip step
+  /// whose delay landed at 03:00 fired at 03:00. Night-time marketing is what
+  /// drives blocks and reports, and those are exactly what degrade the number's
+  /// quality rating. Opt-in (default false) so existing campaigns are unchanged.
+  respectBusinessHours Boolean          @default(false)
+  batchSize            Int              @default(100)
+  throttlePerSec       Int              @default(15)
   // Counters (denormalized for dashboard)
-  totalRecipients    Int              @default(0)
-  sentCount          Int              @default(0)
-  deliveredCount     Int              @default(0)
-  readCount          Int              @default(0)
-  failedCount        Int              @default(0)
-  skippedCount       Int              @default(0)
-  repliedCount       Int              @default(0)
-  convertedCount     Int              @default(0)
-  estimatedCostPaise Int?
-  actualCostPaise    Int? // summed from delivered message pricing
-  type               WaCampaignType   @default(BROADCAST)
-  isAbTest           Boolean          @default(false) // pick a weighted template variant per recipient
-  recurrenceDays     Int? // re-run every N days (null = one-off)
-  nextRunAt          DateTime? // next scheduled recurrence run
-  parentCampaignId   String? // lineage when a recurring campaign spawns re-runs
-  startedAt          DateTime?
-  completedAt        DateTime?
-  createdBy          String?
-  createdAt          DateTime         @default(now())
-  updatedAt          DateTime         @updatedAt
+  totalRecipients      Int              @default(0)
+  sentCount            Int              @default(0)
+  deliveredCount       Int              @default(0)
+  readCount            Int              @default(0)
+  failedCount          Int              @default(0)
+  skippedCount         Int              @default(0)
+  repliedCount         Int              @default(0)
+  convertedCount       Int              @default(0)
+  estimatedCostPaise   Int?
+  actualCostPaise      Int? // summed from delivered message pricing
+  type                 WaCampaignType   @default(BROADCAST)
+  isAbTest             Boolean          @default(false) // pick a weighted template variant per recipient
+  /// A/B TEST PHASE. An A/B campaign could split an audience by weight but never
+  /// do the thing an A/B test exists for: send to a small sample, decide which
+  /// variant won, and send the winner to everyone else. The operator had to
+  /// eyeball raw counts and hand-build a second campaign for the remainder.
+  ///
+  /// abTestSamplePct caps the launch at that percentage of the eligible audience
+  /// (null = the whole audience, the old behaviour). abTestMetric names the rate
+  /// the winner is judged on ('delivered' | 'read' | 'replied'). winnerVariantId
+  /// and abTestDecidedAt record the decision; once set, the remainder send binds
+  /// every new recipient to that variant.
+  abTestSamplePct      Int?
+  abTestMetric         String?
+  winnerVariantId      String?
+  abTestDecidedAt      DateTime?
+  /// Soft archive for a campaign that has send history. There was no way to
+  /// remove a campaign at all, so mistaken drafts, test runs and every recurring
+  /// clone accumulated forever in a list with no search — DRAFTs are hard-deleted
+  /// (the cascade clears recipients/variants/steps), anything that already sent
+  /// is archived out of the default list instead so its numbers survive.
+  archivedAt           DateTime?
+  recurrenceDays       Int? // re-run every N days (null = one-off)
+  nextRunAt            DateTime? // next scheduled recurrence run
+  parentCampaignId     String? // lineage when a recurring campaign spawns re-runs
+  startedAt            DateTime?
+  completedAt          DateTime?
+  createdBy            String?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
 
-  recipients WaCampaignRecipient[]
-  messages   WaMessage[]
-  steps      WaCampaignStep[]
-  variants   WaCampaignVariant[]
+  recipients  WaCampaignRecipient[]
+  messages    WaMessage[]
+  steps       WaCampaignStep[]
+  variants    WaCampaignVariant[]
+  conversions WaConversion[]
+  /// SetNull, not Cascade: a short link outlives the campaign that created it —
+  /// the URL is already in customers' chat history and must keep resolving.
+  shortLinks  WaShortLink[]
 
   @@index([status])
   @@index([scheduledAt])
   @@index([nextRunAt])
+  /// The campaigns list defaults to `archivedAt: null`, so it is on every page load.
+  @@index([archivedAt])
 }
 
 /// A reusable campaign blueprint (template + audience + settings) — "save as
 /// template" so a known-good campaign can be re-launched in one click.
 
 model WaCampaignTemplate {
-  id              String         @id @default(uuid())
+  id              String          @id @default(uuid())
   name            String
   description     String?
   templateId      String // Meta message template (WaTemplate id)
-  audienceType    String? // segment | upload | manual
+  template        WaTemplate      @relation(fields: [templateId], references: [id], onDelete: Restrict)
+  audienceType    WaAudienceType?
   audienceFilter  Json?
+  /// The saved segment the source campaign drew its audience from, copied off
+  /// WaCampaign.segmentId. Passed back into createCampaign when a campaign is
+  /// created from this blueprint, so the segment's CURRENT filter is re-read
+  /// rather than the stale `audienceFilter` snapshot beside it.
   segmentId       String?
   variableMapping Json?
-  type            WaCampaignType @default(BROADCAST)
-  batchSize       Int            @default(100)
-  throttlePerSec  Int            @default(15)
+  type            WaCampaignType  @default(BROADCAST)
+  batchSize       Int             @default(100)
+  throttlePerSec  Int             @default(15)
   recurrenceDays  Int?
-  isAbTest        Boolean        @default(false)
+  isAbTest        Boolean         @default(false)
   variants        Json? // snapshot: [{label, templateId, weight}]
   steps           Json? // snapshot: [{stepOrder, templateId, delayHours, condition}]
   createdBy       String?
-  createdAt       DateTime       @default(now())
-  updatedAt       DateTime       @updatedAt
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
 
   @@index([createdAt])
+  /// Backs the Restrict check when a template is deleted; without it that check
+  /// is a sequential scan of every blueprint.
+  @@index([templateId])
 }
 
 model WaCampaignRecipient {
@@ -375,14 +762,41 @@ model WaCampaignRecipient {
   /// it" — otherwise a rate-limited campaign looked stalled and got re-batched.
   lastAttemptAt DateTime?
   repliedAt     DateTime? // for drip branch + reply funnel
+  /// First time this recipient opened a tracked link from this campaign. Clicks
+  /// were only ever counted on the link, so "47 clicks" could not be turned back
+  /// into WHICH recipients clicked — no clicker segment, no per-recipient follow
+  /// up. Stamped once (first click wins) by `recordClick`.
+  clickedAt     DateTime?
   currentStep   Int                       @default(0) // drip sequence progress
   nextStepAt    DateTime? // when the next drip step is due
+  /// Consecutive failed attempts at the CURRENT drip step, reset to 0 the moment
+  /// a step sends. The drip catch-all used to re-arm `nextStepAt` unconditionally,
+  /// so a step whose template Meta had paused retried every 15 minutes forever —
+  /// a permanent background loop against the Graph API that never reached a
+  /// FAILED state anyone could see. Bounded by MAX_STEP_ATTEMPTS.
+  stepAttempts  Int                       @default(0)
   createdAt     DateTime                  @default(now())
 
   @@unique([campaignId, contactId])
+  /// Unique, not merely indexed: this is the key the webhook reconciler matches a
+  /// Meta status callback on, and a WAMID identifies exactly one sent message. A
+  /// plain index let two recipient rows carry the same WAMID (the retry path
+  /// clears `wamid`, and manual data fixes have no guard at all), and the
+  /// reconciler would then apply one callback's status to both — campaign
+  /// sent/delivered/read counters drifting with nothing raised to say so.
+  /// Postgres allows many NULLs here, which the un-sent recipients rely on. This
+  /// also serves the `wamid IN (...)` batch lookup, so no separate index is kept.
+  @@unique([wamid])
   @@index([campaignId, status])
-  @@index([wamid])
+  /// The recipient list's own order. It pages `ORDER BY createdAt, id` within a
+  /// campaign, and every other index here leads on a different second column —
+  /// so each page sorted the campaign's whole recipient set from scratch, which
+  /// on a large send is the difference between a page load and a timeout.
+  @@index([campaignId, createdAt, id])
   @@index([nextStepAt])
+  /// `recordClick` stamps by (campaignId, contactId) on the public redirect path,
+  /// and the campaign detail filters clickers by (campaignId, clickedAt).
+  @@index([campaignId, clickedAt])
   /// `recordCampaignReply` runs for EVERY inbound message and looks up by
   /// contactId + repliedAt. The unique index above leads on campaignId, so that
   /// lookup seq-scanned the recipient table — on the hot inbound path.
@@ -392,15 +806,54 @@ model WaCampaignRecipient {
 /// Raw webhook envelope log for replay/debug + at-least-once dedup audit.
 
 model WaWebhookEvent {
-  id          String    @id @default(uuid())
-  eventType   String // message | status | unknown
-  wamid       String?
-  payload     Json
-  signatureOk Boolean
-  processedAt DateTime?
-  createdAt   DateTime  @default(now())
+  id            String    @id @default(uuid())
+  eventType     String // message | status | unknown
+  wamid         String?
+  payload       Json
+  /// Every phone number (digits only, no '+') named anywhere in this envelope —
+  /// contacts[].wa_id, messages[].from and statuses[].recipient_id, across ALL
+  /// entries and changes, not just the first.
+  ///
+  /// Extracted at ingest so a DPDP erasure can find this person's events by an
+  /// indexed key. Erasure used to match with `payload::text LIKE '%digits%'`,
+  /// which casts a jsonb column to text for every row of the fastest-growing
+  /// table with a leading wildcard: on a populated table that hits the 30s
+  /// statement timeout, and the erasure fails outright rather than quietly
+  /// reporting success.
+  phones        String[]  @default([])
+  signatureOk   Boolean
+  /// SHA-256 of the exact bytes Meta POSTed, stamped at ingest.
+  ///
+  /// Meta redelivers a byte-identical envelope whenever we miss its response
+  /// deadline — which is exactly when the system is already struggling. Each
+  /// retry used to cost another full row (message body and all) plus another
+  /// worker job, because the queue's dedup key is the freshly-minted row id, so
+  /// a retry was never the "same" job. Unique, so the second insert loses to the
+  /// first inside the database rather than in an application-level read that two
+  /// concurrent retries can both pass.
+  ///
+  /// Nullable only for rows written before this column existed; Postgres permits
+  /// many NULLs in a unique index, so those neither collide nor block anything.
+  /// Every row written from now on carries a hash.
+  bodyHash      String?   @unique
+  processedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  /// Recovery replays for this event.
+  ///
+  /// An event whose statuses reference WAMIDs we do not hold is deliberately left
+  /// unprocessed so the recovery pass can retry it. Nothing bounded that, so an
+  /// event referencing a WAMID that will NEVER arrive (a send from another tool,
+  /// a pre-migration message) was replayed forever — and because the pass takes the
+  /// oldest 200, a handful of permanently-stuck events starved genuinely
+  /// recoverable ones out of the window entirely.
+  deferAttempts Int       @default(0)
+  lastAttemptAt DateTime?
 
-  @@index([wamid])
+  /// No @@index([wamid]) either. Dedup is keyed off `WaMessage.wamid`, which is
+  /// `@unique`; the copy held here is denormalised for the event browser's list
+  /// column, and every read of this table filters on createdAt, processedAt or
+  /// the row id instead. It was a second write-only index on the fastest-growing
+  /// table in the schema.
   @@index([createdAt])
   /// The stuck-event recovery cron looks for `processedAt IS NULL` rows older
   /// than 2 minutes, every 5 minutes. The createdAt index alone is useless as a
@@ -409,6 +862,10 @@ model WaWebhookEvent {
   /// (A partial index WHERE processedAt IS NULL would be tighter still, but
   /// Prisma cannot express one; this composite is the best it can declare.)
   @@index([processedAt, createdAt])
+  @@index([processedAt, deferAttempts])
+  /// GIN, not btree — the erasure lookup is array containment
+  /// (`phones && ARRAY[...]`), which only a GIN index can answer.
+  @@index([phones], type: Gin)
 }
 
 /// Reusable quick-reply snippets for the super-admin inbox composer.
@@ -429,14 +886,19 @@ model WaCannedReply {
 /// the list-row label (WhatsApp caps row titles at 24 chars — kept short).
 
 model WaFaq {
-  id        String   @id @default(uuid())
+  id        String    @id @default(uuid())
   question  String
   answer    String
-  order     Int      @default(0)
-  isActive  Boolean  @default(true)
+  order     Int       @default(0)
+  isActive  Boolean   @default(true)
+  /// How often this answer has been served, and when it last was. The automation
+  /// layer produced NO telemetry: nobody could tell a rule that fires constantly
+  /// from one that has never matched since the day it was written.
+  hitCount  Int       @default(0)
+  lastHitAt DateTime?
   createdBy String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 
   @@index([isActive, order])
 }
@@ -449,16 +911,22 @@ enum WaCampaignType {
 /// One step of a drip/sequence campaign.
 
 model WaCampaignStep {
-  id         String     @id @default(uuid())
-  campaignId String
-  campaign   WaCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  stepOrder  Int
-  templateId String
-  delayHours Int        @default(24) // delay after the previous step before this step fires
-  condition  String     @default("any") // any | no_reply | replied
-  createdAt  DateTime   @default(now())
+  id              String          @id @default(uuid())
+  campaignId      String
+  campaign        WaCampaign      @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  stepOrder       Int
+  templateId      String
+  template        WaTemplate      @relation(fields: [templateId], references: [id], onDelete: Restrict)
+  delayHours      Int             @default(24) // delay after the previous step before this step fires
+  condition       WaStepCondition @default(any)
+  /// Template parameters for THIS step. Drip steps sent zero parameters, so any
+  /// step whose template had placeholders went out blank (or was rejected by Meta).
+  /// Same shape as WaCampaign.variableMapping.
+  variableMapping Json?
+  createdAt       DateTime        @default(now())
 
   @@unique([campaignId, stepOrder])
+  @@index([templateId])
 }
 
 /// Internal private note on a conversation (never sent to Meta).
@@ -477,40 +945,191 @@ model WaConversationNote {
 /// Keyword auto-responder rule evaluated against inbound text / button replies.
 
 model WaKeywordRule {
-  id              String   @id @default(uuid())
+  id              String             @id @default(uuid())
   name            String
   match           String // keyword/phrase to match
-  matchType       String   @default("contains") // exact | contains | starts
+  matchType       WaKeywordMatchType @default(contains)
   replyText       String?
   replyTemplateId String?
-  isActive        Boolean  @default(true)
-  priority        Int      @default(0)
+  /// Restrict, not SetNull: a rule whose reply template silently became null
+  /// would answer every matching customer with nothing at all, which is the one
+  /// outcome an auto-responder must never produce. deleteTemplate names the rule
+  /// first, so the constraint is the backstop rather than the error path.
+  replyTemplate   WaTemplate?        @relation(fields: [replyTemplateId], references: [id], onDelete: Restrict)
+  /// Template parameters for replyTemplateId. Keyword auto-replies sent zero
+  /// parameters, so a rule pointing at a parameterised template replied with blank
+  /// placeholders. Same shape as WaCampaign.variableMapping.
+  replyVariables  Json?
+  /// What a match DOES: "reply" sends replyText/replyTemplateId, "handoff" routes
+  /// the thread to a human instead of answering.
+  ///
+  /// A rule could only ever say something. "Talk to a human" therefore got a canned
+  /// sentence and nothing else happened — the thread stayed unassigned, in the same
+  /// status, with no label, so nobody was told a customer had asked to escalate.
+  action          String             @default("reply")
+  /// Handoff target — operator label to assign, triage label to apply, and the
+  /// status to move the conversation into (OPEN / PENDING). All optional.
+  handoffAssignee String?
+  handoffLabel    String?
+  handoffStatus   String?
+  isActive        Boolean            @default(true)
+  priority        Int                @default(0)
+  /// Per-rule telemetry. Every automated send used to be swallowed by one
+  /// catch-all `logger.warn`, so a rule pointing at a template Meta had paused
+  /// failed silently on every inbound message and looked, from the console,
+  /// exactly like a rule that was working.
+  hitCount        Int                @default(0)
+  lastHitAt       DateTime?
+  lastErrorAt     DateTime?
+  lastError       String?
   createdBy       String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  /// Covers the evaluator's exact shape: filter isActive, order by priority desc
+  /// then createdAt asc (the documented tie-break). The bare [isActive] index it
+  /// replaces answered the filter and left the sort to be done in memory on every
+  /// inbound message.
+  @@index([isActive, priority, createdAt])
+  @@index([replyTemplateId])
+}
+
+/// A multi-step conversational flow — the stateful half of the automation tier.
+///
+/// Keyword rules are one message in, one canned message out, so anything needing
+/// more than a single exchange was impossible: capturing a name and then an email,
+/// a menu that branches on the previous answer, qualifying a lead before routing
+/// it. A flow is a small graph of steps; the customer's position in it lives on
+/// WaConversation.flowState, so it survives across messages, workers and restarts.
+
+model WaBotFlow {
+  id               String    @id @default(uuid())
+  name             String
+  description      String?
+  isActive         Boolean   @default(false)
+  /// How a flow starts: "keyword" (an inbound message matches triggerKeywords) or
+  /// "manual" (only ever started deliberately, from the inbox).
+  triggerType      String    @default("keyword")
+  triggerKeywords  String[]  @default([])
+  /// Matcher for triggerKeywords — the same five the keyword engine implements.
+  triggerMatchType String    @default("contains")
+  /// Step the flow enters on. Null = the lowest-ordered step of the flow.
+  entryStepKey     String?
+  /// Minutes of silence after which an unfinished session is abandoned. A customer
+  /// who walks away mid-flow must not have their next message — days later, about
+  /// something else entirely — read as the answer to a question they have forgotten.
+  timeoutMinutes   Int       @default(60)
+  /// Anything the customer can type to leave the flow. A flow with no exit is a
+  /// trap: every subsequent message is swallowed as an answer and the customer
+  /// cannot reach the FAQ menu, a keyword rule or a human.
+  escapeKeywords   String[]  @default(["cancel", "stop", "exit", "menu"])
+  /// Sent when a session ends early (escape keyword or timeout). Optional.
+  cancelMessage    String?
+  /// Per-flow telemetry, the same shape WaKeywordRule carries.
+  hitCount         Int       @default(0)
+  completedCount   Int       @default(0)
+  lastHitAt        DateTime?
+  createdBy        String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  steps WaBotStep[]
 
   @@index([isActive])
+}
+
+/// One node of a WaBotFlow.
+
+model WaBotStep {
+  id                String    @id @default(uuid())
+  flowId            String
+  flow              WaBotFlow @relation(fields: [flowId], references: [id], onDelete: Cascade)
+  /// Stable, human-authored key. `nextStepKey`, `choices[].next` and the saved
+  /// flowState all reference it, so it is what makes a flow editable without
+  /// breaking sessions already in progress.
+  key               String
+  /// message | ask | choice | set_attribute | send_template | handoff | end
+  kind              String    @default("ask")
+  /// What the customer is shown when the flow arrives here.
+  prompt            String?
+  /// ask/choice: the slot the answer is stored under, so a later step can use it
+  /// as {{slot}}. set_attribute: the WaContact attribute key written.
+  saveAs            String?
+  /// ask validation: text | number | email | phone
+  validation        String    @default("text")
+  /// choice options: [{ label, value?, next? }] — sent as WhatsApp quick replies.
+  choices           Json?
+  /// Sent when an `ask` answer fails validation; the step is then re-asked.
+  retryMessage      String?
+  /// set_attribute: the literal value to write (supports {{slot}} interpolation).
+  value             String?
+  /// send_template: an approved template and its positional parameters.
+  templateId        String?
+  templateVariables Json?
+  /// handoff: the same routing triple as WaKeywordRule.
+  handoffAssignee   String?
+  handoffLabel      String?
+  handoffStatus     String?
+  /// Unconditional successor. On a `choice`, a matching `choices[].next` wins.
+  /// Null ends the flow.
+  nextStepKey       String?
+  order             Int       @default(0)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@unique([flowId, key])
+  @@index([flowId, order])
 }
 
 /// Singleton settings row for the WhatsApp channel (editable in the UI).
 
 model WaSettings {
-  id                 String   @id @default("default")
-  businessHours      Json? // { tz, days: [{ day, open, close }] }
-  awayMessage        String?
-  welcomeMessage     String?
-  autoReplyEnabled   Boolean  @default(false)
+  id                        String   @id @default("default")
+  // { tz, days: [{ day, open, close }], exceptions: [{ date, closed?, open?, close?, repeatsAnnually?, label? }] }
+  // A day may appear in `days` more than once (split shift). `days: []` means
+  // "closed all week"; omitting `days` (or a null column) means "not configured
+  // => always open" — the two are NOT the same to the away auto-reply.
+  // `exceptions` are calendar-date overrides (holidays) checked before the grid.
+  businessHours             Json?
+  awayMessage               String?
+  welcomeMessage            String?
+  autoReplyEnabled          Boolean  @default(false)
   // Manual "away" override — when true the away message is sent regardless of
   // business hours (agent stepped out). Off = automatic (business-hours) away.
-  awayMode           Boolean  @default(false)
-  marketingCapPer24h Int      @default(1) // max marketing templates per contact / rolling 24h (0 = unlimited)
-  retentionDays      Int? // null = keep forever; else prune messages/events older than this
-  optOutKeywords     String[] @default(["STOP", "UNSUBSCRIBE", "CANCEL"])
+  awayMode                  Boolean  @default(false)
+  /// How long one away auto-reply silences the next one on the SAME conversation.
+  ///
+  /// This was a hardcoded 30-minute constant in the engine, so it was neither
+  /// visible nor tunable: a high-volume desk wanted it much shorter and a
+  /// low-volume one much longer, and neither could say so. Held in minutes
+  /// because that is the unit the editor asks for; the engine floors it at 60s.
+  awayDebounceMinutes       Int      @default(30)
+  marketingCapPer24h        Int      @default(1) // max marketing templates per contact / rolling 24h (0 = unlimited)
+  retentionDays             Int? // null = keep forever; else prune messages/events older than this
+  optOutKeywords            String[] @default(["STOP", "UNSUBSCRIBE", "CANCEL"])
+  /// Keywords that RE-subscribe a contact. Opt-out was a one-way door: a customer
+  /// who replied START or SUBSCRIBE stayed suppressed until an operator noticed
+  /// and flipped them back by hand, which for most deployments meant never.
+  optInKeywords             String[] @default(["START", "UNSTOP", "SUBSCRIBE"])
+  /// Acknowledgement sent to a customer whose message opted them out.
+  ///
+  /// A STOP reply was answered with complete silence — the auto-reply engine is
+  /// deliberately short-circuited for someone who just asked to stop — so the
+  /// customer had no way to tell whether it had registered. The standard next
+  /// move is to send STOP again, and then to report the business, which is the
+  /// well-trodden path to a quality-rating hit. Null/blank disables it.
+  optOutConfirmationMessage String?
   // FAQ menu: when enabled, the interactive FAQ list is sent on first contact
   // and whenever an inbound message matches one of the trigger keywords.
-  faqMenuEnabled     Boolean  @default(false)
-  faqTriggerKeywords String[] @default(["menu", "faq", "help"])
-  updatedAt          DateTime @updatedAt
+  faqMenuEnabled            Boolean  @default(false)
+  faqTriggerKeywords        String[] @default(["menu", "faq", "help"])
+  /// Sent when a customer taps an FAQ row that has since been deactivated or
+  /// deleted. WhatsApp list menus stay tappable in the customer's chat history
+  /// forever, so this is a real path: they scroll back to last week's menu, tap
+  /// a topic, and used to get nothing at all — the worst possible answer to a
+  /// visible interaction. Null falls back to the built-in sentence.
+  faqFallbackMessage        String?
+  updatedAt                 DateTime @updatedAt
 }
 
 enum WaScheduledMessageStatus {
@@ -523,19 +1142,28 @@ enum WaScheduledMessageStatus {
 /// One A/B variant of a campaign (a template + weight); recipients are split across variants.
 
 model WaCampaignVariant {
-  id             String     @id @default(uuid())
-  campaignId     String
-  campaign       WaCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  label          String
-  templateId     String
-  weight         Int        @default(1)
-  sentCount      Int        @default(0)
-  deliveredCount Int        @default(0)
-  readCount      Int        @default(0)
-  repliedCount   Int        @default(0)
-  createdAt      DateTime   @default(now())
+  id              String     @id @default(uuid())
+  campaignId      String
+  campaign        WaCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  label           String
+  templateId      String
+  template        WaTemplate @relation(fields: [templateId], references: [id], onDelete: Restrict)
+  weight          Int        @default(1)
+  /// Per-variant template parameters, resolved per recipient exactly like
+  /// WaCampaign.variableMapping. A/B campaigns used to send `variableMapping:
+  /// undefined`, so every recipient of a parameterised A/B campaign received a
+  /// template with blank placeholders. Variants can point at different templates
+  /// with different placeholder counts, so the mapping cannot live on the campaign.
+  /// Shape: string[] — one token per {{n}}, either a literal or {{name}}/{{phone}}.
+  variableMapping Json?
+  sentCount       Int        @default(0)
+  deliveredCount  Int        @default(0)
+  readCount       Int        @default(0)
+  repliedCount    Int        @default(0)
+  createdAt       DateTime   @default(now())
 
   @@index([campaignId])
+  @@index([templateId])
 }
 
 /// A trackable short link embedded in campaign/template messages.
@@ -545,6 +1173,7 @@ model WaShortLink {
   code       String        @unique
   targetUrl  String
   campaignId String?
+  campaign   WaCampaign?   @relation(fields: [campaignId], references: [id], onDelete: SetNull)
   clickCount Int           @default(0)
   createdBy  String?
   createdAt  DateTime      @default(now())
@@ -560,11 +1189,21 @@ model WaLinkClick {
   shortLinkId String
   shortLink   WaShortLink @relation(fields: [shortLinkId], references: [id], onDelete: Cascade)
   contactId   String?
+  /// SetNull: a click is an analytics fact that must survive its contact being
+  /// erased, but it must not point at a row that no longer exists.
+  contact     WaContact?  @relation(fields: [contactId], references: [id], onDelete: SetNull)
   ip          String?
   userAgent   String?
   createdAt   DateTime    @default(now())
 
   @@index([shortLinkId, createdAt])
+  /// The nightly retention prune scans `createdAt < cutoff ORDER BY createdAt`
+  /// and DPDP erasure scrubs `WHERE contactId = ?`. Neither could use the
+  /// composite above (it leads on shortLinkId), so both seq-scanned the
+  /// fastest-growing table in the module under a 30s statement_timeout — the
+  /// prune silently gave up and click PII outlived its retention window.
+  @@index([createdAt])
+  @@index([contactId])
 }
 
 /// Periodic snapshot of channel quality + messaging tier for trend charts.
@@ -584,10 +1223,30 @@ model WaChannelHealthSnapshot {
 model WaScheduledMessage {
   id             String                   @id @default(uuid())
   conversationId String
-  kind           String // text | template
+  /// Cascade: a send-later row outlived the thread it was scheduled on and then
+  /// failed in the dispatch cron, once, with nobody watching.
+  conversation   WaConversation           @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  kind           WaScheduledMessageKind
   text           String?
   templateId     String?
+  /// SetNull, unlike the other template references: a SENT or CANCELLED row is
+  /// history, and history must not stop an obsolete template being retired.
+  /// deleteTemplate still refuses while a PENDING row holds it.
+  template       WaTemplate?              @relation(fields: [templateId], references: [id], onDelete: SetNull)
   bodyParams     Json?
+  /// R2 key of the bytes a `media` row will send.
+  ///
+  /// The file is archived to our own bucket at schedule time and only uploaded
+  /// to Meta in the dispatch tick, deliberately: a Meta media id expires after
+  /// 30 days, so a send-later scheduled further out than that would have failed
+  /// at the exact moment nobody was watching. Cleared (and the object deleted)
+  /// once the row is sent or cancelled.
+  mediaKey       String?
+  mediaMime      String?
+  mediaFilename  String?
+  /// Caption for a `media` row. Kept separate from `text` so the dispatcher
+  /// cannot mistake a caption for a free-form text message.
+  caption        String?
   sendAt         DateTime
   status         WaScheduledMessageStatus @default(PENDING)
   createdBy      String?
@@ -597,6 +1256,7 @@ model WaScheduledMessage {
 
   @@index([status, sendAt])
   @@index([conversationId])
+  @@index([templateId])
 }
 
 /// Global do-not-contact suppression list (phones never messaged by campaigns).
@@ -617,7 +1277,7 @@ model WaSegment {
   id          String   @id @default(uuid())
   name        String
   description String?
-  filter      Json // { tags?, optInStatus?, onPlatform? }
+  filter      Json // { tags?, optInStatus?, attributes? }
   createdBy   String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -628,15 +1288,168 @@ model WaSegment {
 /// A recorded conversion attributed to a campaign / contact (funnel + ROI).
 
 model WaConversion {
-  id         String   @id @default(uuid())
+  id         String      @id @default(uuid())
+  /// Caller-supplied idempotency key for the server-to-server ingest route.
+  ///
+  /// A CRM that retries a postback, or a checkout page that fires twice, used to
+  /// create two conversions and permanently inflate convertedCount and revenue
+  /// with no way to correct it. Unique, so the second write is recognised as the
+  /// same event rather than a new one.
+  externalId String?     @unique
   campaignId String?
+  /// Real relations, with SetNull on delete. These were bare String columns, so
+  /// deleting a campaign left orphan conversions that getConversionSummary still
+  /// counted in its totals.
+  campaign   WaCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
   contactId  String?
-  valuePaise Int? // optional monetary value of the conversion
+  contact    WaContact?  @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  valuePaise Int? // optional monetary value of the conversion (never negative)
   note       String?
-  createdAt  DateTime @default(now())
+  /// When the conversion actually happened, which is not when we heard about it
+  /// — a nightly CRM export posts yesterday's orders.
+  occurredAt DateTime?
+  /// 'manual' (operator form) | 'api' (server-to-server ingest).
+  source     String      @default("manual")
+  createdAt  DateTime    @default(now())
 
   @@index([campaignId])
   @@index([contactId])
+  @@index([createdAt])
+}
+
+/// Immutable consent transition log.
+///
+/// `WaContact.optInStatus` / `optInAt` / `optOutAt` are a MUTABLE projection of
+/// "where this contact stands now": re-opting a contact in nulls `optOutAt`, so
+/// the opt-out trend chart — which read that column directly — silently erased
+/// yesterday's spike as soon as those people came back. A report an operator ran
+/// twice gave two different answers, and the single most important negative
+/// signal for a paid sender could vanish entirely.
+///
+/// Rows here are append-only and are never rewritten. The projection stays on
+/// WaContact (nothing on the read path has to change); this table is what the
+/// history is computed from.
+
+model WaConsentEvent {
+  id         String             @id @default(uuid())
+  contactId  String
+  contact    WaContact          @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  type       WaConsentEventType
+  /// Where the transition came from: reply | manual | bulk | import | api |
+  /// meta_preference | erasure | backfill.
+  source     String
+  /// The campaign the contact was reacting to, when known — this is what makes
+  /// "which campaign burned the list" answerable.
+  campaignId String?
+  evidence   Json?
+  createdAt  DateTime           @default(now())
+
+  @@index([contactId, createdAt])
+  @@index([createdAt])
+  @@index([campaignId])
+}
+
+/// Daily rollup of WaMessage volume, status and cost — the audit-safe copy of
+/// the analytics headline numbers.
+///
+/// Every dashboard figure was a live COUNT(*) over WaMessage, and the retention
+/// cron hard-deletes from that table on `WaSettings.retentionDays`. So "messages
+/// sent" and every rate derived from it silently shrank the night the prune
+/// crossed a day, a report taken today could not be reproduced next month, and
+/// nobody could tell a quiet week from a pruned one. These rows hold no message
+/// content, no phone number and no contact id, so they can outlive the raw rows
+/// for as long as the operator wants a history.
+///
+/// Buckets are cut in the REPORTING timezone (see whatsapp-reporting-tz), not in
+/// UTC, because that is the boundary the charts and every windowed aggregate use
+/// — bucketing here in UTC would have made the rollup and the live query disagree
+/// by up to a day for every deployment that is not on UTC.
+
+model WaMessageDaily {
+  id         String      @id @default(uuid())
+  date       DateTime    @db.Date
+  channelId  String
+  direction  WaDirection
+  /// The template category the message went out under, or 'SESSION' for
+  /// free-form and for everything inbound. Never null: a nullable column in a
+  /// composite unique key makes every NULL row distinct in Postgres, so the
+  /// upsert below would insert a new duplicate on every single run.
+  category   String
+  /// Rows created that day, whatever became of them.
+  messages   Int         @default(0)
+  /// Outbound only; `read` is a subset of `delivered`, exactly as the live
+  /// query counts it (status IN ('DELIVERED','READ')).
+  delivered  Int         @default(0)
+  read       Int         @default(0)
+  failed     Int         @default(0)
+  /// Summed WaMessage.costPaise — only Meta-reported prices, so 0 means "Meta
+  /// told us nothing", never "it was free".
+  costPaise  Int         @default(0)
+  /// When this row was last recomputed from the raw messages.
+  computedAt DateTime    @updatedAt
+
+  @@unique([date, channelId, direction, category])
+  @@index([date])
+  @@index([channelId, date])
+}
+
+/// Daily rollup of WaLinkClick, written before the retention prune deletes the
+/// raw rows.
+///
+/// Raw clicks carry IP + user agent and are pruned on a 180-day TTL, which took
+/// the click TREND with them while `WaShortLink.clickCount` (a lifetime counter)
+/// survived — so the dashboard could say how many clicks a link had ever had and
+/// nothing about when. This aggregate holds no personal data, so it can outlive
+/// the raw rows.
+
+model WaLinkClickDaily {
+  id             String   @id @default(uuid())
+  date           DateTime @db.Date
+  shortLinkId    String
+  campaignId     String?
+  clicks         Int      @default(0)
+  /// Distinct attributed contacts. Clicks with no recipient token are counted in
+  /// `clicks` but cannot contribute here.
+  uniqueClickers Int      @default(0)
+  createdAt      DateTime @default(now())
+
+  @@unique([date, shortLinkId])
+  @@index([campaignId, date])
+  @@index([date])
+}
+
+/// Meta's own billed volume + cost, by day and category.
+///
+/// The estimate side of the cost dashboard is built on three env constants
+/// (WHATSAPP_PRICE_*_PAISE). Meta's authoritative figures were fetched by
+/// getMetaAnalytics and thrown away after a 30-minute Redis cache, so nobody
+/// could tell whether the ₹0.78 marketing guess was right for their account,
+/// their country or their pricing tier. Persisting them makes the estimate
+/// checkable — and, once there is a history, self-correcting.
+
+model WaMetaCostDaily {
+  id        String   @id @default(uuid())
+  date      DateTime @db.Date
+  category  String // MARKETING | UTILITY | AUTHENTICATION | SERVICE | UNKNOWN
+  type      String? // PMP pricing_type; null for conversation-based rows
+  /// 'pricing' (pricing_analytics, per message) | 'conversation'
+  /// (conversation_analytics, per 24h conversation). The two count different
+  /// things and must never be summed together.
+  source    String
+  volume    Int      @default(0)
+  /// Cost in the WABA's billing currency, in MINOR units (paise/cents), so it
+  /// can be compared with our paise estimates without a float round-trip.
+  costMinor Int      @default(0)
+  currency  String?
+  syncedAt  DateTime @updatedAt
+
+  @@unique([date, category, type, source])
+  @@index([date])
+}
+
+enum WaConsentEventType {
+  OPT_IN
+  OPT_OUT
 }
 
 // ============================================================================
@@ -662,7 +1475,12 @@ model AuditLog {
 
   @@index([performedBy])
   @@index([action])
-  @@index([entity])
+  /// "What happened to THIS record?" — the entity filter is always paired with
+  /// an entityId (audit.service.ts), and with only `entity` indexed that read
+  /// scanned every row of the 180-day trail for the entity type, six times over
+  /// for the stats panel. Composite with `entity` leading, so it also answers
+  /// the entity-only filter the standalone @@index([entity]) used to.
+  @@index([entity, entityId])
   @@index([createdAt])
 }
 
@@ -695,6 +1513,10 @@ model WebhookDelivery {
   webhookId  String
   event      String
   payload    Json
+  /// Phone numbers named anywhere in the delivered body, digits only — the same
+  /// erasure key as WaWebhookEvent.phones, and for the same reason: matching a
+  /// data subject with `payload::text LIKE` scanned the whole delivery log.
+  phones     String[] @default([])
   statusCode Int?
   response   String?
   success    Boolean  @default(false)
@@ -706,6 +1528,7 @@ model WebhookDelivery {
 
   @@index([webhookId])
   @@index([createdAt])
+  @@index([phones], type: Gin)
 }
 
 /// Multi-factor authentication for the operator console.
@@ -771,4 +1594,97 @@ model WaTrustedDevice {
   createdAt  DateTime  @default(now())
 
   @@index([expiresAt])
+}
+
+/// A WhatsApp Flow (Meta's native multi-screen form).
+///
+/// Flows lived entirely on Meta: the module could SEND one by id, but there was
+/// no way to see which flows existed, what state they were in, or to publish
+/// one — so an operator had to work in Meta's Flow Builder and copy ids by hand,
+/// with no local record of what was deployed.
+model WaFlow {
+  id               String    @id @default(uuid())
+  /// Flow id on Meta. The value that goes on the wire when sending.
+  metaId           String    @unique
+  name             String
+  /// DRAFT | PUBLISHED | DEPRECATED | BLOCKED | THROTTLED (Meta vocabulary).
+  status           String    @default("DRAFT")
+  categories       String[]
+  /// Endpoint-backed (dynamic) flows carry a data-exchange URI; static ones do not.
+  endpointUri      String?
+  previewUrl       String?
+  previewExpires   DateTime?
+  /// Last Flow JSON we pushed, kept so the operator can see what is deployed.
+  flowJson         Json?
+  validationErrors Json?
+  lastSyncedAt     DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  responses WaFlowResponse[]
+
+  @@index([status])
+}
+
+/// A completed Flow submission, extracted from the inbound `nfm_reply`.
+///
+/// The raw reply was already parsed and tucked into WaMessage.payload, where
+/// nothing ever read it — so the answers a customer filled in were captured and
+/// invisible. This promotes them to a queryable row.
+model WaFlowResponse {
+  id             String   @id @default(uuid())
+  flowId         String?
+  flow           WaFlow?  @relation(fields: [flowId], references: [id], onDelete: SetNull)
+  /// Opaque per-send token, so a submission can be tied back to the send.
+  flowToken      String?
+  conversationId String
+  contactId      String
+  messageId      String?  @unique
+  /// The customer's answers, as submitted.
+  responseJson   Json
+  submittedAt    DateTime @default(now())
+
+  @@index([conversationId])
+  @@index([contactId])
+  @@index([flowToken])
+}
+
+enum WaImportJobStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+/// Progress and outcome of one bulk contact import.
+///
+/// The import used to run inside the HTTP request: 5000 rows × two sequential
+/// queries each, against a 30s request budget it could not meet. The operator
+/// got a 408 while the loop carried on committing rows, with no transaction
+/// around them and no way to see how far it had got — so the only recovery was
+/// to re-upload the whole file and hope. The work now runs on a queue and this
+/// row is what the modal polls.
+model WaImportJob {
+  id              String            @id @default(uuid())
+  status          WaImportJobStatus @default(QUEUED)
+  /// Rows the operator submitted, including ones later skipped.
+  total           Int               @default(0)
+  processed       Int               @default(0)
+  created         Int               @default(0)
+  updated         Int               @default(0)
+  /// Rows dropped for an unusable phone number.
+  skipped         Int               @default(0)
+  /// Rows matching a contact who had explicitly opted out; consent left as-is.
+  skippedOptedOut Int               @default(0)
+  /// Rows that named a phone number already present earlier in the same file.
+  duplicates      Int               @default(0)
+  /// Whether the operator asserted consent for this file.
+  optIn           Boolean           @default(false)
+  error           String?
+  createdBy       String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  finishedAt      DateTime?
+
+  @@index([createdAt])
 }

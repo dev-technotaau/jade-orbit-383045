@@ -74,6 +74,35 @@ const BLOCKED_EXTENSIONS = new Set([
   '.svg', // SVG can contain embedded scripts
 ]);
 
+/** How much of a file is sniffed to decide whether it is text at all. */
+const TEXT_SNIFF_BYTES = 8_192;
+
+/** How much of a text file the dangerous-pattern regexes actually see. */
+const PATTERN_SCAN_BYTES = 100_000;
+
+/**
+ * True when the bytes themselves are text, whatever the uploader declared:
+ * valid UTF-8 with no NUL and no stray control characters. Binary container
+ * formats (JPEG, PNG, PDF, the ZIP behind .docx/.xlsx, audio) essentially never
+ * satisfy that, which is what keeps them out of the pattern scan below.
+ */
+function looksLikeText(buffer: Buffer): boolean {
+  const sample = buffer.subarray(0, Math.min(buffer.length, TEXT_SNIFF_BYTES));
+  try {
+    // `stream: true` so a multi-byte character straddling the end of the sample
+    // is held back rather than reported as invalid UTF-8.
+    new TextDecoder('utf-8', { fatal: true }).decode(sample, { stream: true });
+  } catch {
+    return false;
+  }
+  for (const byte of sample) {
+    // Tab, LF, VT, FF and CR are the only control characters text carries.
+    const isAllowedControl = byte === 0x09 || (byte >= 0x0a && byte <= 0x0d);
+    if ((byte < 0x20 && !isAllowedControl) || byte === 0x7f) return false;
+  }
+  return true;
+}
+
 interface ScanResult {
   safe: boolean;
   reason?: string;
@@ -123,13 +152,22 @@ export function scanFile(
     }
   }
 
-  // 4. Scan text-based files for dangerous patterns
+  // 4. Scan text for dangerous patterns.
+  //
+  // Only content that really IS text gets the regex pass. This used to run over
+  // anything under 500 KB as well, decoded as UTF-8, so an ordinary photo, voice
+  // note or spreadsheet whose bytes happened to contain `onload=` or `<% %>`
+  // somewhere in its first 100 KB was refused as "potentially dangerous content"
+  // with no override available to the operator. The declared type alone cannot
+  // decide it either, since a script-bearing HTML file can arrive as
+  // `application/octet-stream`, so the bytes are sniffed too.
   const textMimes = ['text/', 'application/json', 'application/xml', 'application/svg'];
-  const isTextBased = textMimes.some((m) => declaredMimetype.startsWith(m));
+  const isTextBased =
+    textMimes.some((m) => declaredMimetype.startsWith(m)) || looksLikeText(buffer);
 
-  if (isTextBased || buffer.length < 500_000) {
-    // Only scan smaller files to avoid performance issues
-    const content = buffer.toString('utf-8', 0, Math.min(buffer.length, 100_000));
+  if (isTextBased) {
+    // Cap the window so a huge text file cannot stall the request.
+    const content = buffer.toString('utf-8', 0, Math.min(buffer.length, PATTERN_SCAN_BYTES));
     for (const pattern of DANGEROUS_PATTERNS) {
       if (pattern.test(content)) {
         logger.warn(`Blocked upload: dangerous pattern ${pattern} found in ${filename}`);

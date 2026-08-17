@@ -65,6 +65,12 @@ export interface AuditFilters {
   q?: string;
   from?: Date;
   to?: Date;
+  /**
+   * Widen every read to the rows the retention sweep has archived (older than
+   * AUDIT_LOG_ARCHIVE_DAYS in whatsapp-cron.worker). They are still stored and
+   * still checksum-verifiable until the hard delete; they are simply out of the
+   * working trail.
+   */
   includeArchived?: boolean;
 }
 
@@ -438,17 +444,6 @@ export class AuditService {
     return checkIntegrity(log) === 'valid';
   }
 
-  /**
-   * Archive audit logs older than a given date (for compliance retention).
-   */
-  static async archiveLogs(olderThan: Date): Promise<number> {
-    const result = await prisma.auditLog.updateMany({
-      where: { createdAt: { lt: olderThan }, isArchived: false },
-      data: { isArchived: true },
-    });
-    logger.info(`Archived ${result.count} audit logs older than ${olderThan.toISOString()}`);
-    return result.count;
-  }
 }
 
 /** Exported for tests — the serialisation the checksum depends on. */

@@ -1,3 +1,4 @@
+import { createHmac } from 'crypto';
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { cookies } from 'next/headers';
@@ -17,6 +18,26 @@ import { BACKEND_URL, BFF_SECRET, UNLOCK_COOKIE } from '../../_lib/config';
  * either works or it does not. A 401 is passed straight through and the UI sends
  * the operator to /unlock.
  */
+
+/**
+ * A stable per-browser id for the backend's rate limiters.
+ *
+ * Everything the console does arrives at the API from this one server, so
+ * `req.ip` there is our egress address and every operator shared a single
+ * rate-limit and DDoS bucket: one person with several inbox tabs open could
+ * trip the per-second threshold and 429 the whole team for a minute. The
+ * backend keys on this header instead when it is present (and only when the
+ * BFF secret alongside it checks out, since a browser could otherwise mint one
+ * per request).
+ *
+ * It is an HMAC of the session token rather than the token itself — the value
+ * ends up in Redis keys and log lines, and a session credential has no business
+ * being in either. Truncated because it only has to be unique among a handful
+ * of operators.
+ */
+function operatorKey(unlockToken: string, secret: string): string {
+  return createHmac('sha256', secret).update(unlockToken).digest('hex').slice(0, 32);
+}
 
 async function proxyRequest(
   request: NextRequest,
@@ -57,7 +78,12 @@ async function proxyRequest(
   if (contentType) headers.set('content-type', contentType);
   // The backend's requireAppPassword accepts this cookie by name.
   headers.set('cookie', `${UNLOCK_COOKIE}=${unlockToken}`);
-  if (BFF_SECRET) headers.set('x-bff-secret', BFF_SECRET);
+  if (BFF_SECRET) {
+    headers.set('x-bff-secret', BFF_SECRET);
+    // Only meaningful next to the secret above: the backend ignores an operator
+    // key it cannot attribute to this proxy.
+    headers.set('x-operator-key', operatorKey(unlockToken, BFF_SECRET));
+  }
 
   // Client context the backend's rate limiters and logs use.
   const forwarded = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip');
@@ -75,6 +101,12 @@ async function proxyRequest(
   if (idempotencyKey) headers.set('Idempotency-Key', idempotencyKey);
   const csrfToken = request.headers.get('x-csrf-token');
   if (csrfToken) headers.set('x-csrf-token', csrfToken);
+
+  // Range — the media proxy answers 206 partials so <video>/<audio> can seek.
+  // Dropped here, the backend never sees the range, always replies 200, and
+  // every scrubber drag became a fresh download of the whole file.
+  const range = request.headers.get('range');
+  if (range) headers.set('range', range);
 
   let body: BodyInit | undefined;
   if (request.method !== 'GET' && request.method !== 'HEAD') {
@@ -109,7 +141,15 @@ async function proxyRequest(
   // compressed, so the compressor skips it) keeps a real length for progress
   // reporting. Omitted, the response is simply chunked and read to end-of-stream.
   const wasDecoded = res.headers.has('content-encoding');
-  const passthrough = ['content-type', 'content-disposition', 'cache-control'];
+  // accept-ranges/content-range must survive the hop or the browser cannot tell
+  // that a 206 is a slice of something larger, and refuses to seek.
+  const passthrough = [
+    'content-type',
+    'content-disposition',
+    'cache-control',
+    'accept-ranges',
+    'content-range',
+  ];
   if (!wasDecoded) passthrough.push('content-length');
   for (const h of passthrough) {
     const v = res.headers.get(h);
@@ -124,3 +164,12 @@ export const POST = proxyRequest;
 export const PUT = proxyRequest;
 export const PATCH = proxyRequest;
 export const DELETE = proxyRequest;
+
+/**
+ * Media is proxied through this handler, so it has to outlive a JSON round-trip.
+ * Vercel's default ceiling is ~10s: long enough for an API call, but an inbox
+ * attachment (100 MB cap) or a video being seeked through is still on the wire
+ * when the function is killed, and the operator sees playback stop partway with
+ * a clean 200 in the log. 60s is the maximum every plan allows.
+ */
+export const maxDuration = 60;

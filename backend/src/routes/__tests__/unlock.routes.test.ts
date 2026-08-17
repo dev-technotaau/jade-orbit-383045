@@ -100,7 +100,7 @@ describe('POST /unlock — MFA off', () => {
     const res = await request(app()).post('/unlock').send({ password: PASSWORD });
 
     expect(res.status).toBe(200);
-    expect(verifyUnlockToken(res.body.data.token)).toBe(true);
+    expect(verifyUnlockToken(res.body.data.token)).toBe('operator');
     expect(attemptMock.recordUnlockSuccess).toHaveBeenCalledWith(
       expect.objectContaining({ mfa: 'not_required' })
     );
@@ -149,8 +149,8 @@ describe('POST /unlock — MFA on', () => {
     expect(res.status).toBe(200);
     expect(res.body.data.mfaRequired).toBe(true);
     expect(res.body.data.token).toBeUndefined();
-    expect(verifyUnlockToken(res.body.data.pendingToken)).toBe(false);
-    expect(verifyMfaPendingToken(res.body.data.pendingToken)).toBe(true);
+    expect(verifyUnlockToken(res.body.data.pendingToken)).toBeNull();
+    expect(verifyMfaPendingToken(res.body.data.pendingToken)).toBe('operator');
   });
 
   it('skips the prompt for a trusted browser and rotates its token', async () => {
@@ -165,7 +165,7 @@ describe('POST /unlock — MFA on', () => {
       .send({ password: PASSWORD });
 
     expect(res.status).toBe(200);
-    expect(verifyUnlockToken(res.body.data.token)).toBe(true);
+    expect(verifyUnlockToken(res.body.data.token)).toBe('operator');
     expect(res.body.data.trustedDevice.token).toBe('rotated-token');
     expect(attemptMock.recordUnlockSuccess).toHaveBeenCalledWith(
       expect.objectContaining({ mfa: 'trusted_device' })
@@ -204,7 +204,7 @@ describe('POST /unlock/mfa/verify', () => {
       .send({ pendingToken: token, code: '123456' });
 
     expect(res.status).toBe(200);
-    expect(verifyUnlockToken(res.body.data.token)).toBe(true);
+    expect(verifyUnlockToken(res.body.data.token)).toBe('operator');
     expect(res.body.data.factor).toBe('totp');
   });
 

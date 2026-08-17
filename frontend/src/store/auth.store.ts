@@ -37,11 +37,19 @@ export interface OperatorUser {
 }
 
 /**
- * Must match the backend's APP_ACTOR (middleware/app-password.ts) — the inbox
- * compares `assignedTo` against this id for its "Assigned to me" filter.
+ * The synthetic signed-in user, for the ~24 components that read `user` (header
+ * avatar, sidebar, command palette).
+ *
+ * DISPLAY ONLY. `id` used to be read from NEXT_PUBLIC_OPERATOR_LABEL so it would
+ * match the backend's actor (middleware/app-password.ts) — two variables in two
+ * places for one value, and setting only one of them made the inbox's "Assigned
+ * to me" filter silently match nothing. With named operators (OPERATOR_PASSWORDS)
+ * the real label is whichever person's password unlocked the session, which this
+ * store has no way of knowing; the inbox asks `GET /unlock/whoami` instead, so
+ * nothing compares against this id any more.
  */
 export const OPERATOR: OperatorUser = {
-  id: process.env.NEXT_PUBLIC_OPERATOR_LABEL || 'operator',
+  id: 'operator',
   email: 'operator@localhost',
   role: 'ADMIN',
   firstName: 'Operator',
@@ -87,6 +95,6 @@ export const useAuthStore = create<AuthState>()(
       name: 'wa-unlock',
       // Persist the flag only. The password itself is never held in JS.
       partialize: (s) => ({ user: s.user, isAuthenticated: s.isAuthenticated }),
-    }
-  )
+    },
+  ),
 );

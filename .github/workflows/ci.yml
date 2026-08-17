@@ -1,0 +1,132 @@
+# Continuous integration.
+#
+# Render and Vercel both auto-deploy from `main`. Until this existed, the ONLY
+# thing standing between a broken commit and production was a local Husky hook —
+# which `--no-verify` skips, which never runs on a web-UI edit, and which does
+# not run the 2,880 lines of backend tests at all. A red build here is now the
+# signal that used to be missing.
+#
+# Deliberately mirrors the exact commands the repo already defines, rather than
+# inventing CI-only variants: the two workspaces have different lint ceilings
+# (backend tolerates 22 legacy warnings, frontend allows none), and duplicating
+# those numbers here would let them drift apart silently.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# A newer push supersedes an in-flight run for the same ref. Without this, a
+# quick succession of pushes queues full runs that can only ever report on
+# already-stale code.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Pinned to match backend/.nvmrc so CI and Render cannot diverge.
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      # --include=dev for the same reason the Render build command needs it:
+      # typescript and tsc-alias are devDependencies, and CI sets NODE_ENV in
+      # ways that can omit them. postinstall runs `prisma generate`, which needs
+      # no database connection.
+      - name: Install
+        working-directory: backend
+        run: npm ci --include=dev
+
+      - name: Type-check
+        working-directory: backend
+        run: npm run type-check
+
+      - name: Lint
+        working-directory: backend
+        run: npm run lint
+
+      - name: Test
+        working-directory: backend
+        run: npm test
+
+      # Last, deliberately: an advisory published overnight would otherwise mask
+      # the type/lint/test result for the change actually being reviewed.
+      #
+      - name: Audit dependencies
+        # Report, do not gate. The only high advisory is a transitive sharp/libvips
+        # issue whose sole remedy is a breaking major bump, so gating here turns the
+        # Backend job red on every PR until someone takes that upgrade -- the exact
+        # always-red state the frontend audit step already avoids this way.
+        continue-on-error: true
+        working-directory: backend
+        run: npm audit --audit-level=high
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        working-directory: frontend
+        run: npm ci
+
+      - name: Type-check
+        working-directory: frontend
+        run: npm run type-check
+
+      - name: Lint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Test
+        working-directory: frontend
+        run: npm run test:ci
+
+      # Reports but does not block, unlike the backend's.
+      #
+      # Every high advisory outstanding here today is inside Next.js's own
+      # pinned tree (next, and the postcss/sharp it depends on), and npm's only
+      # offered fix is `--force` onto a next major outside the stated range —
+      # so a hard gate would go red on its first run for something this PR
+      # cannot fix, and a check that is always red is a check everyone learns
+      # to ignore (see the note at the bottom of this file).
+      #
+      # Dependabot (.github/dependabot.yml) is what actually clears these, by
+      # opening the next bump as a reviewable PR. Drop `continue-on-error` and
+      # make this a gate once that backlog is empty.
+      - name: Audit dependencies
+        working-directory: frontend
+        run: npm audit --audit-level=high
+        continue-on-error: true
+
+# NO formatting job, deliberately.
+#
+# 31 files in the repo are not Prettier-clean today, none of them from recent
+# work. A `prettier --check` gate would go red on its first run for reasons
+# unrelated to whatever change triggered it, and a CI check that always fails is
+# a check everyone learns to ignore.
+#
+# Bulk-formatting those 31 files to make the gate pass is the other bad option:
+# it rewrites files nobody touched and turns every later one-line change into an
+# app-wide-looking diff.
+#
+# Formatting is already enforced where it belongs - lint-staged runs Prettier
+# over staged files on commit. Add this job once the backlog is clean.

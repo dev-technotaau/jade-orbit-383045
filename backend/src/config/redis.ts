@@ -89,6 +89,10 @@ const createMockRedis = (): Redis => {
     zremrangebyrank: () => Promise.resolve(0),
     // Scan (cache invalidation)
     scan: () => Promise.resolve(['0', []]),
+    // Pub/sub (cross-process cache invalidation)
+    publish: () => Promise.resolve(0),
+    subscribe: () => Promise.resolve(0),
+    unsubscribe: () => Promise.resolve(0),
     // Connection lifecycle
     on: () => mock,
     connect: () => Promise.resolve(),
@@ -122,16 +126,16 @@ const createConnection = (): Redis => {
 // via .duplicate(). This keeps total connections = 1 base + N workers.
 export const redis = createConnection();
 
-// BullMQ default job options from env
-export const bullmqDefaultJobOptions = {
-  attempts: parseInt(env.BULLMQ_DEFAULT_JOB_OPTIONS_ATTEMPTS, 10),
-  backoff: {
-    type: 'exponential' as const,
-    delay: parseInt(env.BULLMQ_DEFAULT_JOB_OPTIONS_BACKOFF, 10),
-  },
-  removeOnComplete: parseInt(env.BULLMQ_REMOVE_ON_COMPLETE, 10),
-  removeOnFail: parseInt(env.BULLMQ_REMOVE_ON_FAIL, 10),
-};
+// No shared BullMQ default job options live here, on purpose.
+//
+// There used to be a `bullmqDefaultJobOptions` built from four BULLMQ_* env
+// vars, and nothing imported it: all seven queues state their own retry and
+// retention policy inline, each with the reason written next to it (media
+// retries across Meta's ~30-day availability window, auto-replies give up in
+// seconds because a late reply is worse than none, webhooks cover a
+// subscriber's deploy). A shared baseline was therefore overridden key for key
+// by every consumer, so an operator who set BULLMQ_REMOVE_ON_FAIL and restarted
+// changed nothing and was told nothing. Tune the queue, not the environment.
 
 // Event handlers (only if Redis is enabled)
 if (isRedisEnabled) {
@@ -147,5 +151,96 @@ if (isRedisEnabled) {
     logger.warn('Redis connection closed');
   });
 }
+
+/*
+ * Cross-process cache invalidation.
+ *
+ * Several hot paths cache a settings row in module-level state with a short TTL
+ * and drop that cache in-process when the row is saved. That is correct for a
+ * single process and silently wrong for every deployment that runs the API and
+ * the workers separately (or more than one replica): the process that saved the
+ * row is not the process that reads the cache, so the "takes effect on the very
+ * next message" promise degrades to "within the TTL". These two helpers turn
+ * that local flag into a fan-out every process hears.
+ */
+
+/** Handlers per channel, so one subscriber connection serves every caller. */
+const channelHandlers = new Map<string, Array<(message: string) => void>>();
+
+let subscriberClient: Redis | null = null;
+
+/**
+ * The subscriber connection, created on first use.
+ *
+ * A subscribed ioredis client is in subscriber mode and rejects every command
+ * that is not (un)subscribe, so this cannot be the shared `redis` connection —
+ * it has to be a `duplicate()`. Lazily created so a process that never
+ * subscribes never opens a second connection.
+ */
+const getSubscriber = (): Redis => {
+  if (subscriberClient) return subscriberClient;
+
+  const sub = redis.duplicate();
+  sub.on('error', (err: Error) => {
+    logger.error(`❌ Redis subscriber error: ${err.message}`);
+  });
+  sub.on('message', (channel: string, message: string) => {
+    for (const handler of channelHandlers.get(channel) ?? []) {
+      try {
+        handler(message);
+      } catch (err) {
+        // A throwing handler must not take down the subscriber connection and
+        // with it every other channel's invalidation.
+        logger.warn(`Redis handler for ${channel} threw: ${(err as Error).message}`);
+      }
+    }
+  });
+  subscriberClient = sub;
+  return sub;
+};
+
+/**
+ * Tell every process (including this one) that `channel` fired.
+ *
+ * Best-effort by design: this is a cache hint, and a Redis blip must not fail
+ * the write that triggered it. The worst case is the TTL behaviour we had
+ * before the fan-out existed.
+ */
+export const publishAppEvent = (channel: string, message = ''): void => {
+  if (!isRedisEnabled) return;
+  try {
+    void redis.publish(channel, message).catch((err: Error) => {
+      logger.warn(`Redis publish to ${channel} failed: ${err.message}`);
+    });
+  } catch (err) {
+    logger.warn(`Redis publish to ${channel} failed: ${(err as Error).message}`);
+  }
+};
+
+/**
+ * Run `handler` whenever any process publishes to `channel`.
+ *
+ * Safe to call repeatedly; the SUBSCRIBE itself only happens for the first
+ * handler on a channel. A no-op when Redis is disabled, where there is only one
+ * process and the in-process invalidation already covers it.
+ */
+export const subscribeAppEvent = (channel: string, handler: (message: string) => void): void => {
+  if (!isRedisEnabled) return;
+
+  const existing = channelHandlers.get(channel);
+  if (existing) {
+    existing.push(handler);
+    return;
+  }
+
+  // Connection first: if duplicating fails, the caller sees it and no stale
+  // registration is left behind to make a later retry think it is subscribed.
+  const sub = getSubscriber();
+  channelHandlers.set(channel, [handler]);
+
+  void sub.subscribe(channel).catch((err: Error) => {
+    logger.warn(`Redis subscribe to ${channel} failed: ${err.message}`);
+  });
+};
 
 export default redis;

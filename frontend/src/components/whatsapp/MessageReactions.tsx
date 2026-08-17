@@ -19,6 +19,12 @@ const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏', '🔥
  * change it (pick a different emoji) or remove it. Reacting/removing calls
  * `svc.sendReaction` (empty emoji removes); the thread refetches on success and
  * also via the live `wa:reaction` socket event.
+ *
+ * `disabled` is the 24-hour reply window being closed. The chips stay — they are
+ * history, and hiding them would erase what the customer actually did — but
+ * changing or removing OUR reaction is an outbound send the backend refuses with
+ * WA_WINDOW_CLOSED, so those controls are greyed out instead of failing into a
+ * red toast every time.
  */
 export default function MessageReactions({
   conversationId,
@@ -26,12 +32,14 @@ export default function MessageReactions({
   reactions,
   contactName,
   align = 'start',
+  disabled = false,
 }: {
   conversationId: string;
   wamid: string;
   reactions: WaReaction[];
   contactName: string;
   align?: 'start' | 'end';
+  disabled?: boolean;
 }) {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -115,7 +123,11 @@ export default function MessageReactions({
             {/* Add / change / remove our reaction */}
             <div className="border-t border-[var(--border)] pt-2">
               <p className="mb-1 px-1 text-[10px] font-medium text-[var(--text-muted)]">
-                {ours ? 'Change your reaction' : 'Add your reaction'}
+                {disabled
+                  ? 'The 24-hour reply window is closed'
+                  : ours
+                    ? 'Change your reaction'
+                    : 'Add your reaction'}
               </p>
               <div className="flex flex-wrap items-center gap-0.5 px-1">
                 {QUICK_REACTIONS.map((emoji) => (
@@ -123,7 +135,7 @@ export default function MessageReactions({
                     key={emoji}
                     type="button"
                     onClick={() => reactMut.mutate(emoji)}
-                    disabled={reactMut.isPending}
+                    disabled={reactMut.isPending || disabled}
                     aria-label={`React ${emoji}`}
                     className={cn(
                       'rounded-full px-1 text-base leading-none transition-transform hover:scale-125 disabled:opacity-50',
@@ -138,7 +150,7 @@ export default function MessageReactions({
                 <button
                   type="button"
                   onClick={() => reactMut.mutate('')}
-                  disabled={reactMut.isPending}
+                  disabled={reactMut.isPending || disabled}
                   className="mt-1.5 flex w-full items-center justify-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-[var(--error)] hover:bg-[var(--bg-secondary)] disabled:opacity-50"
                 >
                   {reactMut.isPending ? (

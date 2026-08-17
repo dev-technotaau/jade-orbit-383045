@@ -12,15 +12,24 @@ import type { ApiError } from '@/types/api';
 const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏', '🔥', '✅'];
 
 /**
- * Tiny react-with-emoji control shown on inbound message bubbles. Calls
+ * Tiny react-with-emoji control shown on message bubbles. Calls
  * `sendReaction(conversationId, wamid, emoji)`.
+ *
+ * `disabled` is the 24-hour reply window being closed. A reaction is an outbound
+ * message like any other, so the backend refuses it with WA_WINDOW_CLOSED — and
+ * because the affordance was rendered on every bubble regardless, clicking an
+ * emoji on an older conversation ALWAYS produced a red error toast. Offering a
+ * control that cannot work teaches operators to ignore error toasts, which is a
+ * far more expensive habit than a greyed-out button.
  */
 export default function ReactionPicker({
   conversationId,
   wamid,
+  disabled = false,
 }: {
   conversationId: string;
   wamid: string;
+  disabled?: boolean;
 }) {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -36,13 +45,20 @@ export default function ReactionPicker({
 
   return (
     <div className="relative">
-      <Tooltip content="React">
+      <Tooltip
+        content={disabled ? 'The 24-hour reply window is closed — you can’t react' : 'React'}
+      >
+        {/* Kept visible rather than removed: the tooltip on the disabled control
+            is what tells the operator WHY reacting is unavailable, which is the
+            whole point of the change. Tooltip's own wrapper carries the pointer
+            handlers, so it still shows over a disabled button. */}
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
+          disabled={disabled}
           aria-label="React to message"
           aria-expanded={open}
-          className="flex h-6 w-6 items-center justify-center rounded-full text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-secondary)] hover:text-[var(--text)]"
+          className="flex h-6 w-6 items-center justify-center rounded-full text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-secondary)] hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
         >
           {reactMut.isPending ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -51,7 +67,7 @@ export default function ReactionPicker({
           )}
         </button>
       </Tooltip>
-      {open && (
+      {open && !disabled && (
         <div
           className={cn(
             'absolute bottom-7 left-0 z-30 flex items-center gap-0.5 rounded-full border border-[var(--border)]',

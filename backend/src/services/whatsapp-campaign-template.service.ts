@@ -40,6 +40,13 @@ export async function saveCampaignAsTemplate(
       templateId: c.templateId,
       audienceType: c.audienceType,
       audienceFilter: c.audienceFilter ?? undefined,
+      // The LINK, not just the frozen copy of the filter beside it. A blueprint
+      // saved from a segment-driven campaign used to snapshot that segment's
+      // filter forever: editing the segment afterwards changed nothing about the
+      // campaigns launched from the blueprint, and no UI said the link had been
+      // broken. createCampaignFromTemplate passes it back, so createCampaign's
+      // segment branch re-reads the segment as it stands today.
+      segmentId: c.segmentId,
       variableMapping: c.variableMapping ?? undefined,
       type: c.type,
       batchSize: c.batchSize,
@@ -77,12 +84,29 @@ export async function createCampaignFromTemplate(
   const variants = Array.isArray(t.variants) ? (t.variants as any[]) : undefined;
   const steps = Array.isArray(t.steps) ? (t.steps as any[]) : undefined;
 
+  // A segment deleted since the blueprint was saved must not make the blueprint
+  // unusable — createCampaign throws WA_SEGMENT_NOT_FOUND on a missing id, and
+  // "this blueprint can never be launched again" is a worse answer than falling
+  // back to the filter snapshot that was frozen alongside it.
+  let segmentId = t.segmentId ?? undefined;
+  if (segmentId) {
+    const stillThere = await prisma.waSegment.findUnique({
+      where: { id: segmentId },
+      select: { id: true },
+    });
+    if (!stillThere) segmentId = undefined;
+  }
+
   return createCampaign({
     name: opts.name?.trim() || t.name,
     description: t.description ?? undefined,
     templateId: t.templateId,
-    audienceType: (t.audienceType as 'segment' | 'upload' | 'manual') ?? 'segment',
+    // No cast: the column is a WaAudienceType enum, so the database itself
+    // guarantees one of the three the code branches on. It used to be a free
+    // string, and anything unrecognised silently resolved to "every contact".
+    audienceType: t.audienceType ?? 'segment',
     audienceFilter: t.audienceFilter ?? undefined,
+    segmentId,
     variableMapping: Array.isArray(t.variableMapping) ? (t.variableMapping as string[]) : undefined,
     scheduledAt: opts.scheduledAt,
     batchSize: t.batchSize,

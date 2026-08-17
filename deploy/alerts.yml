@@ -1,0 +1,217 @@
+# Prometheus alerting rules for the WhatsApp Cloud console.
+#
+# The metrics these fire on are exported by backend/src/utils/whatsapp-metrics.ts
+# and backend/src/routes/metrics.routes.ts, and several of them exist for no other
+# purpose — the code comments name the alert they were added for. Until this file
+# existed every deployment had to rewrite them from those comments, so in practice
+# nobody was alerted on any of it.
+#
+# Load it into Prometheus with:
+#   rule_files:
+#     - /etc/prometheus/rules/alerts.yml
+# and check it before shipping a change with:
+#   promtool check rules deploy/alerts.yml
+#
+# `service` and `instance` labels come from the scrape config (see
+# deploy/prometheus-scrape.yml), not from the application.
+#
+# Most expressions aggregate across instances on purpose. Every replica is
+# scraped separately (worker leadership is per-instance and has to be summed),
+# but the gauges below describe SHARED state — queue depth, channel quality, the
+# last webhook received — and each process only knows the part it saw itself. The
+# replica that did not receive a webhook holds a stale timestamp, so a per-series
+# rule would page on a perfectly healthy deployment; max() over the replicas is
+# the deployment-wide reading.
+
+groups:
+  - name: whatsapp-delivery
+    # The three ways message delivery stops WITHOUT anything logging an error.
+    # Each has a matching panel on /whatsapp/settings for the deployments that
+    # run no Prometheus at all.
+    rules:
+      # ── Inbound is silent ────────────────────────────────────────────────
+      # Meta can disable a webhook subscription on its own (sustained non-2xx, a
+      # lapsed TLS cert, an app-review lapse) and it does not backfill. The inbox
+      # simply goes quiet, which looks exactly like a slow day, so every minute
+      # of undetected silence is lost customer messages.
+      #
+      # 15 minutes is the alerting threshold; the in-console banner uses the
+      # laxer WA_WEBHOOK_STALE_MINUTES (default 120) because a human reading a
+      # settings page needs a much higher bar before being alarmed.
+      - alert: WhatsAppWebhookSilent
+        expr: time() - max(wa_webhook_last_event_timestamp) > 900
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'No signed WhatsApp webhook for {{ $value | humanizeDuration }}'
+          description: >-
+            Nothing has been accepted from Meta since
+            {{ with query "wa_webhook_last_event_timestamp" }}{{ . | first | value | humanizeTimestamp }}{{ end }}.
+            Check the subscription (GET /whatsapp/webhook-health?checkSubscription=true),
+            the callback URL's certificate, and wa_webhook_rejected_total for POSTs
+            that arrived and were dropped.
+
+      # A never-configured deployment never sets the timestamp gauge at all, so
+      # the rule above has nothing to compare and stays silent forever. This is
+      # the same condition expressed by the heartbeat cron, which does fire on an
+      # account that has never received anything.
+      - alert: WhatsAppWebhookStale
+        expr: max(wa_webhook_stale) == 1
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'WhatsApp webhook marked stale by the heartbeat cron'
+          description: >-
+            No signed webhook has arrived inside WA_WEBHOOK_STALE_MINUTES. Inbound
+            messages and delivery statuses are not reaching this deployment.
+
+      # ── Inbound arrived and was thrown away ──────────────────────────────
+      # The webhook route answers 200 and drops on payload-too-large, a missing
+      # raw body, or a flood — deliberately, because Meta counts non-2xx towards
+      # disabling the subscription. That makes the drop invisible from both sides;
+      # this counter is the only signal.
+      - alert: WhatsAppWebhookEventsDropped
+        expr: sum by (reason) (rate(wa_webhook_rejected_total[10m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Inbound WhatsApp webhooks are being dropped ({{ $labels.reason }})'
+          description: >-
+            POSTs are being answered 2xx without being ingested. Sustained non-zero
+            means customer messages are being discarded.
+
+      # ── Outbound is failing ──────────────────────────────────────────────
+      # Rate, not a raw count: a handful of failures is a bad number in one
+      # audience, a sustained rate is a token, a template or the channel itself.
+      - alert: WhatsAppSendFailureSpike
+        expr: sum(rate(wa_send_failures_total[5m])) > 0.2
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'WhatsApp send failures at {{ $value | printf "%.2f" }}/s'
+          description: >-
+            Sustained Cloud API send failures. Check the per-code breakdown
+            (sum by (error_code) (rate(wa_send_failures_total[5m]))): 131047/131026 is
+            the 24h window or an unreachable number, 190 is an expired token, 368 is
+            a policy block.
+
+      # Failure RATIO, which catches the case the absolute rate above misses: a
+      # low-volume deployment where two sends an hour both fail is 100% broken and
+      # nowhere near 0.2/s.
+      - alert: WhatsAppSendFailureRatio
+        expr: >-
+          sum(rate(wa_send_failures_total[30m]))
+            / clamp_min(sum(rate(wa_messages_total{direction="outbound"}[30m])), 0.001) > 0.25
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'More than a quarter of WhatsApp sends are failing'
+          description: 'Failure ratio over 30m is {{ $value | humanizePercentage }}.'
+
+  - name: whatsapp-account-health
+    rules:
+      # 3 == RED. Meta throttles a red number's messaging tier and can block it
+      # outright; by the time sends fail the damage to the number is already done.
+      - alert: WhatsAppChannelQualityRed
+        expr: max(wa_channel_quality) == 3
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'WhatsApp channel quality is RED'
+          description: >-
+            Meta has rated this number RED. Pause marketing campaigns now — the tier
+            limit is cut while quality is red and continued sending can get the
+            number blocked.
+
+      - alert: WhatsAppChannelQualityYellow
+        expr: max(wa_channel_quality) == 2
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: 'WhatsApp channel quality is YELLOW'
+          description: 'Quality has been degraded for an hour. Red is one step away.'
+
+  - name: whatsapp-workers
+    rules:
+      # Nobody holds the leader lock => no BullMQ worker is running anywhere, so
+      # inbound processing, auto-replies, campaigns and scheduled sends all stop
+      # while the API keeps answering 200. Sum across replicas: 1 is healthy,
+      # 0 is dead, >1 means two instances are both running the full worker set
+      # and every job is being processed twice.
+      - alert: WhatsAppNoWorkerLeader
+        expr: sum(wa_worker_leader) == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'No BullMQ worker leader — nothing is draining the queues'
+          description: >-
+            Every replica is in standby. Check Redis: leadership is a lock with a
+            30s TTL renewed every 10s.
+
+      - alert: WhatsAppSplitBrainWorkers
+        expr: sum(wa_worker_leader) > 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Two WhatsApp worker leaders — jobs are being processed twice'
+
+      # A link that fails one renewal in three never flips the gauge above, but
+      # each demotion drains and restarts the whole worker set mid-campaign.
+      - alert: WhatsAppWorkerLeaderFlapping
+        expr: increase(wa_worker_leader_renew_failures_total[15m]) > 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Worker leader lock renewals are failing'
+
+  - name: whatsapp-queues
+    rules:
+      # Backlog. 500 waiting is normal seconds-long campaign fan-out; 500 waiting
+      # for 15 minutes means nothing is draining it. Depth is a property of the
+      # queue, not of a replica, so it is collapsed to one series per queue —
+      # otherwise a two-replica deployment pages twice for the same backlog.
+      - alert: WhatsAppQueueBacklog
+        expr: max by (queue) (bullmq_queue_waiting) > 500
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'BullMQ queue {{ $labels.queue }} has {{ $value }} waiting jobs'
+          description: >-
+            The queue is not draining. Check that a worker leader exists
+            (sum(wa_worker_leader)) and that Redis is reachable.
+
+      # The inbound queue is the customer-facing one: a backlog here is messages
+      # not yet in anyone's inbox, so it gets a much tighter threshold.
+      - alert: WhatsAppInboundQueueBacklog
+        expr: max by (queue) (bullmq_queue_waiting{queue="whatsapp-inbound-queue"}) > 50
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Inbound WhatsApp queue is backed up ({{ $value }} waiting)'
+          description: 'Customer messages are delayed reaching the inbox.'
+
+      # delta(), not increase(): bullmq_queue_failed is a GAUGE of the failed jobs
+      # currently retained, which drops when they are cleaned. increase() would
+      # read that drop as a counter reset.
+      - alert: WhatsAppQueueFailures
+        expr: max by (queue) (delta(bullmq_queue_failed[30m])) > 20
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'BullMQ queue {{ $labels.queue }} is failing jobs'
+          description: >-
+            {{ $value }} jobs moved to failed in 30 minutes. Failed jobs are not
+            retried further — inspect them before the retention window drops them.

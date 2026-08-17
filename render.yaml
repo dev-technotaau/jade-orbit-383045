@@ -19,10 +19,28 @@ services:
     name: whatsapp-cloud-module-api
     runtime: node
     rootDir: backend
+    # WARNING - free instances are spun down when idle, and this single process
+    # hosts all five BullMQ workers and nine crons.
+    #
+    # While it is asleep: inbound WhatsApp webhooks can time out and Meta gives up
+    # after its retries, so customer messages are lost with NO error anywhere;
+    # scheduled campaigns, drip steps and the retention sweep simply do not run
+    # until the next request wakes the box.
+    #
+    # Raising this is a billing decision, so it is left as-is deliberately. Any
+    # paid instance type removes the spin-down.
     plan: free
     region: singapore
     branch: main
-    healthCheckPath: /health
+    # LIVENESS, not readiness. Render treats a failing health check as "restart
+    # this process". /health returns 503 whenever Postgres or Redis is unreachable,
+    # so a brief database blip restarted a perfectly healthy API - killing every
+    # in-flight BullMQ job and interrupting campaigns mid-send, at exactly the
+    # moment the dependency was already struggling. /health/live answers "is the
+    # process alive" with no dependency checks, which is the question a restart
+    # policy should be asking. /health and /health/ready remain for humans and for
+    # any external uptime monitor.
+    healthCheckPath: /health/live
     buildCommand: npm install --include=dev && npm run build
     startCommand: npm run start:migrate
 
@@ -53,8 +71,13 @@ services:
         sync: false
 
       # ---- Auth / crypto ----
-      # Rotating FIELD_ENCRYPTION_KEY makes every stored TOTP secret
-      # undecryptable and forces re-enrolment. Back it up before you change it.
+      # FIELD_ENCRYPTION_KEY is rotatable, but only through the key map: put the
+      # OUTGOING key in FIELD_ENCRYPTION_KEYS ({"v1":"<old hex>"}), bump
+      # FIELD_ENCRYPTION_KEY_ID to v2, deploy, then run `npm run reencrypt` in a
+      # shell until it reports 0 rows left on v1 and drop v1 from the map.
+      # Swapping the key on its own strands every stored TOTP secret, consent
+      # evidence row and note body — reads of them now fail loudly instead of
+      # returning ciphertext, so the console breaks rather than lies.
       - key: APP_PASSWORD
         sync: false
       - key: CSRF_SECRET
@@ -62,6 +85,12 @@ services:
       - key: BFF_SECRET
         sync: false
       - key: FIELD_ENCRYPTION_KEY
+        sync: false
+      - key: FIELD_ENCRYPTION_KEY_ID
+        value: 'v1'
+      # Empty except during a rotation; sync: false so a blueprint sync mid-
+      # rotation cannot wipe the key that is still holding old rows open.
+      - key: FIELD_ENCRYPTION_KEYS
         sync: false
       - key: CF_TURNSTILE_SECRET_KEY
         sync: false
@@ -78,6 +107,11 @@ services:
         sync: false
       - key: CORS_ORIGIN
         sync: false
+      # Hops in front of Express, sized for the SHORTEST chain — Meta's webhook
+      # hits Render's load balancer directly, the console adds the BFF on top.
+      # Raising it to cover the BFF would let a webhook caller forge its own
+      # X-Forwarded-For; operator rate limits key on the BFF's x-operator-key
+      # instead, so they do not need it.
       - key: TRUST_PROXY_HOPS
         value: '1'
       - key: SHUTDOWN_TIMEOUT_MS
@@ -101,3 +135,15 @@ services:
 
       - key: LOG_LEVEL
         value: info
+
+      # ---- Error tracking ----
+      # Optional. Left unset, exceptions are only log lines in Render's stream:
+      # nothing groups them, deduplicates them or alerts on a new error type,
+      # and this instance is `plan: free`, so that stream is all there is.
+      # SENTRY_RELEASE is deliberately absent — the app falls back to
+      # RENDER_GIT_COMMIT, which Render injects on every deploy, so issues are
+      # pinned to a commit without anyone maintaining a second copy of it.
+      - key: SENTRY_DSN
+        sync: false
+      - key: SENTRY_ENVIRONMENT
+        value: production

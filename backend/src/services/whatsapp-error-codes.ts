@@ -24,7 +24,38 @@ export const WA_SKIP_ERROR_CODES = new Set<string>([
   // FAILED would both misreport the campaign and make them eligible for
   // "retry failed", which would immediately hit the cap again.
   'WA_MARKETING_CAP',
+  // Ours: Meta already refused this recipient, so we are holding off. A SKIP for
+  // the same reason WA_MARKETING_CAP is one -- marking it FAILED would put the
+  // recipient into "retry failed", which is precisely the loop that drove the
+  // per-user limit down in the first place.
+  'WA_MARKETING_REFUSED',
 ]);
+
+/**
+ * Codes where Meta made a DELIBERATE decision not to deliver, and a re-send is
+ * therefore guaranteed to fail again.
+ *
+ * These have to count against the per-contact marketing cap even though the row
+ * is FAILED. The cap counted only non-FAILED sends, so a contact who hit 131049
+ * showed zero sends in the window and the cap never fired — an operator could
+ * retry indefinitely, and every attempt pushed Meta's per-user marketing limit
+ * further down for that recipient.
+ *
+ * Deliberately NOT included:
+ *   131042 - business eligibility / payment. A config problem the operator
+ *            fixes, after which they legitimately want to retry.
+ *   131047 - re-engagement required. Sending a template is the REMEDY for a
+ *            closed window, so counting it would block the fix.
+ */
+export const WA_MARKETING_REFUSED_CODES = new Set<string>([
+  '131049', // per-user marketing frequency cap
+  '131050', // recipient opted out of marketing
+]);
+
+/** True when Meta deliberately refused delivery and re-sending cannot succeed. */
+export function isMarketingRefusedCode(code?: string | null): boolean {
+  return code != null && WA_MARKETING_REFUSED_CODES.has(String(code));
+}
 
 /** True when a send outcome's error code is a "skip" (not a real failure). */
 export function isSkipErrorCode(code?: string | null): boolean {
@@ -60,9 +91,56 @@ export const WA_RETRYABLE_ERROR_CODES = new Set<string>([
   // mistake, and burning the whole audience to FAILED over it leaves nothing to
   // resume once it is fixed.
   'credentials_missing',
+  // An EXPIRED token is the same deployment mistake arriving a day late: a
+  // 24-hour or 60-day user token pasted in place of a system-user one works
+  // until the hour it lapses, and then every send in flight answers 190. Rolling
+  // those recipients back means replacing the token resumes the campaign;
+  // FAILING them means an operator hand-retries an entire audience.
+  '190',
 ]);
+
+/**
+ * The credential itself is dead — expired, revoked, or pointing at a number the
+ * token no longer covers. Retryable in the sense that the recipients must NOT be
+ * burned to FAILED, but nothing about waiting makes it succeed: only replacing
+ * the token does. Callers use this to skip the throttle backoff and to stop a
+ * batch early instead of grinding an entire audience against a dead token.
+ */
+export const WA_AUTH_ERROR_CODES = new Set<string>([
+  '190', // OAuth: access token expired / revoked
+]);
+
+/** True when the send failed because the access token itself is no longer valid. */
+export function isAuthErrorCode(code?: string | null): boolean {
+  return code != null && WA_AUTH_ERROR_CODES.has(String(code));
+}
 
 /** True when a send outcome's error code is transient and worth re-sending. */
 export function isRetryableErrorCode(code?: string | null): boolean {
   return code != null && WA_RETRYABLE_ERROR_CODES.has(String(code));
+}
+
+/**
+ * OUR OWN pre-flight refusals — the send never reached Meta, and re-running the
+ * same step against the same recipient will refuse identically.
+ *
+ * These are thrown (not returned as a FAILED message row), and the drip loop's
+ * catch-all used to treat every throw as transient: it re-armed `nextStepAt` 15
+ * minutes out, unconditionally and forever. So when Meta paused a template used
+ * by step 3 — routine for marketing templates — every recipient sitting on that
+ * step retried it four times an hour indefinitely, with nothing but a warn log
+ * and no FAILED state anywhere an operator could see it.
+ */
+export const WA_TERMINAL_STEP_ERROR_CODES = new Set<string>([
+  'WA_TEMPLATE_NOT_APPROVED',
+  'WA_TEMPLATE_NOT_FOUND',
+  'WA_CONTACT_BLOCKED',
+  'WA_OPTED_OUT',
+  'WA_CONVERSATION_NOT_FOUND',
+  'WA_NOT_CONFIGURED',
+]);
+
+/** True when a thrown drip-step error can never succeed on a later attempt. */
+export function isTerminalStepErrorCode(code?: string | null): boolean {
+  return code != null && WA_TERMINAL_STEP_ERROR_CODES.has(String(code));
 }

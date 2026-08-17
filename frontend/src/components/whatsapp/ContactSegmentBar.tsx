@@ -14,7 +14,24 @@ import type { ApiError } from '@/types/api';
 /** The contact category currently selected on the contacts page. */
 export interface ContactCategory {
   optInStatus?: string;
-  tag?: string;
+  /**
+   * Every tag of the filter, matched with OR — the same way a campaign resolves
+   * the segment. This was a single `tag` and only ever carried `tags[0]`, so
+   * applying a three-tag segment here showed the audience for tag #1 while a
+   * campaign against the same segment reached a strictly larger, different set.
+   */
+  tags?: string[];
+  /**
+   * The saved segment applied as a filter, sent to the backend BY ID.
+   *
+   * Applying one used to mean copying its tags and opt-in state into the filter
+   * boxes, which silently dropped every attribute, recency, engagement and OR
+   * rule it carried — so the page showed a wider audience than the campaign
+   * targeting the same segment would message. The id is resolved server-side
+   * with the launch predicate instead, and the segment's own name is shown so it
+   * is obvious the list is scoped to it.
+   */
+  segmentId?: string;
 }
 
 /**
@@ -35,16 +52,20 @@ export default function ContactSegmentBar({
   const [saveOpen, setSaveOpen] = useState(false);
   const [name, setName] = useState('');
 
-  const hasFilter = !!(current.optInStatus || current.tag);
+  // Saving is offered for the FILTER BOXES only. With a set applied, the boxes
+  // are just a narrowing on top of rules that live in the saved set, so saving
+  // them under a new name would produce a set that matches a strictly wider
+  // audience than the one on screen — the exact silent widening this bar exists
+  // to prevent.
+  const hasFilter = !!(current.optInStatus || current.tags?.length) && !current.segmentId;
 
+  // Applying a segment hands the backend its ID and clears the filter boxes: the
+  // whole stored filter is resolved server-side, so nothing has to be (lossily)
+  // flattened into tags here, and the boxes stay free for narrowing the segment
+  // further.
   const applySegment = (id: string) => {
-    const seg = segments.find((s) => s.id === id);
-    if (!seg) return;
-    const f = ((seg.filter ?? {}) as Record<string, unknown>) || {};
-    onApply({
-      optInStatus: typeof f.optInStatus === 'string' ? f.optInStatus : '',
-      tag: Array.isArray(f.tags) && f.tags.length ? String(f.tags[0]) : '',
-    });
+    if (!segments.some((s) => s.id === id)) return;
+    onApply({ segmentId: id, optInStatus: '', tags: [] });
   };
 
   const saveMut = useMutation({
@@ -53,7 +74,7 @@ export default function ContactSegmentBar({
         name: name.trim(),
         filter: {
           ...(current.optInStatus ? { optInStatus: current.optInStatus } : {}),
-          ...(current.tag ? { tags: [current.tag] } : {}),
+          ...(current.tags?.length ? { tags: current.tags } : {}),
         },
       }),
     onSuccess: () => {
@@ -70,12 +91,17 @@ export default function ContactSegmentBar({
       {segments.length > 0 && (
         <div className="min-w-[180px]">
           <Select
-            value=""
+            // Bound to the applied segment rather than always blank, so the bar
+            // states which set the list is scoped to — and picking the first
+            // option removes it again.
+            value={current.segmentId ?? ''}
             onChange={(v) => {
-              if (typeof v === 'string' && v) applySegment(v);
+              if (typeof v !== 'string') return;
+              if (v) applySegment(v);
+              else onApply({ ...current, segmentId: undefined });
             }}
             options={[
-              { value: '', label: 'Apply saved set…' },
+              { value: '', label: 'No saved set' },
               ...segments.map((s) => ({ value: s.id, label: s.name })),
             ]}
             clearable={false}
@@ -86,6 +112,11 @@ export default function ContactSegmentBar({
         variant="outline"
         leftIcon={<BookmarkPlus className="h-4 w-4" />}
         disabled={!hasFilter}
+        tooltip={
+          current.segmentId
+            ? 'Clear the applied set first — a set is saved from the filter boxes, not from another set.'
+            : undefined
+        }
         onClick={() => setSaveOpen(true)}
       >
         Save set
@@ -113,8 +144,8 @@ export default function ContactSegmentBar({
       >
         <div className="space-y-2">
           <p className="text-xs text-[var(--text-muted)]">
-            Saves the current category (tag, opt-in) as a reusable segment
-            you can re-apply here or target in a campaign.
+            Saves the current category (tag, opt-in) as a reusable segment you can re-apply here or
+            target in a campaign.
           </p>
           <Input
             label="Set name"

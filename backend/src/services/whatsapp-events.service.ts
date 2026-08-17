@@ -16,11 +16,25 @@ import { webhookService } from './webhook.service';
  * `WebhookEndpoint.events` (String[]) — there is no DB enum — so the WA event
  * names below are passed straight through.
  *
- * Suggested WA event names the integration layer emits:
+ * The event names emitted, which are also the closed enum a subscription is
+ * validated against (WA_WEBHOOK_EVENTS in schemas/whatsapp.schema.ts):
  *   - 'whatsapp.message.inbound'
+ *   - 'whatsapp.message.outbound'          (every send, whoever triggered it)
+ *   - 'whatsapp.message.status'            (sent → delivered → read / failed)
  *   - 'whatsapp.contact.created'
  *   - 'whatsapp.contact.opted_out'
+ *   - 'whatsapp.contact.opted_in'
+ *   - 'whatsapp.channel.quality_degraded'
+ *   - 'whatsapp.template.status_changed'
+ *   - 'whatsapp.campaign.started'
  *   - 'whatsapp.campaign.completed'
+ *   - 'whatsapp.report.weekly'
+ *
+ * The three delivery/lifecycle names were the gap that made this surface close
+ * to useless for a CRM: it could be told that a customer had written in, but not
+ * whether the message the CRM itself had triggered was delivered, read or
+ * rejected — the single most requested WhatsApp integration signal — so anything
+ * needing delivery state had to poll the API on a timer.
  */
 
 /**
@@ -41,11 +55,11 @@ export async function emitWaEvent(event: string, payload: Record<string, unknown
   // Vercel/Render has no use for it, so Kafka was removed entirely and webhooks
   // are now the single fan-out path.
   try {
-    await webhookService.dispatch(event, {
-      event,
-      timestamp: new Date().toISOString(),
-      data: payload,
-    });
+    // The BARE payload. The delivery worker builds the { event, timestamp, data }
+    // envelope, and building it here too produced `data.data` on the wire — every
+    // subscriber had to unwrap twice, and WebhookDelivery.payload did not match
+    // what was actually transmitted, so the delivery log was misleading too.
+    await webhookService.dispatch(event, payload);
   } catch (error) {
     // Never let webhook fan-out break the WhatsApp flow that triggered it.
     logger.error(`Failed to emit WhatsApp webhook event "${event}"`, error);

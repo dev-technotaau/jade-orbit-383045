@@ -63,6 +63,17 @@ const config: Config = {
             lines: 100,
             statements: 100,
         },
+        // Not pure, but every console request passes through the BFF proxy, and
+        // its two known regressions — forwarding upstream without an unlock
+        // cookie, and forwarding a decompressed response's stale
+        // content-length — each broke the entire UI while the backend logged a
+        // clean 200. Floors sit just under the measured figures.
+        './src/app/api/proxy/[...path]/route.ts': {
+            branches: 90,
+            functions: 90,
+            lines: 90,
+            statements: 90,
+        },
     },
 };
 

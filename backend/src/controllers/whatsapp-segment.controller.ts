@@ -2,6 +2,7 @@ import type { Request, Response, NextFunction } from 'express';
 import {
   listSegments,
   getSegment,
+  countSegmentMembers,
   createSegment,
   updateSegment,
   deleteSegment,
@@ -23,6 +24,19 @@ export const get = async (req: Request, res: Response, next: NextFunction): Prom
   }
 };
 
+/**
+ * Live member count for one segment — the number a campaign targeting it will
+ * actually reach, resolved with the campaign's own predicate.
+ */
+export const count = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const total = await countSegmentMembers(String(req.params.id));
+    res.json({ success: true, data: { count: total } });
+  } catch (e) {
+    next(e);
+  }
+};
+
 export const create = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const segment = await createSegment({
@@ -39,7 +53,11 @@ export const create = async (req: Request, res: Response, next: NextFunction): P
 
 export const update = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const segment = await updateSegment(String(req.params.id), req.body);
+    const segment = await updateSegment(String(req.params.id), {
+      name: req.body.name,
+      description: req.body.description,
+      filter: req.body.filter,
+    });
     res.json({ success: true, data: segment });
   } catch (e) {
     next(e);

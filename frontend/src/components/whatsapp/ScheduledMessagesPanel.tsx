@@ -1,7 +1,7 @@
 'use client';
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { CalendarClock, Trash2, FileText, MessageSquareText } from 'lucide-react';
+import { CalendarClock, Trash2, FileText, MessageSquareText, Paperclip } from 'lucide-react';
 import Tooltip from '@/components/ui/Tooltip';
 import { showToast } from '@/components/ui/Toast';
 import { whatsappService as svc } from '@/services/whatsapp.service';
@@ -55,11 +55,17 @@ export default function ScheduledMessagesPanel({ conversationId }: { conversatio
               <p className="flex items-center gap-1 text-[11px] font-medium text-[var(--text)]">
                 {m.kind === 'template' ? (
                   <FileText className="h-3 w-3 shrink-0 text-[var(--text-muted)]" />
+                ) : m.kind === 'media' ? (
+                  <Paperclip className="h-3 w-3 shrink-0 text-[var(--text-muted)]" />
                 ) : (
                   <MessageSquareText className="h-3 w-3 shrink-0 text-[var(--text-muted)]" />
                 )}
                 <span className="truncate">
-                  {m.kind === 'template' ? 'Template message' : m.text || 'Text message'}
+                  {m.kind === 'template'
+                    ? 'Template message'
+                    : m.kind === 'media'
+                      ? m.caption || m.mediaFilename || 'File'
+                      : m.text || 'Text message'}
                 </span>
               </p>
               <p className="mt-0.5 text-[10px] text-[var(--text-muted)]">

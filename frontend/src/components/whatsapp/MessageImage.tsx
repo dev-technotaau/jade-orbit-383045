@@ -44,6 +44,13 @@ function extFromMime(mime: string | null): string {
  * shimmer skeleton — not a blurred preview of the actual photo — which is
  * intentional. The <img> fades in (opacity transition) once loaded, mimicking
  * WhatsApp revealing the photo after download.
+ *
+ * The BUBBLE loads a ~320px WebP derivative the archival worker generated, not
+ * the original: a thread with twenty customer photos used to pull twenty
+ * full-resolution files (several megabytes each) through the proxy on every
+ * open. The proxy falls back to the original for anything archived before
+ * derivatives existed, so this is unconditional. The lightbox and the download
+ * link below still serve the original — that is what they are for.
  */
 export default function MessageImage({ message, outbound }: MessageImageProps) {
   const [loaded, setLoaded] = useState(false);
@@ -63,6 +70,11 @@ export default function MessageImage({ message, outbound }: MessageImageProps) {
   if (!message.mediaId) return null;
 
   const src = `/api/proxy${API.SUPER_ADMIN.WA_MEDIA(message.mediaId)}`;
+  const thumbSrc = `${src}?variant=thumb`;
+  // Archival gave up and Meta's own ~30-day copy is the only thing left — say
+  // so rather than rendering the same "couldn't load" a flaky network produces.
+  // One is temporary and one means the file is gone.
+  const archiveFailed = message.mediaArchiveStatus === 'FAILED';
 
   const payloadName = payloadString(message.payload, 'filename');
   const filename = payloadName || `${message.type.toLowerCase()}.${extFromMime(message.mediaMime)}`;
@@ -84,7 +96,9 @@ export default function MessageImage({ message, outbound }: MessageImageProps) {
           )}
         >
           <ImageOff className="h-5 w-5 shrink-0" />
-          <span className="text-xs">Couldn&apos;t load image</span>
+          <span className="text-xs">
+            {archiveFailed ? 'Original no longer available' : 'Couldn’t load image'}
+          </span>
         </div>
         {caption && (
           <p
@@ -126,7 +140,7 @@ export default function MessageImage({ message, outbound }: MessageImageProps) {
 
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src={src}
+        src={thumbSrc}
         alt={caption || filename}
         loading="lazy"
         onLoad={() => setLoaded(true)}

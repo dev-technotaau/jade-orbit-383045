@@ -1,7 +1,7 @@
 {
   "name": "backend",
   "version": "1.0.0",
-  "description": "WhatsApp Cloud Module \u2014 backend API",
+  "description": "WhatsApp Cloud Module — backend API",
   "private": true,
   "engines": {
     "node": ">=20.0.0"
@@ -16,7 +16,7 @@
     "start:dev": "concurrently \"npm run dev\" \"npm run db:studio\"",
     "clean": "rimraf dist",
     "type-check": "tsc --noEmit",
-    "lint": "eslint \"src/**/*.{ts,js}\" --max-warnings 22",
+    "lint": "eslint \"src/**/*.{ts,js}\" --max-warnings 21",
     "lint:fix": "eslint \"src/**/*.{ts,js}\" --fix",
     "format": "prettier --write \"src/**/*.{ts,js,json,md}\"",
     "test": "cross-env NODE_ENV=test jest",
@@ -26,6 +26,7 @@
     "db:push": "dotenv -- prisma db push",
     "db:deploy": "prisma db push",
     "db:studio": "dotenv -- prisma studio",
+    "reencrypt": "ts-node -T src/scripts/reencrypt-fields.ts",
     "postinstall": "prisma generate"
   },
   "keywords": [],
@@ -45,10 +46,6 @@
     "@prisma/adapter-pg": "^7.3.0",
     "@prisma/client": "^7.3.0",
     "@socket.io/redis-adapter": "^8.3.0",
-    "@types/aws-sdk": "^0.0.42",
-    "@types/passport-google-oauth20": "^2.0.17",
-    "@types/passport-linkedin-oauth2": "^1.5.6",
-    "@types/speakeasy": "^2.0.10",
     "bullmq": "^5.67.3",
     "compression": "^1.8.1",
     "cookie-parser": "^1.4.7",
@@ -57,7 +54,6 @@
     "dotenv": "^17.2.4",
     "express": "^5.2.1",
     "express-rate-limit": "^8.2.1",
-    "firebase-admin": "^13.8.0",
     "helmet": "^8.1.0",
     "hpp": "^0.2.3",
     "ioredis": "^5.9.2",
@@ -70,11 +66,11 @@
     "prom-client": "^15.1.3",
     "qrcode": "^1.5.4",
     "rate-limit-redis": "^4.3.1",
+    "sharp": "^0.34.5",
     "socket.io": "^4.8.3",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
     "winston": "^3.19.0",
-    "xss-clean": "^0.1.4",
     "zod": "^4.3.6"
   },
   "devDependencies": {

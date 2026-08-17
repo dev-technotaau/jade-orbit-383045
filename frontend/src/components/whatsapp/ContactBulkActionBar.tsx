@@ -22,14 +22,7 @@ import { whatsappService as svc } from '@/services/whatsapp.service';
 import type { ApiError } from '@/types/api';
 
 type BulkContactAction =
-  | 'tag'
-  | 'untag'
-  | 'optIn'
-  | 'optOut'
-  | 'block'
-  | 'unblock'
-  | 'addSuppression'
-  | 'erase';
+  'tag' | 'untag' | 'optIn' | 'optOut' | 'block' | 'unblock' | 'addSuppression' | 'erase';
 
 interface ContactBulkActionBarProps {
   /** Page-selected contact ids. */
@@ -42,7 +35,27 @@ interface ContactBulkActionBarProps {
   filters: {
     q?: string;
     optInStatus?: string;
-    tag?: string;
+    /** OR across several tags, matching what the list itself resolved. */
+    tags?: string[];
+    /**
+     * Applied saved set. Carried through so "select all N matching" acts on the
+     * rows the page counted — a bulk opt-out or erase that ignored it would hit
+     * every contact the set's rules had excluded.
+     */
+    segmentId?: string;
+    /**
+     * Block state the list was filtered to. Carried for the same reason as the
+     * segment: the usual reason to filter to blocked rows is to bulk-unblock
+     * them, and dropping it here would send that unblock to every contact the
+     * filter had excluded.
+     */
+    blocked?: boolean;
+    /**
+     * Suppression state the list was filtered to. Carried for exactly the same
+     * reason as `blocked`: the usual reason to filter to suppressed rows is to
+     * act on them as a group.
+     */
+    suppressed?: boolean;
   };
   onSelectAllMatching: () => void;
   onClear: () => void;
@@ -67,6 +80,10 @@ export default function ContactBulkActionBar({
   const [tagModalOpen, setTagModalOpen] = useState(false);
   const [tagInput, setTagInput] = useState('');
   const [eraseOpen, setEraseOpen] = useState(false);
+  // Bulk opt-in asserts consent on behalf of other people. Every other
+  // consent-affecting action here is either reversible or confirmed; this one
+  // fired straight from the click.
+  const [optInOpen, setOptInOpen] = useState(false);
 
   const count = allMatching ? totalMatching : ids.length;
 
@@ -77,10 +94,33 @@ export default function ContactBulkActionBar({
       ),
     onSuccess: (res) => {
       showToast.success(`Updated ${res.data?.count ?? 0} contact(s)`);
+      // Contacts who had explicitly opted out are deliberately left untouched by
+      // the server. Say so, otherwise the count silently disagrees with the
+      // selection and it reads as a partial failure.
+      const skipped = res.data?.skippedOptedOut ?? 0;
+      if (skipped > 0) {
+        showToast.warning(
+          `${skipped} contact(s) who had opted out were left unchanged — re-opt them in individually.`,
+        );
+      }
+      // Contacts already in the requested consent state are skipped rather than
+      // re-stamped, so the count can legitimately be smaller than the selection.
+      // Without this line that reads as a partial failure.
+      const noChange = res.data?.skippedNoChange ?? 0;
+      if (noChange > 0) {
+        showToast.info(
+          `${noChange} contact(s) were already in that state — their original consent record was kept.`,
+        );
+      }
+      const failed = res.data?.failed?.length ?? 0;
+      if (failed > 0) {
+        showToast.error(`${failed} contact(s) could not be erased — try again for those.`);
+      }
       qc.invalidateQueries({ queryKey: ['wa-contacts'] });
       setTagModalOpen(false);
       setTagInput('');
       setEraseOpen(false);
+      setOptInOpen(false);
       onDone();
     },
     onError: (e) => showToast.error((e as unknown as ApiError).message || 'Bulk action failed'),
@@ -124,7 +164,7 @@ export default function ContactBulkActionBar({
         <button type="button" className={btn} disabled={busy} onClick={() => setTagModalOpen(true)}>
           <Tag className="h-4 w-4" /> Tags
         </button>
-        <button type="button" className={btn} disabled={busy} onClick={() => run('optIn')}>
+        <button type="button" className={btn} disabled={busy} onClick={() => setOptInOpen(true)}>
           <BellRing className="h-4 w-4" /> Opt in
         </button>
         <button type="button" className={btn} disabled={busy} onClick={() => run('optOut')}>
@@ -192,6 +232,33 @@ export default function ContactBulkActionBar({
           placeholder="e.g. mumbai-leads"
           autoFocus
         />
+      </Modal>
+
+      {/* Bulk opt-in confirm — this records consent for other people */}
+      <Modal
+        isOpen={optInOpen}
+        onClose={() => setOptInOpen(false)}
+        title={`Opt in ${count} contact${count === 1 ? '' : 's'}?`}
+        size="sm"
+        footer={
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setOptInOpen(false)}>
+              Cancel
+            </Button>
+            <Button isLoading={mut.isPending} onClick={() => run('optIn')}>
+              Record consent
+            </Button>
+          </div>
+        }
+      >
+        <p className="text-sm text-[var(--text-secondary)]">
+          This records marketing consent on behalf of {count} contact
+          {count === 1 ? '' : 's'}, with you as the source. Only do this where you actually hold
+          that consent.
+        </p>
+        <p className="mt-2 text-xs text-[var(--text-muted)]">
+          Contacts who previously opted out are left untouched — re-opt them in individually.
+        </p>
       </Modal>
 
       {/* Erase confirm (destructive, DPDP) */}

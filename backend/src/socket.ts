@@ -60,7 +60,7 @@ function handshakeIp(req: {
   headers: Record<string, unknown>;
   socket?: { remoteAddress?: string };
 }): string {
-  const hops = parseInt(process.env.TRUST_PROXY_HOPS || '1', 10);
+  const hops = parseInt(env.TRUST_PROXY_HOPS, 10);
   const raw = req.headers['x-forwarded-for'];
   const xff = (Array.isArray(raw) ? raw[0] : raw) as string | undefined;
   if (hops > 0 && xff) {
@@ -173,13 +173,17 @@ export const initSocket = (httpServer: HttpServer) => {
     //   GET /api/v1/unlock/socket-ticket   (with X-App-Password or the cookie)
     // That path runs behind requireAppPassword, the rate limiters and the audit
     // trail, which is exactly the point.
-    if (!verifySocketTicket(token)) {
+    const operator = verifySocketTicket(token);
+    if (!operator) {
       logger.warn(`Socket.IO: rejected handshake from ${ip} — invalid or expired ticket`);
       return next(new Error('Invalid or expired socket ticket'));
     }
 
+    // The ticket names the operator it was minted for, so this is the person
+    // who signed in — not OPERATOR_LABEL, which was the same string for the
+    // whole team and made every connection log line indistinguishable.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (socket as any).userId = env.OPERATOR_LABEL || 'operator';
+    (socket as any).userId = operator;
     next();
   });
 
@@ -193,7 +197,7 @@ export const initSocket = (httpServer: HttpServer) => {
     // Redis that nothing ever read — no endpoint and no UI consumed it, and with
     // a single operator there is nobody to be present to.
 
-    // Every authenticated connection is the operator — there are no roles left
+    // Every authenticated connection is an operator — there are no roles left
     // to branch on, so the inbox room is joined unconditionally. Opening a
     // thread additionally joins a per-conversation room.
     void socket.join('wa:inbox');

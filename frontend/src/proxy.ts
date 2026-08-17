@@ -38,15 +38,19 @@ function nextWithCsp(): NextResponse {
   // Derive WebSocket URL from API URL (http→ws, https→wss)
   const wsUrl = apiUrl.replace(/^http/, 'ws');
 
-  // Optional R2 public bucket, when a deployment serves media from one.
-  const r2PublicOrigin = (() => {
-    const u = process.env.NEXT_PUBLIC_R2_PUBLIC_URL || '';
+  const originOf = (raw: string | undefined): string => {
     try {
-      return u ? new URL(u).origin : '';
+      return raw ? new URL(raw).origin : '';
     } catch {
       return '';
     }
-  })();
+  };
+
+  // Where large attachments are PUT directly, bypassing the BFF proxy's body
+  // limit. This has to be in connect-src or the browser blocks the upload before
+  // it is sent — and the send then fails for exactly the files that cannot go
+  // any other way.
+  const r2UploadOrigin = originOf(process.env.NEXT_PUBLIC_R2_UPLOAD_ORIGIN);
 
   // The host platform listed ~15 analytics and advertising providers here —
   // GA/GTM, Facebook, Clarity, LinkedIn, Contentsquare, Pinterest, Reddit,
@@ -75,12 +79,13 @@ function nextWithCsp(): NextResponse {
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://vercel.live",
     [
       // WhatsApp media is streamed through the backend on this origin, so
-      // 'self' covers it. `r2PublicOrigin` is the only external image host a
-      // deployment may need, and only when it configures one.
+      // 'self' covers it. The storage bucket itself is NOT listed: it used to be
+      // (via NEXT_PUBLIC_R2_PUBLIC_URL, an anonymous `*.r2.dev` domain), which
+      // sanctioned loading archived customer attachments straight from public
+      // storage instead of through the authenticated proxy.
       "img-src 'self' data: blob:",
       // Vercel live preview
       'https://vercel.live https://vercel.com',
-      r2PublicOrigin,
     ]
       .filter(Boolean)
       .join(' '),
@@ -91,6 +96,8 @@ function nextWithCsp(): NextResponse {
     "media-src 'self' data: blob:",
     [
       `connect-src 'self' ${apiUrl} ${wsUrl}`,
+      // Direct-to-storage attachment uploads (signed PUT).
+      r2UploadOrigin,
       // Vercel
       'https://vercel.live',
     ]

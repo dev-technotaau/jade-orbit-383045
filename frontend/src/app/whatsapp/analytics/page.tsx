@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 // Aliased: this file already imports recharts' `Tooltip` for charts.
 import UiTooltip from '@/components/ui/Tooltip';
@@ -11,6 +12,10 @@ import {
   AlertCircle,
   Star,
   Target,
+  Download,
+  MousePointerClick,
+  Megaphone,
+  UserMinus,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -31,16 +36,60 @@ import {
 } from 'recharts';
 import DashboardLayout from '@/components/layout/DashboardLayout';
 import Button from '@/components/ui/Button';
+import Select from '@/components/ui/Select';
 import { showToast } from '@/components/ui/Toast';
 import { cn } from '@/lib/utils';
 import { whatsappService as svc } from '@/services/whatsapp.service';
+import type { WaHeatmapDirection } from '@/services/whatsapp.service';
 import MetaAnalyticsSection from '@/components/whatsapp/MetaAnalyticsSection';
+import SegmentPerformanceSection from '@/components/whatsapp/SegmentPerformanceSection';
+import CohortRetentionSection from '@/components/whatsapp/CohortRetentionSection';
 import type { ApiError } from '@/types/api';
 
-function Stat({ label, value, hint }: { label: string; value: number | string; hint?: string }) {
+/**
+ * Percentage change vs. the previous period, or null when there is nothing
+ * meaningful to compare against.
+ *
+ * A jump from 0 is deliberately NOT rendered as "+∞%" or "+100%" — the first
+ * campaign of a quarter would otherwise report an impossible-looking number.
+ */
+function delta(current: number, previous: number | undefined): number | null {
+  if (previous === undefined || previous === 0) return null;
+  return Math.round(((current - previous) / previous) * 100);
+}
+
+function DeltaChip({ value, invert }: { value: number | null; invert?: boolean }) {
+  if (value === null || value === 0) return null;
+  // `invert` marks a metric where up is bad (failures): the arrow still points
+  // the way the number moved, the colour reflects whether that is good news.
+  const good = invert ? value < 0 : value > 0;
+  return (
+    <span className={cn('text-[10px] font-semibold', good ? 'text-emerald-600' : 'text-red-600')}>
+      {value > 0 ? '▲' : '▼'} {Math.abs(value)}%
+    </span>
+  );
+}
+
+function Stat({
+  label,
+  value,
+  hint,
+  change,
+  invertChange,
+}: {
+  label: string;
+  value: number | string;
+  hint?: string;
+  /** Percentage change vs. the previous window; omitted for lifetime totals. */
+  change?: number | null;
+  invertChange?: boolean;
+}) {
   return (
     <div className="rounded-xl border border-[var(--border)] bg-white p-4">
-      <p className="text-2xl font-bold text-[var(--text)]">{value}</p>
+      <div className="flex items-baseline gap-1.5">
+        <p className="text-2xl font-bold text-[var(--text)]">{value}</p>
+        <DeltaChip value={change ?? null} invert={invertChange} />
+      </div>
       <p className="text-xs text-[var(--text-muted)]">{label}</p>
       {hint && <p className="mt-0.5 text-[10px] text-[var(--text-muted)]">{hint}</p>}
     </div>
@@ -63,6 +112,19 @@ function SectionError({ onRetry, label }: { onRetry: () => void; label?: string 
       </Button>
     </div>
   );
+}
+
+/**
+ * Minutes as a table cell. An em dash rather than "0m" for null — an agent who
+ * has not answered anything yet has NO response time, and printing zero reads as
+ * an instant reply, which is the opposite of the truth.
+ */
+function mins(value: number | null): string {
+  if (value === null || value === undefined) return '—';
+  if (value < 60) return `${value}m`;
+  const h = Math.floor(value / 60);
+  const m = value % 60;
+  return m === 0 ? `${h}h` : `${h}h ${m}m`;
 }
 
 const DOW_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
@@ -115,31 +177,63 @@ const TOOLTIP_STYLE = {
   boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)',
 } as const;
 
+/** Preset windows, in days. `null` is the lifetime view. */
+const RANGE_PRESETS: Array<{ days: number | null; label: string }> = [
+  { days: 7, label: '7d' },
+  { days: 30, label: '30d' },
+  { days: 90, label: '90d' },
+  { days: 365, label: '1y' },
+  { days: null, label: 'All time' },
+];
+
 export default function SuperAdminWhatsappAnalyticsPage() {
+  // Every panel on this page used to be hardcoded to 30 days or to a lifetime
+  // total, so "how did last month compare to this one" had no answer and the
+  // lifetime rates drifted as retention pruning deleted old messages.
+  const [days, setDays] = useState<number | null>(30);
+  const [customDays, setCustomDays] = useState('');
+  // The daily/hourly charts are windowed by construction — there is no "all
+  // time" bucket list — so the lifetime view draws them over the widest range
+  // the backend will clamp to.
+  const seriesDays = days ?? 365;
+  const rangeLabel = days === null ? 'all time' : `last ${days} days`;
+  // Which connected number the message figures are about. Empty = all of them.
+  //
+  // Every aggregate on this page was cross-channel with no way to split it, so a
+  // deployment running a support number and a marketing number saw one blended
+  // volume, one blended cost and one blended delivery rate — and could not tell
+  // which number produced either half, which is the first question anyone asks
+  // when the numbers move.
+  const [channelId, setChannelId] = useState('');
+  const channelParam = channelId || undefined;
+
   const {
     data,
     isLoading,
     isError: overviewError,
     refetch: refetchOverview,
   } = useQuery({
-    queryKey: ['wa-analytics'],
-    queryFn: () => svc.getAnalytics(),
+    queryKey: ['wa-analytics', days, channelId],
+    queryFn: () => svc.getAnalytics(days ?? undefined, channelParam),
     refetchInterval: 30_000,
   });
   const a = data?.data ?? null;
+  const prev = a?.previousMessages ?? null;
   const qc = useQueryClient();
 
-  // Cost summary — sum estimated spend across campaigns.
-  const { data: campaignsData } = useQuery({
-    queryKey: ['wa-analytics-campaigns-cost'],
-    queryFn: () => svc.listCampaigns({ limit: 100 }),
-    refetchInterval: 30_000,
+  // There was no export of any kind, so reporting on a client's campaigns meant
+  // screenshotting this page. CSV because that is what a stakeholder pastes into
+  // a spreadsheet; ?format=json serves the same report for a pipeline.
+  const exportMut = useMutation({
+    mutationFn: () => svc.exportAnalytics(seriesDays, 'csv'),
+    onSuccess: () => showToast.success('Analytics exported'),
+    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Export failed'),
   });
-  const campaigns = campaignsData?.data?.items ?? [];
-  const totalCostPaise = campaigns.reduce((sum, c) => sum + (c.estimatedCostPaise ?? 0), 0);
-  const totalCostRupees = (totalCostPaise / 100).toLocaleString('en-IN', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
+
+  const ctwaExportMut = useMutation({
+    mutationFn: () => svc.exportCtwaContacts(seriesDays),
+    onSuccess: () => showToast.success('CTWA contacts exported'),
+    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Export failed'),
   });
 
   const syncMut = useMutation({
@@ -157,19 +251,25 @@ export default function SuperAdminWhatsappAnalyticsPage() {
     isError: timeSeriesError,
     refetch: refetchTimeSeries,
   } = useQuery({
-    queryKey: ['wa-analytics-timeseries'],
-    queryFn: () => svc.getTimeSeries(30),
+    queryKey: ['wa-analytics-timeseries', seriesDays, channelId],
+    queryFn: () => svc.getTimeSeries(seriesDays, channelParam),
     refetchInterval: 30_000,
   });
   const timeSeries = timeSeriesData?.data ?? [];
+  // The series is zero-filled server-side, so inside a window it is never empty and
+  // a row count can no longer stand in for "there is something to show". Read it off
+  // the counts instead — otherwise a brand-new install draws a flat line pinned to
+  // zero rather than saying there is no activity yet. Every other series is a subset
+  // of inbound + outbound, so those two settle it.
+  const hasMessageActivity = timeSeries.some((p) => p.inbound > 0 || p.outbound > 0);
 
   const {
     data: slaData,
     isError: slaError,
     refetch: refetchSla,
   } = useQuery({
-    queryKey: ['wa-analytics-sla'],
-    queryFn: () => svc.getSlaMetrics(),
+    queryKey: ['wa-analytics-sla', days],
+    queryFn: () => svc.getSlaMetrics(days ?? undefined),
     refetchInterval: 30_000,
   });
   const sla = slaData?.data ?? null;
@@ -179,8 +279,8 @@ export default function SuperAdminWhatsappAnalyticsPage() {
     isError: agentsError,
     refetch: refetchAgents,
   } = useQuery({
-    queryKey: ['wa-analytics-agents'],
-    queryFn: () => svc.getAgentProductivity(),
+    queryKey: ['wa-analytics-agents', days],
+    queryFn: () => svc.getAgentProductivity(days ?? undefined),
     refetchInterval: 30_000,
   });
   const agents = agentsData?.data ?? [];
@@ -190,31 +290,90 @@ export default function SuperAdminWhatsappAnalyticsPage() {
     isError: costError,
     refetch: refetchCost,
   } = useQuery({
-    queryKey: ['wa-analytics-cost'],
-    queryFn: () => svc.getCostSummary(),
+    queryKey: ['wa-analytics-cost', days, channelId],
+    queryFn: () => svc.getCostSummary(days ?? undefined, channelParam),
     refetchInterval: 30_000,
   });
   const cost = costData?.data ?? null;
+  // Server-computed. This used to be a client-side reduce over
+  // `listCampaigns({ limit: 100 })`, so the headline "total estimated spend" simply
+  // stopped counting past the 100th campaign — while a second, correct total from
+  // this very endpoint was rendered further down the same page. Two different
+  // numbers under the same label, and the wrong one was on top.
+  const totalCostPaise = cost?.totalEstimatedCostPaise ?? 0;
+  const totalCostRupees = (totalCostPaise / 100).toLocaleString('en-IN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
 
   const {
     data: optOutData,
     isError: optOutError,
     refetch: refetchOptOut,
   } = useQuery({
-    queryKey: ['wa-analytics-optout'],
-    queryFn: () => svc.getOptOutTrend(30),
+    queryKey: ['wa-analytics-optout', seriesDays],
+    queryFn: () => svc.getOptOutTrend(seriesDays),
     refetchInterval: 30_000,
   });
   const optOut = optOutData?.data ?? [];
+  // Zero-filled server-side too, so the same rule applies.
+  const hasOptOutActivity = optOut.some((p) => p.count > 0 || p.optIns > 0);
+
+  // Opt-out RATE and per-campaign attribution. A raw count answers nothing on
+  // its own — 40 opt-outs is excellent after a 200k send and alarming after a 2k
+  // one — and without the campaign split an operator can see the spike but not
+  // which send caused it.
+  const {
+    data: optOutSummaryData,
+    isError: optOutSummaryError,
+    refetch: refetchOptOutSummary,
+  } = useQuery({
+    queryKey: ['wa-analytics-optout-summary', seriesDays],
+    queryFn: () => svc.getOptOutSummary(seriesDays),
+    refetchInterval: 60_000,
+  });
+  const optOutSummary = optOutSummaryData?.data ?? null;
+
+  // Short-link clicks over time. Clicks were collected and then discarded: no
+  // CTR appeared anywhere in the product, per campaign or overall.
+  const {
+    data: clickData,
+    isError: clickError,
+    refetch: refetchClicks,
+  } = useQuery({
+    queryKey: ['wa-analytics-clicks', seriesDays],
+    queryFn: () => svc.getClickSeries(seriesDays),
+    refetchInterval: 60_000,
+  });
+  const clicks = clickData?.data ?? [];
+
+  // Click-to-WhatsApp acquisition. The referral payload has always been captured
+  // on every inbound message and never read back, so paid ad spend had no
+  // "conversations by ad" report to point at.
+  const {
+    data: ctwaData,
+    isError: ctwaError,
+    refetch: refetchCtwa,
+  } = useQuery({
+    queryKey: ['wa-analytics-ctwa', seriesDays],
+    queryFn: () => svc.getCtwaReport(seriesDays),
+    refetchInterval: 60_000,
+  });
+  const ctwa = ctwaData?.data ?? null;
 
   // ── P3 advanced analytics: heatmap, keywords, health history, CSAT ──
+  // Inbound by default. The grid is read to pick a send window, and a single
+  // large campaign blast owns its busiest cell for as long as the window lasts —
+  // so the mixed view answered "when did we send" and was acted on as if it
+  // answered "when is the audience awake".
+  const [heatDirection, setHeatDirection] = useState<WaHeatmapDirection>('INBOUND');
   const {
     data: heatmapData,
     isError: heatmapError,
     refetch: refetchHeatmap,
   } = useQuery({
-    queryKey: ['wa-analytics-heatmap'],
-    queryFn: () => svc.getHeatmap(30),
+    queryKey: ['wa-analytics-heatmap', seriesDays, heatDirection, channelId],
+    queryFn: () => svc.getHeatmap(seriesDays, heatDirection, channelParam),
     refetchInterval: 60_000,
   });
   const heatmap = heatmapData?.data ?? [];
@@ -224,19 +383,33 @@ export default function SuperAdminWhatsappAnalyticsPage() {
     isError: keywordsError,
     refetch: refetchKeywords,
   } = useQuery({
-    queryKey: ['wa-analytics-keywords'],
-    queryFn: () => svc.getKeywords(30),
-    refetchInterval: 60_000,
+    queryKey: ['wa-analytics-keywords', seriesDays, channelId],
+    queryFn: () => svc.getKeywords(seriesDays, channelParam),
+    // Polled on the server's cache TTL, not the 60s the other panels use: this
+    // one is a Postgres-side tokenizing aggregate over every inbound message in
+    // the window, cached for 5 minutes, so a faster interval only re-fetches a
+    // byte-identical answer.
+    refetchInterval: 5 * 60_000,
   });
   const keywords = keywordsData?.data ?? [];
+
+  // Health snapshots are written per connected number, so the chart has to name
+  // which one it is drawing. Empty = whichever number is the default.
+  const [healthChannel, setHealthChannel] = useState('');
+  const { data: channelsData } = useQuery({
+    queryKey: ['wa-channels'],
+    queryFn: () => svc.listChannels(),
+    staleTime: 5 * 60_000,
+  });
+  const channels = channelsData?.data ?? [];
 
   const {
     data: healthHistoryData,
     isError: healthHistoryError,
     refetch: refetchHealthHistory,
   } = useQuery({
-    queryKey: ['wa-analytics-health-history'],
-    queryFn: () => svc.getHealthHistory(30),
+    queryKey: ['wa-analytics-health-history', seriesDays, healthChannel],
+    queryFn: () => svc.getHealthHistory(seriesDays, healthChannel || undefined),
     refetchInterval: 60_000,
   });
   const healthHistory = healthHistoryData?.data ?? [];
@@ -246,8 +419,8 @@ export default function SuperAdminWhatsappAnalyticsPage() {
     isError: csatError,
     refetch: refetchCsat,
   } = useQuery({
-    queryKey: ['wa-analytics-csat'],
-    queryFn: () => svc.getCsat(),
+    queryKey: ['wa-analytics-csat', days],
+    queryFn: () => svc.getCsat(days ?? undefined),
     refetchInterval: 60_000,
   });
   const csat = csatData?.data ?? null;
@@ -258,8 +431,8 @@ export default function SuperAdminWhatsappAnalyticsPage() {
     isError: conversionError,
     refetch: refetchConversion,
   } = useQuery({
-    queryKey: ['wa-analytics-conversions'],
-    queryFn: () => svc.getConversionSummary(),
+    queryKey: ['wa-analytics-conversions', days],
+    queryFn: () => svc.getConversionSummary(days ?? undefined),
     refetchInterval: 60_000,
   });
   const conversion = conversionData?.data ?? null;
@@ -270,6 +443,9 @@ export default function SuperAdminWhatsappAnalyticsPage() {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     });
+
+  const totalClicks = clicks.reduce((s, c) => s + c.clicks, 0);
+  const totalUniqueClickers = clicks.reduce((s, c) => s + c.uniqueClickers, 0);
 
   // Message funnel data for the BarChart.
   const funnelData = a
@@ -290,6 +466,10 @@ export default function SuperAdminWhatsappAnalyticsPage() {
   const heatLookup = new Map<string, number>();
   for (const p of heatmap) heatLookup.set(`${p.dow}-${p.hour}`, p.count);
   const heatMax = heatmap.reduce((m, p) => (p.count > m ? p.count : m), 0);
+  // Every label the grid renders has to name the direction, or the toggle silently
+  // changes what the numbers mean.
+  const heatNoun =
+    heatDirection === 'INBOUND' ? 'inbound' : heatDirection === 'OUTBOUND' ? 'outbound' : '';
 
   // Keyword breakdown: top 12 inbound words, sorted desc.
   const keywordChartData = [...keywords]
@@ -314,7 +494,7 @@ export default function SuperAdminWhatsappAnalyticsPage() {
   }
 
   // CSAT: render whole/half stars from the 1-5 average, plus a 1→5 bar list.
-  const csatAvg = csat?.average ?? null;
+  const csatAvg = csat?.averageScore ?? null;
   const csatStars = Array.from({ length: 5 }, (_, i) => {
     const slot = i + 1;
     if (csatAvg == null) return 'empty' as const;
@@ -334,24 +514,107 @@ export default function SuperAdminWhatsappAnalyticsPage() {
       requiredPermission="whatsapp.analytics.view"
     >
       <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <h1 className="flex items-center gap-2 text-2xl font-bold text-[var(--text)]">
-            <BarChart3 className="h-6 w-6 text-emerald-600" /> WhatsApp Analytics
-          </h1>
-          <Button
-            variant="secondary"
-            leftIcon={
-              syncMut.isPending ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <RefreshCw className="h-4 w-4" />
-              )
-            }
-            onClick={() => syncMut.mutate()}
-            disabled={syncMut.isPending}
-          >
-            Sync health
-          </Button>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h1 className="flex items-center gap-2 text-2xl font-bold text-[var(--text)]">
+              <BarChart3 className="h-6 w-6 text-emerald-600" /> WhatsApp Analytics
+            </h1>
+            <p className="mt-1 text-xs text-[var(--text-muted)]">
+              Showing {rangeLabel}. Contact, template and campaign counts are current totals, not
+              windowed.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <div
+              className="flex rounded-lg border border-[var(--border)] bg-white p-0.5"
+              role="group"
+              aria-label="Date range"
+            >
+              {RANGE_PRESETS.map((r) => (
+                <button
+                  key={r.label}
+                  type="button"
+                  aria-pressed={days === r.days}
+                  onClick={() => {
+                    setDays(r.days);
+                    setCustomDays('');
+                  }}
+                  className={cn(
+                    'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
+                    days === r.days
+                      ? 'bg-emerald-600 text-white'
+                      : 'text-[var(--text-muted)] hover:bg-[var(--bg-secondary)]',
+                  )}
+                >
+                  {r.label}
+                </button>
+              ))}
+            </div>
+            {/* Only worth the space once a second number is connected. */}
+            {channels.length > 1 && (
+              <div className="min-w-[190px]">
+                <Select
+                  size="sm"
+                  clearable={false}
+                  value={channelId}
+                  onChange={setChannelId}
+                  aria-label="WhatsApp number"
+                  options={[
+                    { value: '', label: 'All numbers' },
+                    ...channels.map((c) => ({
+                      value: c.id,
+                      label: c.displayName || c.displayPhone,
+                    })),
+                  ]}
+                />
+              </div>
+            )}
+            <input
+              type="number"
+              min={1}
+              max={365}
+              value={customDays}
+              aria-label="Custom range in days"
+              placeholder="Custom days"
+              onChange={(e) => setCustomDays(e.target.value)}
+              onBlur={() => {
+                const n = parseInt(customDays, 10);
+                if (Number.isFinite(n) && n > 0) setDays(Math.min(n, 365));
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') e.currentTarget.blur();
+              }}
+              className="h-8 w-28 rounded-lg border border-[var(--border)] bg-white px-2 text-xs text-[var(--text)]"
+            />
+            <Button
+              variant="secondary"
+              leftIcon={
+                exportMut.isPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Download className="h-4 w-4" />
+                )
+              }
+              onClick={() => exportMut.mutate()}
+              disabled={exportMut.isPending}
+            >
+              Export CSV
+            </Button>
+            <Button
+              variant="secondary"
+              leftIcon={
+                syncMut.isPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-4 w-4" />
+                )
+              }
+              onClick={() => syncMut.mutate()}
+              disabled={syncMut.isPending}
+            >
+              Sync health
+            </Button>
+          </div>
         </div>
         {isLoading && !overviewError && (
           <p className="text-center text-sm text-[var(--text-muted)]">Loading…</p>
@@ -411,11 +674,32 @@ export default function SuperAdminWhatsappAnalyticsPage() {
             )}
 
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-              <Stat label="Inbound" value={a.messages.inbound} />
-              <Stat label="Outbound" value={a.messages.outbound} />
-              <Stat label="Delivered" value={a.messages.delivered} />
-              <Stat label="Read" value={a.messages.read} />
-              <Stat label="Failed" value={a.messages.failed} />
+              <Stat
+                label="Inbound"
+                value={a.messages.inbound}
+                change={delta(a.messages.inbound, prev?.inbound)}
+              />
+              <Stat
+                label="Outbound"
+                value={a.messages.outbound}
+                change={delta(a.messages.outbound, prev?.outbound)}
+              />
+              <Stat
+                label="Delivered"
+                value={a.messages.delivered}
+                change={delta(a.messages.delivered, prev?.delivered)}
+              />
+              <Stat
+                label="Read"
+                value={a.messages.read}
+                change={delta(a.messages.read, prev?.read)}
+              />
+              <Stat
+                label="Failed"
+                value={a.messages.failed}
+                change={delta(a.messages.failed, prev?.failed)}
+                invertChange
+              />
               <Stat
                 label="Conversations"
                 value={a.conversations.total}
@@ -434,8 +718,14 @@ export default function SuperAdminWhatsappAnalyticsPage() {
                   <p className="text-xs text-[var(--text-muted)]">Total estimated spend</p>
                 </div>
                 <div>
-                  <p className="text-2xl font-bold text-[var(--text)]">{campaigns.length}</p>
-                  <p className="text-xs text-[var(--text-muted)]">Campaigns counted</p>
+                  {/* Server-side count over the SAME campaigns the total sums. This
+                      used to be `listCampaigns({ limit: 100 }).length`, so a
+                      deployment with 300 campaigns showed a total over all of them
+                      sitting next to the caption "Campaigns counted: 100". */}
+                  <p className="text-2xl font-bold text-[var(--text)]">
+                    {(cost?.campaignCount ?? 0).toLocaleString('en-IN')}
+                  </p>
+                  <p className="text-xs text-[var(--text-muted)]">Launched campaigns</p>
                 </div>
               </div>
             </div>
@@ -455,13 +745,56 @@ export default function SuperAdminWhatsappAnalyticsPage() {
                   <Stat
                     label="Total conversions"
                     value={(conversion?.count ?? 0).toLocaleString('en-IN')}
-                    hint="recorded attributions"
+                    hint={`recorded attributions, ${rangeLabel}`}
                   />
                   <Stat
                     label="Total value"
                     value={`₹${paiseToRupees(conversion?.totalValuePaise ?? 0)}`}
-                    hint="summed conversion value"
+                    hint={`summed conversion value, ${rangeLabel}`}
                   />
+                </div>
+              )}
+              {/* Which campaign actually converted. The server has always
+                  computed this breakdown and the page threw it away, so the one
+                  question conversion tracking exists to answer — where to spend
+                  the next send — had no answer anywhere in the console. */}
+              {!conversionError && conversion && conversion.byCampaign.length > 0 && (
+                <div className="mt-4">
+                  <p className="mb-2 text-xs font-semibold text-[var(--text-muted)]">
+                    Which campaign converted — most conversions first
+                  </p>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead className="text-[var(--text-muted)]">
+                        <tr>
+                          <th className="py-1 pr-3 font-medium">Campaign</th>
+                          <th className="py-1 pr-3 text-right font-medium">Conversions</th>
+                          <th className="py-1 pr-3 text-right font-medium">Value</th>
+                          <th className="py-1 text-right font-medium">Per recipient</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {conversion.byCampaign.map((r) => (
+                          <tr key={r.campaignId} className="border-t border-[var(--border)]">
+                            <td className="py-1.5 pr-3 text-[var(--text)]">{r.name}</td>
+                            <td className="py-1.5 pr-3 text-right">
+                              {r.count.toLocaleString('en-IN')}
+                            </td>
+                            <td className="py-1.5 pr-3 text-right text-[var(--text-muted)]">
+                              ₹{paiseToRupees(r.valuePaise)}
+                            </td>
+                            {/* Blank rather than ₹0.00 when the campaign has no
+                                recorded sends: a zero here reads as "earned
+                                nothing per recipient", which is a different
+                                claim from "we cannot divide yet". */}
+                            <td className="py-1.5 text-right font-semibold text-emerald-600">
+                              {r.sent > 0 ? `₹${paiseToRupees(r.valuePerRecipientPaise)}` : '—'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
             </div>
@@ -513,11 +846,11 @@ export default function SuperAdminWhatsappAnalyticsPage() {
             {/* Messages over time — multi-series line chart */}
             <div className="space-y-3 rounded-xl border border-[var(--border)] bg-white p-4">
               <h2 className="text-sm font-semibold text-[var(--text)]">
-                Messages over time (last 30 days)
+                Messages over time (last {seriesDays} days){a?.tz ? ` · times in ${a.tz}` : ''}
               </h2>
               {timeSeriesError ? (
                 <SectionError onRetry={() => void refetchTimeSeries()} />
-              ) : timeSeries.length === 0 ? (
+              ) : !hasMessageActivity ? (
                 <p className="text-xs text-[var(--text-muted)]">No message activity yet.</p>
               ) : (
                 <ResponsiveContainer width="100%" height={300}>
@@ -610,12 +943,28 @@ export default function SuperAdminWhatsappAnalyticsPage() {
             <div className="grid gap-4 lg:grid-cols-2">
               {/* Opt-out trend — area chart */}
               <div className="space-y-3 rounded-xl border border-[var(--border)] bg-white p-4">
-                <h2 className="text-sm font-semibold text-[var(--text)]">
-                  Opt-out trend (last 30 days)
+                <h2 className="flex items-center gap-1.5 text-sm font-semibold text-[var(--text)]">
+                  <UserMinus className="h-4 w-4 text-red-500" /> Opt-out trend (last {seriesDays}{' '}
+                  days){a?.tz ? ` · times in ${a.tz}` : ''}
                 </h2>
+                {optOutSummaryError ? (
+                  <SectionError onRetry={() => void refetchOptOutSummary()} />
+                ) : (
+                  optOutSummary && (
+                    <div className="grid grid-cols-3 gap-2">
+                      <Stat label="Opt-outs" value={optOutSummary.optOuts} />
+                      <Stat label="Opt-ins" value={optOutSummary.optIns} hint="re-subscribed" />
+                      <Stat
+                        label="Rate"
+                        value={optOutSummary.ratePer1000}
+                        hint="per 1,000 delivered"
+                      />
+                    </div>
+                  )
+                )}
                 {optOutError ? (
                   <SectionError onRetry={() => void refetchOptOut()} />
-                ) : optOut.length === 0 ? (
+                ) : !hasOptOutActivity ? (
                   <p className="text-xs text-[var(--text-muted)]">No opt-outs in this window.</p>
                 ) : (
                   <ResponsiveContainer width="100%" height={240}>
@@ -643,8 +992,57 @@ export default function SuperAdminWhatsappAnalyticsPage() {
                         fillOpacity={0.15}
                         strokeWidth={2}
                       />
+                      <Area
+                        type="monotone"
+                        dataKey="optIns"
+                        name="Opt-ins"
+                        stroke="#10b981"
+                        fill="#10b981"
+                        fillOpacity={0.12}
+                        strokeWidth={2}
+                      />
+                      <Legend wrapperStyle={{ fontSize: 11 }} />
                     </AreaChart>
                   </ResponsiveContainer>
+                )}
+                {optOutSummary && optOutSummary.byCampaign.length > 0 && (
+                  <div>
+                    <p className="mb-2 text-xs font-semibold text-[var(--text-muted)]">
+                      Which campaign burned the list — worst rate first
+                    </p>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead className="text-[var(--text-muted)]">
+                          <tr>
+                            <th className="py-1 pr-3 font-medium">Campaign</th>
+                            <th className="py-1 pr-3 text-right font-medium">Opt-outs</th>
+                            <th className="py-1 pr-3 text-right font-medium">Delivered</th>
+                            <th className="py-1 text-right font-medium">Per 1,000</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {optOutSummary.byCampaign.slice(0, 8).map((r) => (
+                            <tr key={r.campaignId} className="border-t border-[var(--border)]">
+                              <td className="py-1.5 pr-3 text-[var(--text)]">{r.name}</td>
+                              <td className="py-1.5 pr-3 text-right">{r.optOuts}</td>
+                              <td className="py-1.5 pr-3 text-right text-[var(--text-muted)]">
+                                {r.delivered.toLocaleString('en-IN')}
+                              </td>
+                              <td className="py-1.5 text-right font-semibold text-red-600">
+                                {r.ratePer1000}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {optOutSummary.unattributed > 0 && (
+                      <p className="mt-1.5 text-[10px] text-[var(--text-muted)]">
+                        {optOutSummary.unattributed} opt-out(s) could not be attributed to a
+                        campaign (organic STOP, manual or import).
+                      </p>
+                    )}
+                  </div>
                 )}
               </div>
 
@@ -660,16 +1058,121 @@ export default function SuperAdminWhatsappAnalyticsPage() {
                   />
                 ) : (
                   <div className="mt-3 grid grid-cols-2 gap-3">
+                    {/* The unit comes from the data, not from the page.
+                        Meta bills in the WABA's own currency and quotes 4-6
+                        decimals per message, so a hardcoded ₹ printed foreign
+                        cents as rupees, and the stored whole-minor-unit rounding
+                        turned 0.0383 into 4 — several percent out per message,
+                        compounding over every row. The exact decimal total is
+                        shown when Meta reported one. */}
                     <Stat
                       label="Actual billed"
-                      value={`₹${paiseToRupees(cost?.totalActualCostPaise ?? 0)}`}
-                      hint="summed message pricing"
+                      value={
+                        cost?.totalActualCostPaise == null
+                          ? '—'
+                          : cost.actualCurrency && cost.actualCurrency !== 'INR'
+                            ? `${cost.totalActualCostAmount ?? paiseToRupees(cost.totalActualCostPaise)} ${cost.actualCurrency}`
+                            : `₹${cost.totalActualCostAmount ?? paiseToRupees(cost.totalActualCostPaise)}`
+                      }
+                      hint={
+                        cost?.totalActualCostPaise == null
+                          ? 'not reported by Meta webhooks'
+                          : cost.actualCurrency === 'MIXED'
+                            ? 'several billing currencies in this window — not a single total'
+                            : cost.actualComparable === false
+                              ? `billed in ${cost.actualCurrency} — not comparable with the ₹ estimate`
+                              : 'summed message pricing'
+                      }
                     />
                     <Stat
                       label="Estimated"
                       value={`₹${paiseToRupees(cost?.totalEstimatedCostPaise ?? 0)}`}
                       hint="campaign projections"
                     />
+                  </div>
+                )}
+                {!costError && cost?.meta?.available && (
+                  <div className="mt-4">
+                    <p className="mb-2 text-xs font-semibold text-[var(--text-muted)]">
+                      Meta billed vs. our estimate
+                      {cost.meta.currency ? ` · ${cost.meta.currency}` : ''}
+                    </p>
+                    {/* A conversation-billed (CBP) WABA has no per-message
+                        pricing rows at all, so this block used to render a
+                        header row over an empty table while the account's entire
+                        Meta spend sat in the two conversation fields. */}
+                    {cost.meta.conversationCount > 0 && (
+                      <div className="mb-2 flex items-center justify-between rounded-lg bg-[var(--bg-secondary)] px-3 py-2 text-xs">
+                        <span className="text-[var(--text-secondary)]">
+                          Conversation-based billing ·{' '}
+                          {cost.meta.conversationCount.toLocaleString('en-IN')} conversations
+                        </span>
+                        <span className="font-semibold text-[var(--text)]">
+                          {paiseToRupees(cost.meta.conversationCostMinor)}{' '}
+                          {cost.meta.currency ?? ''}
+                        </span>
+                      </div>
+                    )}
+                    {cost.meta.byCategory.length > 0 && (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead className="text-[var(--text-muted)]">
+                            <tr>
+                              <th className="py-1 pr-3 font-medium">Category</th>
+                              <th className="py-1 pr-3 text-right font-medium">Msgs</th>
+                              <th className="py-1 pr-3 text-right font-medium">Meta rate</th>
+                              <th className="py-1 pr-3 text-right font-medium">Our estimate</th>
+                              <th className="py-1 text-right font-medium">Variance</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {cost.meta.byCategory.map((r) => (
+                              <tr key={r.category} className="border-t border-[var(--border)]">
+                                <td className="py-1.5 pr-3 text-[var(--text)] capitalize">
+                                  {r.category.toLowerCase()}
+                                </td>
+                                <td className="py-1.5 pr-3 text-right">
+                                  {r.volume.toLocaleString('en-IN')}
+                                </td>
+                                <td className="py-1.5 pr-3 text-right">
+                                  {r.observedRateMinor == null
+                                    ? '—'
+                                    : paiseToRupees(r.observedRateMinor)}
+                                </td>
+                                <td className="py-1.5 pr-3 text-right text-[var(--text-muted)]">
+                                  {paiseToRupees(r.estimatedRatePaise)}
+                                </td>
+                                <td
+                                  className={cn(
+                                    'py-1.5 text-right font-semibold',
+                                    r.variancePct == null
+                                      ? 'text-[var(--text-muted)]'
+                                      : Math.abs(r.variancePct) > 15
+                                        ? 'text-red-600'
+                                        : 'text-emerald-600',
+                                  )}
+                                >
+                                  {r.variancePct == null
+                                    ? '—'
+                                    : `${r.variancePct > 0 ? '+' : ''}${r.variancePct}%`}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                    <p className="mt-1.5 text-[10px] text-[var(--text-muted)]">
+                      {cost.meta.byCategory.length > 0
+                        ? `Rates are per message in ${cost.meta.currency ?? 'your billing currency'}. `
+                        : ''}
+                      {cost.meta.estimateComparable
+                        ? 'Estimates above this line are priced from the observed Meta rate once it is known.'
+                        : `Meta bills this account in ${cost.meta.currency ?? 'a currency we could not read'}, so the ₹ estimates cannot be compared with it and the variance is withheld.`}
+                      {cost.meta.lastSyncedAt
+                        ? ` Last synced ${new Date(cost.meta.lastSyncedAt).toLocaleString('en-IN')}.`
+                        : ''}
+                    </p>
                   </div>
                 )}
                 {!costError && cost && cost.byCategory.length > 0 && (
@@ -696,7 +1199,11 @@ export default function SuperAdminWhatsappAnalyticsPage() {
 
             {/* Per-agent productivity table */}
             <div className="rounded-xl border border-[var(--border)] bg-white p-4">
-              <h2 className="mb-3 text-sm font-semibold text-[var(--text)]">Agent productivity</h2>
+              <h2 className="mb-1 text-sm font-semibold text-[var(--text)]">Agent productivity</h2>
+              <p className="mb-3 text-xs text-[var(--text-muted)]">
+                {days ? `Last ${days} days` : 'All time'} · top 50 by messages sent. Reply times are
+                per conversation, so p90 is this agent&rsquo;s slowest thread.
+              </p>
               {agentsError ? (
                 <SectionError onRetry={() => void refetchAgents()} />
               ) : agents.length === 0 ? (
@@ -708,7 +1215,30 @@ export default function SuperAdminWhatsappAnalyticsPage() {
                       <tr className="border-b border-[var(--border)] text-left text-xs text-[var(--text-muted)]">
                         <th className="py-2 pr-4 font-medium">Agent</th>
                         <th className="py-2 pr-4 text-right font-medium">Messages sent</th>
-                        <th className="py-2 text-right font-medium">Conversations assigned</th>
+                        <th className="py-2 pr-4 text-right font-medium">Assigned</th>
+                        <th className="py-2 pr-4 text-right font-medium">Resolved</th>
+                        <th
+                          className="py-2 pr-4 text-right font-medium"
+                          title="Mean time to an agent reply"
+                        >
+                          Avg reply
+                        </th>
+                        <th
+                          className="py-2 pr-4 text-right font-medium"
+                          title="Median time to an agent reply"
+                        >
+                          p50
+                        </th>
+                        <th
+                          className="py-2 pr-4 text-right font-medium"
+                          title="90th-percentile reply time — the slow tail an SLA is written against"
+                        >
+                          p90
+                        </th>
+                        <th className="py-2 pr-4 text-right font-medium">Avg resolution</th>
+                        <th className="py-2 text-right font-medium" title="Mean CSAT (1-5)">
+                          CSAT
+                        </th>
                       </tr>
                     </thead>
                     <tbody>
@@ -721,8 +1251,35 @@ export default function SuperAdminWhatsappAnalyticsPage() {
                           <td className="py-2 pr-4 text-right text-[var(--text-secondary)]">
                             {ag.messagesSent}
                           </td>
-                          <td className="py-2 text-right text-[var(--text-secondary)]">
+                          <td className="py-2 pr-4 text-right text-[var(--text-secondary)]">
                             {ag.conversationsAssigned}
+                          </td>
+                          <td className="py-2 pr-4 text-right text-[var(--text-secondary)]">
+                            {ag.conversationsResolved}
+                          </td>
+                          <td className="py-2 pr-4 text-right text-[var(--text-secondary)]">
+                            {mins(ag.avgResponseMins)}
+                          </td>
+                          <td className="py-2 pr-4 text-right text-[var(--text-secondary)]">
+                            {mins(ag.p50ResponseMins)}
+                          </td>
+                          <td className="py-2 pr-4 text-right text-[var(--text-secondary)]">
+                            {mins(ag.p90ResponseMins)}
+                          </td>
+                          <td className="py-2 pr-4 text-right text-[var(--text-secondary)]">
+                            {mins(ag.avgResolutionMins)}
+                          </td>
+                          {/* The rating count rides along: a 5.0 from one survey
+                              and a 4.6 from ninety are not the same claim. */}
+                          <td className="py-2 text-right text-[var(--text-secondary)]">
+                            {ag.csatCount > 0 ? (
+                              <>
+                                {ag.csatAvg?.toFixed(1)}
+                                <span className="text-[var(--text-muted)]"> ({ag.csatCount})</span>
+                              </>
+                            ) : (
+                              '—'
+                            )}
                           </td>
                         </tr>
                       ))}
@@ -817,10 +1374,23 @@ export default function SuperAdminWhatsappAnalyticsPage() {
 
             {/* ── P3: Busiest-hours heatmap ── */}
             <div className="space-y-3 rounded-xl border border-[var(--border)] bg-white p-4">
-              <div className="flex items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <h2 className="text-sm font-semibold text-[var(--text)]">
-                  Busiest hours (last 30 days)
+                  Busiest hours (last {seriesDays} days){a?.tz ? ` · times in ${a.tz}` : ''}
                 </h2>
+                <div className="min-w-[170px]">
+                  <Select
+                    size="sm"
+                    clearable={false}
+                    value={heatDirection}
+                    onChange={(v) => setHeatDirection(v as WaHeatmapDirection)}
+                    options={[
+                      { value: 'INBOUND', label: 'Inbound (customers)' },
+                      { value: 'OUTBOUND', label: 'Outbound (us)' },
+                      { value: 'ALL', label: 'All messages' },
+                    ]}
+                  />
+                </div>
                 {heatMax > 0 && (
                   <div className="flex items-center gap-1.5 text-[10px] text-[var(--text-muted)]">
                     <span>Less</span>
@@ -840,7 +1410,9 @@ export default function SuperAdminWhatsappAnalyticsPage() {
               {heatmapError ? (
                 <SectionError onRetry={() => void refetchHeatmap()} />
               ) : heatMax === 0 ? (
-                <p className="text-xs text-[var(--text-muted)]">No message activity yet.</p>
+                <p className="text-xs text-[var(--text-muted)]">
+                  No {heatNoun && `${heatNoun} `}message activity yet.
+                </p>
               ) : (
                 <div className="overflow-x-auto">
                   <table className="border-separate border-spacing-1" role="grid">
@@ -869,9 +1441,9 @@ export default function SuperAdminWhatsappAnalyticsPage() {
                           </th>
                           {HOUR_LABELS.map((hour) => {
                             const count = heatLookup.get(`${dow}-${hour}`) ?? 0;
-                            const cellLabel = `${day} ${hour}:00 — ${count} message${
-                              count === 1 ? '' : 's'
-                            }`;
+                            const cellLabel = `${day} ${hour}:00 — ${count} ${
+                              heatNoun ? `${heatNoun} ` : ''
+                            }message${count === 1 ? '' : 's'}`;
                             return (
                               <td key={hour} aria-label={cellLabel} className="p-0">
                                 <UiTooltip content={cellLabel} inline>
@@ -895,7 +1467,7 @@ export default function SuperAdminWhatsappAnalyticsPage() {
               {/* ── P3: Keyword breakdown ── */}
               <div className="space-y-3 rounded-xl border border-[var(--border)] bg-white p-4">
                 <h2 className="text-sm font-semibold text-[var(--text)]">
-                  Top inbound keywords (last 30 days)
+                  Top inbound keywords (last {seriesDays} days)
                 </h2>
                 {keywordsError ? (
                   <SectionError onRetry={() => void refetchKeywords()} />
@@ -943,7 +1515,7 @@ export default function SuperAdminWhatsappAnalyticsPage() {
                 <h2 className="text-sm font-semibold text-[var(--text)]">Customer satisfaction</h2>
                 {csatError ? (
                   <SectionError onRetry={() => void refetchCsat()} label="Couldn't load CSAT." />
-                ) : !csat || csat.count === 0 ? (
+                ) : !csat || csat.ratedCount === 0 ? (
                   <p className="text-xs text-[var(--text-muted)]">No CSAT ratings yet.</p>
                 ) : (
                   <div className="space-y-4">
@@ -956,7 +1528,7 @@ export default function SuperAdminWhatsappAnalyticsPage() {
                     <div
                       className="flex items-center gap-1"
                       role="img"
-                      aria-label={`Average rating ${csatAvg != null ? csatAvg.toFixed(1) : 0} of 5 from ${csat.count} ratings`}
+                      aria-label={`Average rating ${csatAvg != null ? csatAvg.toFixed(1) : 0} of 5 from ${csat.ratedCount} ratings`}
                     >
                       {csatStars.map((kind, i) => (
                         <span key={i} className="relative inline-block h-6 w-6">
@@ -972,7 +1544,7 @@ export default function SuperAdminWhatsappAnalyticsPage() {
                         </span>
                       ))}
                       <span className="ml-2 text-xs text-[var(--text-muted)]">
-                        {csat.count} rated
+                        {csat.ratedCount} rated
                       </span>
                     </div>
                     <div className="space-y-1.5">
@@ -1003,9 +1575,30 @@ export default function SuperAdminWhatsappAnalyticsPage() {
 
             {/* ── P3: Channel health history ── */}
             <div className="space-y-3 rounded-xl border border-[var(--border)] bg-white p-4">
-              <h2 className="text-sm font-semibold text-[var(--text)]">
-                Channel health history (last 30 days)
-              </h2>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h2 className="text-sm font-semibold text-[var(--text)]">
+                  Channel health history (last {seriesDays} days)
+                </h2>
+                {/* Only worth screen space once a second number is connected —
+                    with one channel there is nothing to choose between. */}
+                {channels.length > 1 && (
+                  <div className="min-w-[180px]">
+                    <Select
+                      size="sm"
+                      clearable={false}
+                      value={healthChannel}
+                      onChange={setHealthChannel}
+                      options={[
+                        { value: '', label: 'Default number' },
+                        ...channels.map((c) => ({
+                          value: c.id,
+                          label: c.displayName || c.displayPhone,
+                        })),
+                      ]}
+                    />
+                  </div>
+                )}
+              </div>
               {healthHistoryError ? (
                 <SectionError onRetry={() => void refetchHealthHistory()} />
               ) : healthChartData.length === 0 ? (
@@ -1081,8 +1674,157 @@ export default function SuperAdminWhatsappAnalyticsPage() {
               )}
             </div>
 
+            {/* ── Link click-through ── */}
+            <div className="space-y-3 rounded-xl border border-[var(--border)] bg-white p-4">
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <h2 className="flex items-center gap-1.5 text-sm font-semibold text-[var(--text)]">
+                  <MousePointerClick className="h-4 w-4 text-purple-500" /> Link clicks (last{' '}
+                  {seriesDays} days)
+                </h2>
+                <span className="text-xs text-[var(--text-muted)]">
+                  {totalClicks.toLocaleString('en-IN')} clicks ·{' '}
+                  {totalUniqueClickers.toLocaleString('en-IN')} unique clickers
+                </span>
+              </div>
+              {clickError ? (
+                <SectionError onRetry={() => void refetchClicks()} />
+              ) : clicks.length === 0 ? (
+                <p className="text-xs text-[var(--text-muted)]">
+                  No tracked clicks in this window. Add a trackable link to a campaign to start
+                  measuring click-through.
+                </p>
+              ) : (
+                <ResponsiveContainer width="100%" height={240}>
+                  <AreaChart data={clicks}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                    <XAxis
+                      dataKey="date"
+                      tick={{ fontSize: 11, fill: 'var(--text-muted)' }}
+                      tickLine={false}
+                      axisLine={{ stroke: 'var(--border)' }}
+                    />
+                    <YAxis
+                      tick={{ fontSize: 12, fill: 'var(--text-muted)' }}
+                      tickLine={false}
+                      axisLine={false}
+                      allowDecimals={false}
+                    />
+                    <Tooltip contentStyle={TOOLTIP_STYLE} />
+                    <Legend wrapperStyle={{ fontSize: 11 }} />
+                    <Area
+                      type="monotone"
+                      dataKey="clicks"
+                      name="Clicks"
+                      stroke="#a855f7"
+                      fill="#a855f7"
+                      fillOpacity={0.15}
+                      strokeWidth={2}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="uniqueClickers"
+                      name="Unique clickers"
+                      stroke="#6366f1"
+                      fill="#6366f1"
+                      fillOpacity={0.12}
+                      strokeWidth={2}
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+
+            {/* ── Click-to-WhatsApp ad acquisition ── */}
+            <div className="space-y-3 rounded-xl border border-[var(--border)] bg-white p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h2 className="flex items-center gap-1.5 text-sm font-semibold text-[var(--text)]">
+                  <Megaphone className="h-4 w-4 text-sky-500" /> Click-to-WhatsApp ads (last{' '}
+                  {seriesDays} days)
+                </h2>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  leftIcon={
+                    ctwaExportMut.isPending ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Download className="h-3.5 w-3.5" />
+                    )
+                  }
+                  onClick={() => ctwaExportMut.mutate()}
+                  disabled={ctwaExportMut.isPending || !ctwa || ctwa.totalContacts === 0}
+                >
+                  Export ctwa_clid
+                </Button>
+              </div>
+              {ctwaError ? (
+                <SectionError onRetry={() => void refetchCtwa()} />
+              ) : !ctwa || ctwa.rows.length === 0 ? (
+                <p className="text-xs text-[var(--text-muted)]">
+                  No contacts arrived from a click-to-WhatsApp ad in this window.
+                </p>
+              ) : (
+                <>
+                  <p className="text-xs text-[var(--text-muted)]">
+                    {ctwa.totalContacts.toLocaleString('en-IN')} contact(s) acquired from{' '}
+                    {ctwa.rows.length} ad source(s). Export the ctwa_clid column to upload offline
+                    conversions back to Meta Ads Manager.
+                  </p>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead className="text-[var(--text-muted)]">
+                        <tr>
+                          <th className="py-1 pr-3 font-medium">Source</th>
+                          <th className="py-1 pr-3 font-medium">Headline</th>
+                          <th className="py-1 pr-3 text-right font-medium">Contacts</th>
+                          <th className="py-1 pr-3 text-right font-medium">Conversations</th>
+                          <th className="py-1 pr-3 text-right font-medium">Conversions</th>
+                          <th className="py-1 text-right font-medium">Value</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {ctwa.rows.slice(0, 20).map((r) => (
+                          <tr
+                            key={`${r.sourceId ?? ''}-${r.sourceType ?? ''}-${r.headline ?? ''}`}
+                            className="border-t border-[var(--border)]"
+                          >
+                            <td className="py-1.5 pr-3 text-[var(--text)]">
+                              {r.sourceType ?? 'ad'}
+                              {r.sourceId ? (
+                                <span className="ml-1 text-[var(--text-muted)]">{r.sourceId}</span>
+                              ) : null}
+                            </td>
+                            <td className="max-w-[16rem] truncate py-1.5 pr-3 text-[var(--text-muted)]">
+                              {r.headline ?? '—'}
+                            </td>
+                            <td className="py-1.5 pr-3 text-right">{r.contacts}</td>
+                            <td className="py-1.5 pr-3 text-right">{r.conversations}</td>
+                            <td className="py-1.5 pr-3 text-right">{r.conversions}</td>
+                            <td className="py-1.5 text-right font-semibold text-[var(--text)]">
+                              ₹{paiseToRupees(r.conversionValuePaise)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* ── Per-audience reporting ──
+                Every panel above is global or per-number: the dashboard could say
+                what the deployment did and never which audience did it, so "does
+                segment A convert better than segment B" and "are the contacts we
+                acquired in March still talking to us" had no answer at all. The
+                segment table honours the page's range and number; the cohort table
+                carries its own month control, because a retention curve over a
+                seven-day window is a single point. */}
+            <SegmentPerformanceSection days={days} channelId={channelParam} />
+            <CohortRetentionSection channelId={channelParam} />
+
             {/* ── Official Meta Graph analytics (templates / conversations / pricing) ── */}
-            <MetaAnalyticsSection />
+            <MetaAnalyticsSection days={seriesDays} />
           </>
         )}
       </div>

@@ -42,7 +42,15 @@ export const webhookService = {
 
     return prisma.webhookEndpoint.update({
       where: { id: webhookId },
-      data,
+      data: {
+        ...data,
+        // Re-enabling clears the strike count. `failureCount` was only ever
+        // reset by a SUCCESSFUL delivery, so an endpoint auto-disabled at 10
+        // failures came back with the counter still at 10 — the very next failed
+        // event tripped the threshold again and disabled it immediately. From
+        // the operator's side the toggle simply did not work.
+        ...(data.isActive === true ? { failureCount: 0 } : {}),
+      },
     });
   },
 
@@ -143,20 +151,27 @@ export const webhookService = {
   },
 
   async dispatch(event: string, payload: Record<string, unknown>) {
-
     try {
       const webhooks = await prisma.webhookEndpoint.findMany({
         where: {
           isActive: true,
           events: { has: event },
         },
+        // Ids only. The worker reads the url and the secret itself, so there is
+        // no longer any reason to pull every subscriber's signing key into this
+        // process on every single event.
+        select: { id: true },
       });
 
       for (const webhook of webhooks) {
+        // Id only — see the note on `webhookQueue` job data in webhook.worker.ts.
+        // The url and the signing secret used to be copied in here, one full
+        // plaintext copy per queued event, sitting in Redis for up to seven days
+        // on the failure path; and because the copy was taken at dispatch time,
+        // rotating a leaked secret or correcting a mistyped URL did nothing to
+        // the thousands of events already queued against the old ones.
         await webhookQueue.add(`webhook-${webhook.id}-${event}`, {
           webhookId: webhook.id,
-          url: webhook.url,
-          secret: webhook.secret,
           event,
           payload,
         });
@@ -181,17 +196,63 @@ export const webhookService = {
 
     await webhookQueue.add(`webhook-test-${webhook.id}`, {
       webhookId: webhook.id,
-      url: webhook.url,
-      secret: webhook.secret,
       event: 'test',
-      payload: {
-        event: 'test',
-        timestamp: new Date().toISOString(),
-        message: 'This is a test webhook delivery.',
-      },
+      // BARE payload, like every real event. The worker adds the
+      // { event, timestamp, data } envelope, so pre-wrapping here made a test
+      // delivery a different shape from the thing it is meant to be testing.
+      payload: { message: 'This is a test webhook delivery.' },
     });
 
     return { message: 'Test webhook queued for delivery' };
+  },
+
+  /**
+   * Replay a past delivery.
+   *
+   * The stored `payload` is the exact signed envelope `{ event, timestamp, data }`,
+   * so the inner `data` is unwrapped back to the bare payload the queue expects —
+   * the worker re-wraps it and re-signs it with a fresh timestamp, which any
+   * replay-window check on the subscriber side requires.
+   */
+  async replayDelivery(userId: string, webhookId: string, deliveryId: string) {
+    const webhook = await prisma.webhookEndpoint.findFirst({
+      where: { id: webhookId, userId },
+    });
+
+    if (!webhook) {
+      throw new AppError('Webhook not found', 404, 'WEBHOOK_NOT_FOUND');
+    }
+
+    const delivery = await prisma.webhookDelivery.findFirst({
+      where: { id: deliveryId, webhookId },
+    });
+
+    if (!delivery) {
+      throw new AppError('Delivery not found', 404, 'WEBHOOK_DELIVERY_NOT_FOUND');
+    }
+
+    const envelope = (delivery.payload ?? {}) as { data?: Record<string, unknown> };
+    await webhookQueue.add(`webhook-replay-${webhook.id}-${delivery.id}`, {
+      webhookId: webhook.id,
+      event: delivery.event,
+      payload: envelope.data ?? {},
+    });
+
+    logger.info(`Webhook delivery ${deliveryId} queued for replay to ${webhook.url}`);
+    return { message: 'Delivery queued for replay' };
+  },
+
+  /**
+   * The string that gets signed: `${unix-seconds}.${body}`.
+   *
+   * A bare body HMAC with no timestamp is replayable forever — anyone who ever
+   * captured one valid request (a proxy log, a mirrored staging endpoint) could
+   * resend it verbatim and the signature still verified. Binding the timestamp
+   * into the signed string lets the subscriber reject anything outside a
+   * tolerance window.
+   */
+  signaturePayload(timestamp: number, body: string): string {
+    return `${timestamp}.${body}`;
   },
 
   generateSignature(secret: string, payload: string): string {

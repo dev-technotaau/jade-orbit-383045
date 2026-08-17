@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import Modal from '@/components/ui/Modal';
 import Input from '@/components/ui/Input';
 import Button from '@/components/ui/Button';
@@ -9,6 +9,7 @@ import Select from '@/components/ui/Select';
 import DatePicker from '@/components/ui/DatePicker';
 import Textarea from '@/components/ui/Textarea';
 import { showToast } from '@/components/ui/Toast';
+import TemplatePicker from '@/components/whatsapp/TemplatePicker';
 import { whatsappService as svc } from '@/services/whatsapp.service';
 import type { WaTemplate } from '@/types/whatsapp';
 import type { ApiError } from '@/types/api';
@@ -25,8 +26,14 @@ function bodyVarCount(t: WaTemplate): number {
 }
 
 /**
- * Schedule a message (plain text or an approved template) to be sent later.
- * Calls `scheduleMessage(conversationId, { kind, … , sendAt })`.
+ * Schedule a message — plain text, an approved template, or a FILE — to be sent
+ * later.
+ *
+ * The file option is not cosmetic parity with the attach menu: "send this price
+ * list at 9am tomorrow" was impossible, and the schedule button sitting next to
+ * the paperclip made the gap read as a bug. The bytes are archived server-side
+ * at schedule time and uploaded to Meta seconds before the send, because a Meta
+ * media id expires after 30 days.
  */
 export default function ScheduleMessageModal({
   conversationId,
@@ -38,23 +45,18 @@ export default function ScheduleMessageModal({
   onClose: () => void;
 }) {
   const qc = useQueryClient();
-  const [kind, setKind] = useState<'text' | 'template'>('text');
+  const [kind, setKind] = useState<'text' | 'template' | 'media'>('text');
   const [text, setText] = useState(initialText ?? '');
-  const [templateId, setTemplateId] = useState('');
+  const [file, setFile] = useState<File | null>(null);
+  const [caption, setCaption] = useState('');
+  // The picked template itself, not just its id — the picker searches the
+  // catalogue server-side, so there is no local list to look the id up in.
+  const [selectedTemplate, setSelectedTemplate] = useState<WaTemplate | null>(null);
   const [params, setParams] = useState<string[]>([]);
   const [sendAt, setSendAt] = useState('');
 
-  const { data } = useQuery({
-    queryKey: ['wa-templates', 'approved'],
-    queryFn: () => svc.listTemplates({ status: 'APPROVED', limit: 100 }),
-  });
-  const templates = data?.data?.items ?? [];
-  const selectedTemplate = templates.find((t) => t.id === templateId) ?? null;
+  const templateId = selectedTemplate?.id ?? '';
   const varCount = selectedTemplate ? bodyVarCount(selectedTemplate) : 0;
-  const templateOptions = templates.map((t) => ({
-    value: t.id,
-    label: `${t.name} (${t.language})`,
-  }));
 
   const mutation = useMutation({
     mutationFn: () => {
@@ -66,6 +68,12 @@ export default function ScheduleMessageModal({
           templateId,
           bodyParams,
           sendAt: iso,
+        });
+      }
+      if (kind === 'media') {
+        return svc.scheduleMediaMessage(conversationId, file as File, {
+          sendAt: iso,
+          caption: caption.trim() || undefined,
         });
       }
       return svc.scheduleMessage(conversationId, { kind: 'text', text: text.trim(), sendAt: iso });
@@ -85,6 +93,7 @@ export default function ScheduleMessageModal({
     }
     if (kind === 'text' && !text.trim()) return showToast.error('Enter a message');
     if (kind === 'template' && !templateId) return showToast.error('Pick an approved template');
+    if (kind === 'media' && !file) return showToast.error('Choose a file');
     mutation.mutate();
   };
 
@@ -96,13 +105,41 @@ export default function ScheduleMessageModal({
           clearable={false}
           options={[
             { value: 'text', label: 'Plain text' },
+            { value: 'media', label: 'A file (image, video, document)' },
             { value: 'template', label: 'Approved template' },
           ]}
           value={kind}
-          onChange={(v) => setKind(v as 'text' | 'template')}
+          onChange={(v) => setKind(v as 'text' | 'template' | 'media')}
         />
 
-        {kind === 'text' ? (
+        {kind === 'media' ? (
+          <div className="space-y-3">
+            <div>
+              <label
+                htmlFor="wa-schedule-file"
+                className="mb-1 block text-sm font-medium text-[var(--text)]"
+              >
+                File
+              </label>
+              <input
+                id="wa-schedule-file"
+                type="file"
+                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                className="block w-full rounded-lg border border-[var(--border)] bg-white px-3 py-2 text-sm text-[var(--text)] file:mr-3 file:rounded-md file:border-0 file:bg-[var(--bg-secondary)] file:px-3 file:py-1.5 file:text-sm file:font-medium"
+              />
+              <p className="mt-1 text-xs text-[var(--text-muted)]">
+                Held in your own storage until it is sent, then uploaded to WhatsApp. A file only
+                sends inside the 24-hour reply window — schedule a template for anything later.
+              </p>
+            </div>
+            <Input
+              label="Caption (optional)"
+              value={caption}
+              onChange={(e) => setCaption(e.target.value)}
+              placeholder="Here's the price list you asked for"
+            />
+          </div>
+        ) : kind === 'text' ? (
           <Textarea
             label="Message"
             value={text}
@@ -112,19 +149,13 @@ export default function ScheduleMessageModal({
           />
         ) : (
           <>
-            <Select
+            <TemplatePicker
               label="Template"
-              options={templateOptions}
               value={templateId}
-              onChange={(v) => {
-                setTemplateId(v);
+              onChange={(t) => {
+                setSelectedTemplate(t);
                 setParams([]);
               }}
-              placeholder={
-                templates.length
-                  ? 'Select an approved template'
-                  : 'No approved templates — sync first'
-              }
             />
             {varCount > 0 && (
               <div className="space-y-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-3">

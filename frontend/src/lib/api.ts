@@ -202,6 +202,10 @@ function clearLocalSession() {
   try {
     getQueryClient().clear();
     useAuthStore.getState().logout();
+    // The service worker has always had a CLEAR_CACHES handler and nothing in the
+    // app ever called it, so anything it had cached outlived every lock and
+    // logout. Best-effort: an unregistered or unsupported SW is not an error.
+    navigator.serviceWorker?.controller?.postMessage({ type: 'CLEAR_CACHES' });
   } catch {
     // Never let cleanup failures mask the original error.
   }

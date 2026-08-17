@@ -2,6 +2,7 @@
 
 import type { ReactNode } from 'react';
 import Sidebar from './Sidebar';
+import AccountAlertBanner from '@/components/whatsapp/AccountAlertBanner';
 
 interface DashboardLayoutProps {
   children: ReactNode;
@@ -47,6 +48,11 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
           Extra bottom padding keeps the last row — pagination especially —
           clear of the fixed BackToTop button. */}
       <main className="flex min-w-0 flex-1 flex-col overflow-x-hidden p-4 pt-16 pb-20 sm:p-6 sm:pb-20 lg:p-8 lg:pt-8 lg:pb-20">
+        {/* Meta's policy warnings and restriction notices. Mounted in the shell
+            rather than on a page because there is no page an operator is
+            guaranteed to open, and these decide whether the number keeps
+            working. Renders nothing when there is nothing to say. */}
+        <AccountAlertBanner />
         {children}
       </main>
     </div>

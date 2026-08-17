@@ -1,7 +1,11 @@
-import rateLimit from 'express-rate-limit';
+import type { Request } from 'express';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { RedisStore } from 'rate-limit-redis';
 import { env } from '../config/env';
+import logger from '../config/logger';
 import { redis } from '../config/redis';
+import { waWebhookRejectedTotal } from '../utils/whatsapp-metrics';
+import { operatorKey } from './ddos-protection';
 
 /**
  * Is a REAL Redis behind `redis`, or the disabled-mode mock?
@@ -72,6 +76,27 @@ export const authLimiter = rateLimit({
 });
 
 /**
+ * What `apiLimiter` counts against.
+ *
+ * The console reaches this process through the Next.js BFF, so `req.ip` is the
+ * BFF's egress address for every operator and the 100-requests-per-window
+ * budget was being shared by the whole team — a couple of busy inbox tabs
+ * exhausted it and 429'd everybody else. The BFF now identifies each browser
+ * with `x-operator-key` (see {@link operatorKey}), so each gets its own budget.
+ *
+ * Anything that did not come through the BFF still keys on the address, via
+ * `ipKeyGenerator` rather than `req.ip` directly: it collapses an IPv6 address
+ * to its /56 the way the built-in generator does, and a raw `req.ip` fallback
+ * would let an IPv6 client walk its own prefix and never reach the limit.
+ *
+ * authLimiter, mfaLimiter and webhookLimiter deliberately stay on pure IP
+ * keying: /unlock runs before any session exists (there is no operator to key
+ * on yet) and the Meta webhook never carries the BFF secret.
+ */
+const apiRequestKey = (req: Request): string =>
+  operatorKey(req) ?? ipKeyGenerator(req.ip ?? req.socket.remoteAddress ?? 'unknown');
+
+/**
  * Standard Rate Limiter for General API Routes
  * Usage: Apply to /api
  */
@@ -80,6 +105,7 @@ export const apiLimiter = rateLimit({
   max: parseInt(env.RATE_LIMIT_MAX_REQUESTS, 10), // Default: 100 requests
   ...SHARED,
   store: createRedisStore('api'),
+  keyGenerator: apiRequestKey,
   message: {
     status: 'fail',
     message: 'Too many requests, please try again later.',
@@ -120,7 +146,25 @@ export const webhookLimiter = rateLimit({
   max: 3000,
   ...SHARED,
   store: createRedisStore('wh'),
-  // Meta must never see a JSON error body it might interpret as a failure to
-  // deliver; the 429 status alone is the signal.
-  message: { ok: false },
+  // Shed the request, but answer 200 rather than the default 429.
+  //
+  // Every consumer of this limiter is a Meta-facing endpoint, and 429 is a
+  // retryable failure: Meta redelivers the same callback, which arrives inside
+  // the same flood that tripped the ceiling, trips it again, and the resulting
+  // run of failures is what gets the subscription disabled — trading a minute of
+  // shed load for an inbound outage that needs a human to re-subscribe.
+  //
+  // The trade is explicit: a genuine Meta callback rejected here is gone for
+  // good, because a 2xx tells Meta it landed. That is acceptable only because
+  // the ceiling is set far above real traffic (see above), so reaching it means
+  // a flood rather than a busy campaign — and `wa_webhook_rejected_total` is
+  // there to prove which one it was.
+  handler: (req, res) => {
+    waWebhookRejectedTotal.inc({ reason: 'rate_limited' });
+    logger.warn('Webhook rate limit exceeded — request dropped, answered 200', {
+      method: req.method,
+      path: req.path,
+    });
+    res.status(200).json({ ok: false, dropped: 'rate limited' });
+  },
 });

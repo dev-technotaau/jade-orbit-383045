@@ -1,15 +1,22 @@
 // Trigger CI/CD rebuild: refresh GHCR credentials after VPS reboot
 import app from './app';
 import logger from './config/logger';
+import { env } from './config/env';
 import { initializeServices, shutdownServices } from './config/service-init';
 import { initializeWorkers, closeAllWorkers } from './jobs';
+import { captureWaException, initErrorReporting } from './utils/whatsapp-metrics';
 
-// Initialize OpenTelemetry (must be before other imports that need tracing)
+// Error reporting. A no-op unless SENTRY_DSN is set, and done here at module
+// scope rather than inside startServer() so the process-level handlers below
+// can already report — a boot-time throw is exactly what needs tracking.
+initErrorReporting();
 
-const PORT: number = parseInt(process.env.PORT || '5000', 10);
+// Read through env.ts so the value is the validated one; PORT was declared in
+// the schema but still read raw here, so the schema default never applied.
+const PORT: number = parseInt(env.PORT, 10);
 
 /** Hard deadline for a graceful shutdown before we force-exit. */
-const SHUTDOWN_TIMEOUT_MS = parseInt(process.env.SHUTDOWN_TIMEOUT_MS || '25000', 10);
+const SHUTDOWN_TIMEOUT_MS = parseInt(env.SHUTDOWN_TIMEOUT_MS, 10);
 
 // Main startup function
 const startServer = async () => {
@@ -93,13 +100,25 @@ const startServer = async () => {
 // Catch unhandled promise rejections
 process.on('unhandledRejection', (reason: unknown) => {
   logger.error('Unhandled Rejection:', reason);
+  // Report as well as log. A rejection nobody awaited is precisely the failure
+  // that leaves no other trace — no failed request, no failed job, no alert —
+  // so the log line was the only record that it ever happened.
+  void captureWaException(reason, { handler: 'unhandledRejection' });
   // Let the process continue — the error is already logged
 });
 
 // Catch uncaught exceptions — these are fatal
 process.on('uncaughtException', (error: Error) => {
   logger.error('Uncaught Exception — shutting down:', error);
-  process.exit(1);
+  // Report BEFORE exiting. process.exit() is immediate and would kill the
+  // in-flight report, so the one class of error that takes the whole process
+  // down would also be the only class that never reached the error tracker.
+  // captureWaException bounds its own network call and never rejects, so this
+  // always settles and the exit still happens.
+  void (async () => {
+    await captureWaException(error, { handler: 'uncaughtException', fatal: true });
+    process.exit(1);
+  })();
 });
 
 // Start the server

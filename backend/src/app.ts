@@ -16,7 +16,7 @@ import metricsRoutes, {
   activeConnections,
 } from './routes/metrics.routes';
 import requestId from './middleware/request-id';
-import { requireAppPassword } from './middleware/app-password';
+import { requireAppPassword, requireMetricsToken } from './middleware/app-password';
 import {
   isBrowserRequest,
   renderRootPage,
@@ -33,18 +33,24 @@ const apiV1Router = Router();
 /**
  * Trust proxy depth — how many reverse proxies sit in front of Express.
  *
- * This decides what `req.ip` resolves to, and therefore what the per-IP rate
- * limiter actually keys on. It is deployment-specific and cannot be hardcoded:
- * the browser reaches this API through the Next.js BFF (which re-issues a
- * server-side fetch and copies the client's X-Forwarded-For), and then through
- * whatever load balancer fronts this process. Guess low and every operator
- * shares the BFF's egress IP as one rate-limit bucket; guess high and a client
- * can spoof its own IP by sending an X-Forwarded-For header.
+ * This decides what `req.ip` resolves to. It is deployment-specific and cannot
+ * be hardcoded, and no single value fits every path into this process: the
+ * console arrives browser → Next.js BFF (a server-side fetch that copies the
+ * client's X-Forwarded-For) → load balancer, which is one hop more than Meta's
+ * webhook, which reaches the same load balancer directly. Set it for the SHORTER
+ * chain — 1 for a single load balancer. Going higher to chase the BFF's extra
+ * hop would make the webhook trust an X-Forwarded-For that anyone can forge.
  *
- * Confirm it per deployment: `GET /api/v1/whoami` echoes `ip`/`ips` (see
+ * Operator abuse controls therefore no longer depend on getting this right:
+ * the BFF sends a per-browser `x-operator-key` and `apiLimiter` /
+ * `ddosProtection` key on that (middleware/ddos-protection.ts), so the whole
+ * team no longer shares the BFF's egress IP as one bucket. IP keying is what
+ * is left for the webhook and for /unlock, where there is no session yet.
+ *
+ * Confirm it per deployment: `GET /api/v1/unlock/whoami` echoes `ip`/`ips` (see
  * routes/unlock.routes.ts) — `ip` should be the operator's real address.
  */
-app.set('trust proxy', parseInt(process.env.TRUST_PROXY_HOPS || '1', 10));
+app.set('trust proxy', parseInt(env.TRUST_PROXY_HOPS, 10));
 
 import { env } from './config/env';
 
@@ -55,8 +61,114 @@ import { waf } from './middleware/waf';
 
 // Security middleware
 app.use(requestId()); // Add request ID for tracing
+
+// ----------------------------------------------------------
+// Prometheus HTTP metrics — mounted at the very top, and it has to stay above
+// the public Meta routes further down (webhook, Flows data-exchange,
+// short-link redirect, Chatwoot bridge). Those handlers end the request, so a
+// middleware registered after them never runs: every inbound message and
+// delivery status from Meta — the busiest traffic this service takes — was
+// absent from http_requests_total and the latency histogram. That is the one
+// endpoint whose latency decides whether Meta retries and eventually disables
+// the subscription, and it was the one endpoint the HTTP dashboards could not
+// see.
+//
+// Above ddosProtection/waf as well, so a blocked flood still registers. Their
+// requests match no route, so they all collapse onto route="unmatched" and add
+// no label cardinality.
+//
+// /health and /metrics are skipped. Both were mounted above this middleware
+// before the move and so were never measured; folding in two kubelet probes
+// every 10s and the scrape itself would pull p50 toward their sub-millisecond
+// timings and mask the regressions this exists to catch. Their router-relative
+// `req.route.path` is '/' too, which would merge them into the root route's
+// series.
+// ----------------------------------------------------------
+// Case-insensitive for the same reason the route label is lower-cased below:
+// Express matches /Health to the health router too, so a case-sensitive test
+// here would have folded those probes into the measured histogram after all.
+const UNMEASURED_PATH = /^\/(?:health|metrics)(?:\/|$)/i;
+app.use((req: Request, res: Response, next) => {
+  if (UNMEASURED_PATH.test(req.path)) {
+    next();
+    return;
+  }
+  activeConnections.inc();
+  const end = httpRequestDuration.startTimer();
+  res.on('finish', () => {
+    // `req.route` is undefined for anything that matched no route, and using
+    // the raw path there let a remote caller mint a new Prometheus label set
+    // per request — each one ~12 retained series, held for the life of the
+    // process. A loop over /a, /aa, /aaa… is a heap-exhaustion DoS. Unmatched
+    // requests are all the same thing for metrics purposes.
+    //
+    // `req.route.path` is relative to the router the handler lives in, so on its
+    // own it collapsed every mounted `/:id` into one series: conversation,
+    // contact, campaign and audit lookups all landed on route="/:id" and no
+    // per-endpoint latency could be read out of the histogram at all. Prefixing
+    // it with the mount path makes them distinct, and a router's index route
+    // reports '/', so that one contributes only the mount path rather than a
+    // trailing slash every dashboard query would have to allow for.
+    //
+    // The mount path is LOWER-CASED, because `req.baseUrl` is not the mount
+    // pattern: it is the matched slice of the ACTUAL request URL, and Express
+    // routing is case-insensitive unless `case sensitive routing` is set, which
+    // nothing here does. Checked against this app's express: GET
+    // /API/v1/WhatsApp/CONVERSATIONS/x reaches the same handler and reports
+    // baseUrl='/API/v1/WhatsApp'. Every mount in this file is lower-case, so
+    // lower-casing folds all 2^n casings of a path back onto its one canonical
+    // series; without it any caller could mint thousands of label sets off
+    // /api/v1/unlock alone — mounted above the auth layers and publicly
+    // reachable — at ~12 retained series each, which is precisely the
+    // heap-exhaustion DoS the 'unmatched' sentinel exists to cap. Encoded or
+    // doubled separators (/api/v1/%77hatsapp, /api/v1//whatsapp) match no route
+    // at all and already collapse onto that sentinel.
+    const routePath = req.route?.path;
+    const mount = req.baseUrl.toLowerCase();
+    const route = routePath
+      ? routePath === '/'
+        ? mount || '/'
+        : `${mount}${routePath}`
+      : 'unmatched';
+    const labels = { method: req.method, route, status: String(res.statusCode) };
+    end(labels);
+    httpRequestsTotal.inc(labels);
+    activeConnections.dec();
+  });
+  next();
+});
+
 app.use(ddosProtection()); // DDoS protection (Redis-backed per-IP rate tracking)
 app.use(waf()); // WAF rules (SQL injection, path traversal, exploit probes)
+
+// ----------------------------------------------------------
+// Structured request logging with correlation ID and duration — up here for
+// the same reason as the metrics middleware above. It used to sit below the
+// body parsers, which put it below the Meta webhook, the Flows endpoint, the
+// short-link redirect and the bridge proxy, so none of that traffic left a log
+// line: a message Meta swears it delivered could not be traced to a request at
+// all. It reads only method, URL, status and req.id, so it has no body-parser
+// dependency at this position.
+//
+// Deliberately BELOW ddosProtection/waf, unlike the metrics middleware: both
+// already emit their own warn line per blocked request, and a second one would
+// double log volume during exactly the flood that makes log volume a problem.
+// ----------------------------------------------------------
+app.use((req: Request, res: Response, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    const logData = `${req.method} ${req.originalUrl} ${res.statusCode} ${duration}ms [${req.id}]`;
+    if (res.statusCode >= 500) {
+      logger.error(logData);
+    } else if (res.statusCode >= 400) {
+      logger.warn(logData);
+    } else {
+      logger.info(logData);
+    }
+  });
+  next();
+});
 
 // Helmet with strict Content Security Policy (CSP) & HSTS
 app.use(
@@ -67,14 +179,13 @@ app.use(
         scriptSrc: ["'self'", "'unsafe-eval'"],
         frameSrc: ["'self'"],
         frameAncestors: ["'none'"], // Modern CSP3 replacement for X-Frame-Options: DENY
-        imgSrc: [
-          "'self'",
-          'data:',
-          // R2 public bucket, when a custom domain is configured. Was hardcoded
-          // to assets.hireadda.in; the pretty-pages' remote wordmark that also
-          // needed hireadda.in here is now an inline data-URL, so it is gone.
-          ...(env.R2_PUBLIC_URL ? [env.R2_PUBLIC_URL] : []),
-        ],
+        // No remote image host at all. Was hardcoded to assets.hireadda.in, then
+        // to whatever R2_PUBLIC_URL named — which on this deployment was the
+        // bucket's anonymous `*.r2.dev` domain, i.e. the archived customer media
+        // this app otherwise serves only through an authenticated proxy. The
+        // pretty-pages' remote wordmark that also needed a host here is now an
+        // inline data-URL, so nothing is left that loads an image off-origin.
+        imgSrc: ["'self'", 'data:'],
         objectSrc: ["'none'"],
         upgradeInsecureRequests: [],
         reportUri: ['/api/csp-report'],
@@ -137,12 +248,20 @@ import { apiLimiter } from './middleware/rate-limit';
 // can get the webhook disabled. CSRF is bypassed (the signature is the auth).
 // GET handles Meta's verification handshake.
 // ----------------------------------------------------------
-import { whatsappWebhookRawBody } from './middleware/whatsapp-webhook-rawbody';
+import {
+  whatsappWebhookRawBody,
+  whatsappWebhookErrorHandler,
+} from './middleware/whatsapp-webhook-rawbody';
 import { webhookLimiter } from './middleware/rate-limit';
 import {
   verifyWhatsappWebhook,
   handleWhatsappWebhook,
 } from './controllers/whatsapp-webhook.controller';
+import {
+  decryptFlowRequest,
+  encryptFlowResponse,
+  handleFlowRequest,
+} from './services/whatsapp-flow-data.service';
 // The GET verification handshake is called a handful of times in the lifetime of
 // a deployment (Meta calls it when you subscribe), so it gets the same ceiling
 // as the POST. It used to have none at all: mounted before apiLimiter, skipped
@@ -150,12 +269,47 @@ import {
 // not distinguish the method — an unauthenticated, unmetered endpoint that logs
 // a warn line per request.
 app.get('/api/v1/webhooks/whatsapp', webhookLimiter, verifyWhatsappWebhook);
+// ----------------------------------------------------------
+// WhatsApp Flows data-exchange endpoint.
+//
+// Called by Meta (not by a browser) for ENDPOINT-BACKED flows, so it sits with
+// the other public, limiter-exempt Meta routes and carries no app-password gate.
+// Its authentication IS the encryption: the body is RSA-OAEP + AES-128-GCM and
+// only the holder of the private key can read or answer it.
+//
+// Responses are base64 ciphertext with a text/plain content type - Meta rejects
+// a JSON-wrapped reply.
+// ----------------------------------------------------------
+app.post('/api/v1/webhooks/flows-data', webhookLimiter, async (req: Request, res: Response) => {
+  try {
+    const { request, aesKey, iv } = decryptFlowRequest(req.body);
+    const response = await handleFlowRequest(request);
+    res
+      .status(200)
+      .type('text/plain')
+      .send(encryptFlowResponse(response, aesKey, iv));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error('WhatsApp Flow data-exchange failed', { err: message });
+    // 421 is what Meta documents for "cannot decrypt" - it tells the client to
+    // refresh the public key rather than showing the customer a dead end.
+    res.status(421).json({ error: message });
+  }
+});
+
 app.post(
   '/api/v1/webhooks/whatsapp',
   webhookLimiter,
   whatsappWebhookRawBody(),
   handleWhatsappWebhook
 );
+// Route-scoped error handler, mounted immediately after the webhook routes so
+// it — and not the global one at the bottom of this file — answers anything
+// they throw. The global handler returns `err.statusCode`, which for the raw
+// parser's `entity.too.large` is a 413: a retryable failure Meta would redeliver
+// into forever, counting towards disabling the subscription. Here the whole
+// route keeps the controller's always-2xx contract, not just its body.
+app.use('/api/v1/webhooks/whatsapp', whatsappWebhookErrorHandler);
 
 // ----------------------------------------------------------
 // Public WhatsApp short-link click redirect — mounted BEFORE the API rate
@@ -163,15 +317,29 @@ app.post(
 // limiter-exempt routes). Records the click (best-effort) then 302s to the
 // target URL; unknown / failed codes return a plain 404. No auth — these are
 // the public links embedded in outbound campaign messages.
+//
+// `?r=` is the signed per-recipient token the campaign worker appends when it
+// substitutes a short link into a template parameter. Without it a click was an
+// anonymous counter increment: no click→conversion funnel, no retargeting of
+// clickers, and no per-variant CTR on an A/B test. It is validated against the
+// link id inside recordClick, so a tampered value degrades to an anonymous
+// click rather than attributing it to somebody else's contact record.
 // ----------------------------------------------------------
 import { recordClick } from './services/whatsapp-shortlink.service';
 app.get('/l/:code', async (req: Request, res: Response) => {
   try {
+    const r = req.query.r;
     const url = await recordClick(String(req.params.code), {
+      recipientToken: typeof r === 'string' ? r : undefined,
       ip: req.ip,
       userAgent: req.get('user-agent') ?? undefined,
     });
-    if (url) {
+    // The scheme is re-checked here rather than trusted from storage: rows
+    // written before the create schema pinned http(s) — or by any future writer —
+    // must not be able to turn this public endpoint into a `javascript:` / `data:`
+    // Location. A stored value that does not parse throws into the catch below,
+    // which 404s, and that is the right answer for a link we cannot honour.
+    if (url && /^https?:$/.test(new URL(url).protocol)) {
       res.redirect(302, url);
     } else {
       res.status(404).send('Link not found');
@@ -193,6 +361,14 @@ app.post(
   handleOutboundProxy
 );
 
+// Conversion postbacks from a client's website / CRM — own JSON parser, gated by
+// X-Conversion-Key (see middleware/app-password.ts), mounted here for the same
+// reason as the bridge proxy above: an external system holds neither the app
+// password nor a CSRF token, and both gates sit further down. Deduped on
+// `externalId` so a retry cannot double-count.
+import { conversionIngestRouter } from './routes/whatsapp.routes';
+app.use('/api/v1/whatsapp/ingest', express.json({ limit: '64kb' }), conversionIngestRouter);
+
 /**
  * Bulk endpoints need their own parser, mounted BEFORE the global one.
  *
@@ -212,6 +388,21 @@ app.use('/api/v1/whatsapp/contacts/import', bulkJsonParser);
 app.use('/api/v1/whatsapp/contacts/bulk', bulkJsonParser);
 app.use('/api/v1/whatsapp/conversations/bulk', bulkJsonParser);
 app.use('/api/v1/whatsapp/suppressions', bulkJsonParser);
+/**
+ * Campaigns get a parser of their own, wider than the 2 MB bulk one.
+ *
+ * The campaign body carries the whole uploaded audience, and that audience can be
+ * PERSONALISED — `recipients: [{ phone, name, vars }]` — so a row is no longer a
+ * ~16-byte phone entry but ~100 bytes with a name and two columns, and several
+ * hundred for a fuller CSV row. On the 10 KB default an upload audience silently
+ * capped at roughly 500 numbers; on 2 MB the advertised 20,000-row personalised
+ * list is already ~2 MB before the rest of the body and hit the very same nameless
+ * 413 the raise was meant to remove. Held ABOVE WA_UPLOAD_PAYLOAD_MAX_BYTES (schemas/whatsapp.schema.ts)
+ * so a list past that budget is answered by the schema's quotable message instead
+ * of by the parser, and mounted on the whole `/campaigns` subtree so sizing an
+ * audience (POST /campaigns/preview-audience) cannot fail where creating it works.
+ */
+app.use('/api/v1/whatsapp/campaigns', express.json({ limit: '8mb' }));
 
 // Body parsing
 app.use(express.json({ limit: '10kb' }));
@@ -225,28 +416,42 @@ app.use(enforceContentType());
 app.use(xssSanitize());
 
 // Compression
-app.use(compression());
+app.use(
+  compression({
+    // Never re-encode a response that advertises byte ranges. Content-Range
+    // names offsets in the STORED object; gzipping the slice makes those
+    // offsets describe bytes the browser never receives, so a seeking video
+    // player decodes garbage. This is not hypothetical for the WhatsApp media
+    // proxy: its fallback content type, application/octet-stream, is marked
+    // compressible in mime-db, so every attachment served without a precise
+    // mime was being gzipped on the way out.
+    filter: (req, res) => {
+      if (res.getHeader('Content-Range') || res.getHeader('Accept-Ranges') === 'bytes') {
+        return false;
+      }
+      return compression.filter(req, res);
+    },
+  })
+);
 
 // Request timeout (30s for normal requests)
 import { requestTimeout } from './middleware/timeout';
-app.use(requestTimeout(30000));
 
-// Structured request logging with correlation ID and duration
-app.use((req: Request, res: Response, next) => {
-  const start = Date.now();
-  res.on('finish', () => {
-    const duration = Date.now() - start;
-    const logData = `${req.method} ${req.originalUrl} ${res.statusCode} ${duration}ms [${req.id}]`;
-    if (res.statusCode >= 500) {
-      logger.error(logData);
-    } else if (res.statusCode >= 400) {
-      logger.warn(logData);
-    } else {
-      logger.info(logData);
-    }
-  });
-  next();
-});
+/**
+ * Routes whose duration is set by a file, not by us: sending an attachment
+ * (multipart in, then a full multipart upload to Meta), staging a template
+ * header sample, and streaming an attachment back out.
+ *
+ * They shared the flat 30s budget, which is where the media double-send came
+ * from: the 408 fired while the Graph upload was still in flight, the operator
+ * saw a failure and retried, and the first attempt went on to deliver. They get
+ * a much longer deadline instead of none, so a genuinely stuck request is still
+ * reaped.
+ */
+const MEDIA_PATH =
+  /^\/api\/v1\/whatsapp\/(?:conversations\/[^/]+\/media|templates\/media-handle|media)(?:\/|$)/;
+const MEDIA_TIMEOUT_MS = 5 * 60 * 1000;
+app.use(requestTimeout((req) => (MEDIA_PATH.test(req.path) ? MEDIA_TIMEOUT_MS : 30000)));
 
 // HTTP request logging (morgan — development only)
 if (env.NODE_ENV === 'development') {
@@ -338,26 +543,11 @@ app.use('/health', healthRoutes);
  * codes. Gated with the same app password the API docs use; a scraper presents
  * it as `X-App-Password`.
  */
-app.use('/metrics', requireAppPassword, metricsRoutes);
-
-// Prometheus HTTP metrics middleware
-app.use((req: Request, res: Response, next) => {
-  activeConnections.inc();
-  const end = httpRequestDuration.startTimer();
-  res.on('finish', () => {
-    // `req.route` is undefined for anything that matched no route, and using
-    // the raw path there let a remote caller mint a new Prometheus label set
-    // per request — each one ~12 retained series, held for the life of the
-    // process. A loop over /a, /aa, /aaa… is a heap-exhaustion DoS. Unmatched
-    // requests are all the same thing for metrics purposes.
-    const route = req.route?.path ?? 'unmatched';
-    const labels = { method: req.method, route, status: String(res.statusCode) };
-    end(labels);
-    httpRequestsTotal.inc(labels);
-    activeConnections.dec();
-  });
-  next();
-});
+// Bearer METRICS_TOKEN, falling back to the operator gate for a browser. Enabling
+// MFA used to take the Prometheus scrape offline entirely (requireAppPassword
+// refuses the header once 2FA is on), and the documented workaround re-opened
+// single-factor access to every operator route.
+app.use('/metrics', requireMetricsToken, metricsRoutes);
 
 // Maintenance mode check (after health routes so probes still work)
 

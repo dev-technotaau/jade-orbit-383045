@@ -32,8 +32,12 @@ jest.mock('../../config/logger', () => ({
 }));
 
 const incMock = jest.fn();
+// errorHandler (mounted below) reports every 5xx through captureWaException, so
+// the mock has to carry it too — a factory missing it makes the handler throw
+// while turning a fail-closed 503 into an unrelated 500.
 jest.mock('../../utils/whatsapp-metrics', () => ({
   turnstileVerificationsTotal: { inc: (...a: unknown[]) => incMock(...a) },
+  captureWaException: jest.fn(),
 }));
 
 import { verifyTurnstile } from '../turnstile';

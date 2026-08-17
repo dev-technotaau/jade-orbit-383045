@@ -11,11 +11,14 @@ import { whatsappService as svc } from '@/services/whatsapp.service';
 import type { WaKeywordRule } from '@/types/whatsapp';
 import type { ApiError } from '@/types/api';
 import KeywordRuleModal from './KeywordRuleModal';
+import { useTemplatesByIds } from './TemplatePicker';
 
 const MATCH_TYPE_LABEL: Record<WaKeywordRule['matchType'], string> = {
   exact: 'Exact',
   contains: 'Contains',
   starts: 'Starts with',
+  substring: 'Contains (anywhere)',
+  regex: 'Regex',
 };
 
 /**
@@ -31,14 +34,26 @@ export default function KeywordRulesManager() {
     queryKey: ['wa-keyword-rules'],
     queryFn: () => svc.listKeywordRules(),
   });
+
+  // The FAQ layers are evaluated BEFORE these rules and are configured on a
+  // different card of this page, so an FAQ trigger keyword shadows a rule on the
+  // same word with nothing here to hint at it. Shares the `wa-settings` cache
+  // entry the rest of the settings page already fills.
+  const { data: settingsData } = useQuery({
+    queryKey: ['wa-settings'],
+    queryFn: () => svc.getSettings(),
+  });
+  const settings = settingsData?.data;
+  // A disabled FAQ menu shadows nothing, so its trigger list is not a collision.
+  const faqTriggers = settings?.faqMenuEnabled ? (settings.faqTriggerKeywords ?? []) : [];
   const rules = [...(data?.data ?? [])].sort((a, b) => b.priority - a.priority);
 
-  const { data: templatesData } = useQuery({
-    queryKey: ['wa-templates', 'approved'],
-    queryFn: () => svc.listTemplates({ status: 'APPROVED', limit: 100 }),
-  });
+  // Resolved per referenced id. The names used to come out of the first 100
+  // approved templates, so a rule bound to a template past that point showed a
+  // raw cuid in the Reply column instead of the template it answers with.
+  const lookupTemplate = useTemplatesByIds(rules.map((r) => r.replyTemplateId));
   const templateName = (id: string): string => {
-    const t = templatesData?.data?.items.find((x) => x.id === id);
+    const t = lookupTemplate(id);
     return t ? `${t.name} (${t.language})` : id;
   };
 
@@ -89,6 +104,14 @@ export default function KeywordRulesManager() {
         </Button>
       </div>
 
+      <p className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-xs text-[var(--text-muted)]">
+        <span className="font-medium text-[var(--text)]">Evaluation order:</span> FAQ menu tap → FAQ
+        trigger keywords
+        {faqTriggers.length > 0 && <span className="font-mono"> ({faqTriggers.join(', ')})</span>} →
+        these rules, highest priority first → welcome message → away message. The first step that
+        matches answers, and nothing after it runs.
+      </p>
+
       <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-white">
         {isLoading && (
           <p className="flex items-center justify-center gap-2 p-8 text-sm text-[var(--text-muted)]">
@@ -129,7 +152,23 @@ export default function KeywordRulesManager() {
                       </span>
                     </td>
                     <td className="max-w-[18rem] px-4 py-2.5">
-                      {rule.replyTemplateId ? (
+                      {rule.action === 'handoff' ? (
+                        // A handoff routes rather than answers, so showing its
+                        // (optional) acknowledgement text alone would read as an
+                        // ordinary auto-reply.
+                        <div className="space-y-1">
+                          <Badge variant="warning">Hand off to a human</Badge>
+                          <span className="block text-xs text-[var(--text-muted)]">
+                            {[
+                              rule.handoffAssignee ? `assign ${rule.handoffAssignee}` : null,
+                              rule.handoffLabel ? `label ${rule.handoffLabel}` : null,
+                              rule.handoffStatus ? `status ${rule.handoffStatus}` : null,
+                            ]
+                              .filter(Boolean)
+                              .join(' · ') || 'no routing configured'}
+                          </span>
+                        </div>
+                      ) : rule.replyTemplateId ? (
                         <Badge variant="info">Template: {templateName(rule.replyTemplateId)}</Badge>
                       ) : (
                         <span className="line-clamp-2 text-[var(--text-secondary)]">
@@ -181,8 +220,20 @@ export default function KeywordRulesManager() {
         )}
       </div>
 
-      {creating && <KeywordRuleModal rule={null} onClose={() => setCreating(false)} />}
-      {editing && <KeywordRuleModal rule={editing} onClose={() => setEditing(null)} />}
+      {creating && (
+        <KeywordRuleModal
+          rule={null}
+          faqTriggers={faqTriggers}
+          onClose={() => setCreating(false)}
+        />
+      )}
+      {editing && (
+        <KeywordRuleModal
+          rule={editing}
+          faqTriggers={faqTriggers}
+          onClose={() => setEditing(null)}
+        />
+      )}
     </section>
   );
 }

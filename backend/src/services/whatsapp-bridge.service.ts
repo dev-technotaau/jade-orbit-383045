@@ -1,16 +1,16 @@
 import { env } from '../config/env';
 import logger from '../config/logger';
-import { prisma } from '../config/prisma';
-import { sendWhatsappRaw, toGraphPhone } from './whatsapp.service';
+import { AppError } from '../middleware/error';
+import { toGraphPhone } from './whatsapp.service';
 import { getDefaultChannel } from './whatsapp-channel.service';
 import { upsertContactByPhone } from './whatsapp-contact.service';
+import { getConversationForOutbound, windowOpen } from './whatsapp-conversation.service';
 import {
-  getOrCreateConversation,
-  windowOpen,
-  touchOnMessage,
-} from './whatsapp-conversation.service';
-import { emitWa } from '../utils/whatsapp-realtime';
-import type { WaMessageType } from '@prisma/client';
+  assertSendAllowed,
+  dispatchOutbound,
+  WA_SUPPRESSED_ERROR_CODE,
+} from './whatsapp-send.service';
+import type { WaMessageType, WaTemplateCategory } from '@prisma/client';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -69,6 +69,9 @@ function waTypeFromBody(type: string | undefined): WaMessageType {
   }
 }
 
+/** Payload keys that carry a Meta media id on an outbound send. */
+const MEDIA_TYPES = new Set(['image', 'video', 'audio', 'document', 'sticker']);
+
 /** Short human preview for the conversation list / audit. */
 function previewFromBody(type: string | undefined, message: Record<string, any>): string {
   if (type === 'text') return String(message?.text?.body ?? '').slice(0, 200) || '[text]';
@@ -83,14 +86,29 @@ interface ProxyOutcome {
 }
 
 /**
+ * Meta's own HTTP status for a failed send, which `dispatchOutbound` rides along
+ * on the persisted row. Chatwoot is talking HTTP to us, so a throttle (429) has
+ * to reach it as a throttle. Falls back to 502 — including for a transport
+ * failure, whose status is 0 and which Express refuses to send.
+ */
+function upstreamStatus(row: object): number {
+  const status = (row as { metaHttpStatus?: number }).metaHttpStatus;
+  return typeof status === 'number' && status >= 400 && status <= 599 ? status : 502;
+}
+
+/**
  * Proxy a Chatwoot-originated outbound send through our backend → Meta.
  *
  * Hardened (no longer a verbatim pass-through):
  *  - validates the recipient against our WaContact opt-out / isBlocked state;
  *  - rejects sends outside the 24h customer-service window unless the payload
  *    is an approved-template send (templates are allowed any time);
+ *  - runs the same marketing gate as the console (opt-out, Meta refusal
+ *    cooldown, per-contact 24h frequency cap);
  *  - persists a WaMessage for EVERY proxied send so it appears in the inbox
- *    thread and the audit trail, with the real WAMID/status reconciled after.
+ *    thread and the audit trail, with the real WAMID/status reconciled after —
+ *    via the shared `dispatchOutbound`, which is also what applies the
+ *    do-not-contact list.
  */
 export async function proxyOutboundToMeta(message: Record<string, any>): Promise<ProxyOutcome> {
   const rawTo = message?.to != null ? String(message.to) : '';
@@ -111,8 +129,12 @@ export async function proxyOutboundToMeta(message: Record<string, any>): Promise
   }
 
   // Resolve (or create) the contact + conversation so we can both gate and log.
+  // Chatwoot's payload names no sender of ours, so answer on whichever of our
+  // numbers this contact is already talking to us on — pinning it to the default
+  // channel replied to a customer from a number they never messaged — and fall
+  // back to the default only when there is no thread at all.
   const contact = await upsertContactByPhone(rawTo, {});
-  const conversation = await getOrCreateConversation(channel.id, contact.id);
+  const conversation = await getConversationForOutbound(contact.id, channel.id);
 
   const type = message?.type as string | undefined;
   const isTemplate = type === 'template';
@@ -149,48 +171,81 @@ export async function proxyOutboundToMeta(message: Record<string, any>): Promise
 
   const waType = waTypeFromBody(type);
   const preview = previewFromBody(type, message);
+  const templateName = isTemplate ? (message?.template?.name ?? null) : null;
+  const templateLanguage = isTemplate ? (message?.template?.language?.code ?? null) : null;
 
-  // 3. Persist an outbound WaMessage up-front (QUEUED), then reconcile after send.
-  const row = await prisma.waMessage.create({
-    data: {
-      channelId: channel.id,
-      conversationId: conversation.id,
+  // 3. Marketing gate — the frequency cap and Meta refusal cooldown the console's
+  //    own template sends run through. Chatwoot names the template but knows
+  //    nothing of its category, so the shared helper resolves that from the name.
+  let templateCategory: WaTemplateCategory | null = null;
+  try {
+    templateCategory = await assertSendAllowed({ contact, templateName, templateLanguage });
+  } catch (err) {
+    if (!(err instanceof AppError)) throw err;
+    logger.warn('Bridge outbound blocked by marketing policy', {
       contactId: contact.id,
-      direction: 'OUTBOUND',
+      code: err.code,
+    });
+    return { status: err.statusCode, body: { error: { message: err.message, code: err.code } } };
+  }
+
+  // 4. Persist + send through the SINGLE outbound chokepoint.
+  //
+  //    This was a private copy of the persist/send path, and that is precisely
+  //    how a Chatwoot agent could message a number on the do-not-contact list:
+  //    the suppression check lives inside dispatchOutbound and nothing here ever
+  //    reached it. Delegating also picks up the send metrics, the transient-error
+  //    code fallback and the marketing-refusal bookkeeping the copy never had.
+  const graphBody = { ...message };
+  // dispatchOutbound addresses the send from the contact's normalized E.164, so
+  // drop Chatwoot's own `to` instead of letting it win the object spread — a
+  // number written in national format ("09876543210") went out undeliverable.
+  delete graphBody.to;
+  const mediaBody = type && MEDIA_TYPES.has(type) ? message[type] : null;
+
+  // The marketing cap is ENFORCED inside dispatchOutbound, under a per-contact
+  // lock, so it can still refuse a send the gate above waved through when two
+  // sends to the same contact overlap. That refusal is the same policy answer as
+  // the gate's — 409 with the code — not the 500 an uncaught throw would give a
+  // Chatwoot agent.
+  let row: Awaited<ReturnType<typeof dispatchOutbound>>;
+  try {
+    row = await dispatchOutbound({
+      conversationId: conversation.id,
+      channelId: conversation.channelId,
+      contactId: contact.id,
+      contactPhone: contact.phone,
+      // Chatwoot's agent is not a user of ours, so there is no operator label to
+      // attribute this to.
+      actorUserId: null,
       type: waType,
-      status: 'QUEUED',
       text: type === 'text' ? (message?.text?.body ?? null) : null,
-      templateName: isTemplate ? (message?.template?.name ?? null) : null,
-      payload: message as any,
-    },
-  });
+      preview,
+      templateName,
+      templateLanguage,
+      // Resolved once, by the gate above, and carried onto the row: it is what the
+      // 24h marketing cap counts on, so a Chatwoot-originated marketing send is
+      // visible to the console's cap and vice versa.
+      templateCategory,
+      contextWamid: message?.context?.message_id ?? null,
+      mediaId: mediaBody?.id != null ? String(mediaBody.id) : null,
+      payload: message,
+      message: graphBody,
+    });
+  } catch (err) {
+    if (!(err instanceof AppError)) throw err;
+    logger.warn('Bridge outbound refused at dispatch', { contactId: contact.id, code: err.code });
+    return { status: err.statusCode, body: { error: { message: err.message, code: err.code } } };
+  }
 
-  // 4. Send through the single Meta sender (digits-normalized recipient).
-  const result = await sendWhatsappRaw({ ...message, to: phoneDigits });
-
-  const updated = await prisma.waMessage.update({
-    where: { id: row.id },
-    data: result.ok
-      ? { status: 'SENT', wamid: result.wamid, sentAt: new Date() }
-      : { status: 'FAILED', errorCode: result.error?.code, errorTitle: result.error?.title },
-  });
-
-  await prisma.waContact
-    .update({ where: { id: contact.id }, data: { lastOutboundAt: new Date() } })
-    .catch(() => {});
-  await touchOnMessage(conversation.id, { preview, at: new Date(), inbound: false }).catch(
-    () => {}
-  );
-  emitWa('wa:message', { conversationId: conversation.id, message: updated }, conversation.id);
-
-  if (result.ok) {
-    return {
-      status: 200,
-      body: { messaging_product: 'whatsapp', messages: [{ id: result.wamid }] },
-    };
+  if (row.status === 'FAILED') {
+    // A send our own do-not-contact list refused never reached Meta — report it
+    // as a policy rejection like the gates above, not as an upstream failure.
+    const status = row.errorCode === WA_SUPPRESSED_ERROR_CODE ? 409 : upstreamStatus(row);
+    return { status, body: { error: { message: row.errorTitle, code: row.errorCode } } };
   }
   return {
-    status: result.error?.status ?? 502,
-    body: { error: { message: result.error?.title, code: result.error?.code } },
+    status: 200,
+    body: { messaging_product: 'whatsapp', messages: [{ id: row.wamid }] },
   };
 }

@@ -40,6 +40,20 @@ const ALERT_STREAK = 10;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Live per-address failure streaks, so the gauge can be a true max. */
+const STREAK_ZSET = 'wa:unlock:streaks';
+
+/** Publish the highest live streak; 0 once every entry has expired. */
+async function publishMaxStreak(): Promise<void> {
+  try {
+    const top = await redis.zrange(STREAK_ZSET, -1, -1, 'WITHSCORES');
+    const peak = Array.isArray(top) && top.length >= 2 ? Number(top[1]) : 0;
+    unlockFailureStreak.set({ scope: 'max' }, Number.isFinite(peak) ? peak : 0);
+  } catch {
+    /* metrics must never break auth */
+  }
+}
+
 /** Hash the address so the streak key never carries a raw IP into Redis. */
 function streakKey(ip: string): string {
   return `wa:unlock:fail:${crypto.createHash('sha256').update(ip).digest('hex').slice(0, 32)}`;
@@ -88,7 +102,16 @@ export async function recordUnlockFailure(opts: {
     const key = streakKey(ip);
     streak = await redis.incr(key);
     await redis.expire(key, STREAK_TTL_SECONDS);
-    unlockFailureStreak.set({ scope: 'max' }, streak);
+    // A real MAX across active streaks, not "whatever address failed last".
+    //
+    // The gauge is labelled scope="max" and the README prescribes alerting on it,
+    // but it was set to the CURRENT address’s streak — so one attacker grinding
+    // away was masked the moment any other address failed once, resetting the
+    // visible number to 1. The sorted set keeps every live streak, so the gauge can
+    // report the genuine peak.
+    await redis.zadd(STREAK_ZSET, streak, ip);
+    await redis.expire(STREAK_ZSET, STREAK_TTL_SECONDS);
+    await publishMaxStreak();
   } catch {
     /* Redis down — we still audit below, which is the part that matters */
   }
@@ -123,7 +146,11 @@ export async function recordUnlockSuccess(opts: {
 
   try {
     await redis.del(streakKey(ip));
-    unlockFailureStreak.set({ scope: 'max' }, 0);
+    // Clear THIS address only. Zeroing the gauge on any successful sign-in meant one
+    // legitimate login wiped the evidence of an ongoing attack from a different
+    // address — the alert could be silenced just by someone signing in.
+    await redis.zrem(STREAK_ZSET, ip);
+    await publishMaxStreak();
   } catch {
     /* best-effort */
   }

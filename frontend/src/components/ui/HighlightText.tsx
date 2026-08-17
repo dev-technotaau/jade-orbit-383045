@@ -6,15 +6,24 @@ interface HighlightTextProps {
   className?: string;
 }
 
-export default function HighlightText({ text, highlight, className = '' }: HighlightTextProps) {
-  if (!highlight || !highlight.trim()) {
-    return <span className={className}>{text}</span>;
-  }
-
-  const terms = highlight
+/**
+ * The searchable terms of a query, escaped for use inside a RegExp.
+ *
+ * Exported because the inbox thread renders message bodies through MessageText,
+ * which parses WhatsApp formatting into nested nodes and so cannot be handed a
+ * plain string — it marks the matched words itself, and must mark exactly the
+ * same ones this component would.
+ */
+export function highlightTerms(highlight: string | undefined): string[] {
+  if (!highlight || !highlight.trim()) return [];
+  return highlight
     .split(/[\s,]+/)
     .filter((t) => t.length > 1)
     .map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+}
+
+export default function HighlightText({ text, highlight, className = '' }: HighlightTextProps) {
+  const terms = highlightTerms(highlight);
 
   if (terms.length === 0) {
     return <span className={className}>{text}</span>;

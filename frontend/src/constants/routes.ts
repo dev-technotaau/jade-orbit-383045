@@ -1,3 +1,5 @@
+import { OPEN_CONV_PARAM } from '@/lib/wa-open-conv';
+
 /**
  * Frontend route paths.
  *
@@ -16,8 +18,16 @@ export const ROUTES = {
     // Logo.tsx spell this literally — Next route paths are file-system paths —
     // so it is listed here for completeness rather than because it is imported.
     WHATSAPP: '/whatsapp',
+    WHATSAPP_CONTACTS: '/whatsapp/contacts',
     WHATSAPP_CAMPAIGNS: '/whatsapp/campaigns',
     WHATSAPP_CAMPAIGN_NEW: '/whatsapp/campaigns/new',
     WHATSAPP_CAMPAIGN_DETAIL: (id: string) => `/whatsapp/campaigns/${id}`,
+    // The global send-later queue (every conversation's scheduled messages).
+    WHATSAPP_SCHEDULED: '/whatsapp/scheduled',
+    // Permalink to a single inbox thread. The inbox keeps its open conversation
+    // in the query string (see lib/wa-open-conv), so this is the address to
+    // bookmark, paste into a ticket, or link to from another page — there is no
+    // `/whatsapp/[conversationId]` segment to route to.
+    WHATSAPP_CONVERSATION: (id: string) => `/whatsapp?${OPEN_CONV_PARAM}=${encodeURIComponent(id)}`,
   },
 } as const;

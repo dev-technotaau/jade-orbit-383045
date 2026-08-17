@@ -2,6 +2,7 @@
 
 import { Fragment, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
+import { highlightTerms } from '@/components/ui/HighlightText';
 
 /**
  * Renders WhatsApp text formatting the way the WhatsApp apps do, so our inbox
@@ -83,7 +84,31 @@ function findPair(text: string, marker: string): { open: number; close: number }
   return null;
 }
 
-function linkify(text: string, key: string): ReactNode[] {
+/**
+ * Wrap every occurrence of a search term in a plain run of text.
+ *
+ * Applied at the leaves rather than over the whole body because the body is not
+ * a string by the time it renders — bold/italic/code/link markers have already
+ * become elements, and a match that straddles one of them is not a match the
+ * reader would recognise anyway.
+ */
+function markText(text: string, terms: string[], key: string): ReactNode[] {
+  if (!text) return [];
+  if (terms.length === 0) return [text];
+  const splitter = new RegExp(`(${terms.join('|')})`, 'gi');
+  const isTerm = new RegExp(`^(${terms.join('|')})$`, 'i');
+  return text.split(splitter).map((part, i) =>
+    isTerm.test(part) ? (
+      <mark key={`${key}-m${i}`} className="rounded-sm bg-yellow-300/70 px-0.5 text-inherit">
+        {part}
+      </mark>
+    ) : (
+      part
+    ),
+  );
+}
+
+function linkify(text: string, key: string, terms: string[]): ReactNode[] {
   if (!text) return [];
   const out: ReactNode[] = [];
   const re = /https?:\/\/[^\s]+/g;
@@ -91,7 +116,7 @@ function linkify(text: string, key: string): ReactNode[] {
   let i = 0;
   let m: RegExpExecArray | null = re.exec(text);
   while (m !== null) {
-    if (m.index > last) out.push(text.slice(last, m.index));
+    if (m.index > last) out.push(...markText(text.slice(last, m.index), terms, `${key}-t${i}`));
     const url = m[0];
     out.push(
       <a
@@ -108,28 +133,30 @@ function linkify(text: string, key: string): ReactNode[] {
     i += 1;
     m = re.exec(text);
   }
-  if (last < text.length) out.push(text.slice(last));
+  if (last < text.length) out.push(...markText(text.slice(last), terms, `${key}-t${i}`));
   return out;
 }
 
-function parseInline(text: string, key: string): ReactNode[] {
+function parseInline(text: string, key: string, terms: string[]): ReactNode[] {
   if (!text) return [];
   let best: { open: number; close: number; fmt: Fmt } | null = null;
   for (const fmt of FORMATS) {
     const pair = findPair(text, fmt.marker);
     if (pair && (best === null || pair.open < best.open)) best = { ...pair, fmt };
   }
-  if (!best) return linkify(text, key);
+  if (!best) return linkify(text, key, terms);
   const { open, close, fmt } = best;
   const len = fmt.marker.length;
   const before = text.slice(0, open);
   const inner = text.slice(open + len, close);
   const after = text.slice(close + len);
-  const innerNodes = fmt.raw ? [inner] : parseInline(inner, `${key}i`);
+  const innerNodes = fmt.raw
+    ? markText(inner, terms, `${key}r`)
+    : parseInline(inner, `${key}i`, terms);
   return [
-    ...linkify(before, `${key}b`),
+    ...linkify(before, `${key}b`, terms),
     fmt.render(<Fragment key={`${key}f`}>{innerNodes}</Fragment>, `${key}f`),
-    ...parseInline(after, `${key}a`),
+    ...parseInline(after, `${key}a`, terms),
   ];
 }
 
@@ -137,7 +164,21 @@ const QUOTE_RE = /^>\s?(.*)$/;
 const BULLET_RE = /^[*-]\s+(.+)$/;
 const NUMBER_RE = /^(\d+)\.\s+(.+)$/;
 
-export default function MessageText({ text, className }: { text: string; className?: string }) {
+export default function MessageText({
+  text,
+  className,
+  /**
+   * Search query whose terms are marked inside the body. Set when the thread was
+   * opened from a message search: the operator was told this conversation
+   * contains "invoice 4471" and then had to find the words themselves.
+   */
+  highlight,
+}: {
+  text: string;
+  className?: string;
+  highlight?: string;
+}) {
+  const terms = highlightTerms(highlight);
   const lines = text.split('\n');
   return (
     <div className={cn('break-words whitespace-pre-wrap', className)}>
@@ -150,7 +191,7 @@ export default function MessageText({ text, className }: { text: string; classNa
             <Fragment key={key}>
               {nl}
               <span className="inline border-l-2 border-current pl-2 opacity-75">
-                {parseInline(quote[1], key)}
+                {parseInline(quote[1], key, terms)}
               </span>
             </Fragment>
           );
@@ -161,7 +202,7 @@ export default function MessageText({ text, className }: { text: string; classNa
             <Fragment key={key}>
               {nl}
               {'• '}
-              {parseInline(bullet[1], key)}
+              {parseInline(bullet[1], key, terms)}
             </Fragment>
           );
         }
@@ -171,14 +212,14 @@ export default function MessageText({ text, className }: { text: string; classNa
             <Fragment key={key}>
               {nl}
               {`${numbered[1]}. `}
-              {parseInline(numbered[2], key)}
+              {parseInline(numbered[2], key, terms)}
             </Fragment>
           );
         }
         return (
           <Fragment key={key}>
             {nl}
-            {parseInline(line, key)}
+            {parseInline(line, key, terms)}
           </Fragment>
         );
       })}

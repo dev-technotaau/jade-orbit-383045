@@ -16,15 +16,22 @@
  *      claim clients, register navigation preload.
  *    - On message {type: 'SKIP_WAITING'}: force update on user click.
  *
- *  Background sync:
- *    - 'sync-saves': retries failed save-job actions.
- *    - 'sync-analytics': retries Sentry/GA beacons buffered while offline.
- *
  *  (Periodic background sync and push notifications were removed with the
  *  job-board prewarm task and the Web Push / FCM stack.)
+ *
+ *  There IS an offline outbox for the WhatsApp composer, but it does not live
+ *  here: see `src/lib/offline-queue.ts`. Replaying a send from this worker would
+ *  mean rebuilding the CSRF header the axios client attaches, and the Background
+ *  Sync API is Chromium-only — so the queue is drained by the page on `online`
+ *  instead, which is why non-GET requests are still skipped below.
  */
 
-const CACHE_VERSION = 'v7';
+// Bumped to purge caches written by the previous service worker. The activate
+// handler only deletes caches NOT in ALL_CACHES, so entries an earlier SW had
+// already written under v7 (including customer-sent media, see the /api/proxy
+// bail-out in the fetch handler) would otherwise survive on operator machines
+// until LRU eviction.
+const CACHE_VERSION = 'v8';
 const CACHE_PREFIX = 'ha-';
 
 const PAGE_CACHE = `${CACHE_PREFIX}pages-${CACHE_VERSION}`;
@@ -110,11 +117,32 @@ const SLOW_API_PATH_FRAGMENTS = [
   '/download',
 ];
 
+/**
+ * Cacheable API GETs.
+ *
+ * `/api/proxy/*` is EXCLUDED. Every authenticated call goes through the BFF proxy,
+ * so caching it wrote customer names, phone numbers and message bodies into the
+ * Cache Storage of whatever machine the console was opened on — and Lock never
+ * cleared them, because nothing in the app ever posted CLEAR_CACHES. On a shared
+ * or personal device that is a data-retention problem no amount of session
+ * expiry fixes. Static assets and navigations are still cached.
+ */
 function isApiGet(req) {
   if (req.method !== 'GET') return false;
-  const url = new URL(req.url);
+  const url = new URL(req.url, self.location.origin);
   if (url.origin !== self.location.origin) return false;
-  if (!url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/v1/')) return false;
+  if (!url.pathname.startsWith('/api/')) return false;
+
+  // NEVER cache the BFF proxy.
+  //
+  // Every authenticated call goes through /api/proxy, so caching it wrote customer
+  // names, phone numbers and message bodies into Cache Storage on whatever machine
+  // the console was opened on — and Lock never cleared them, because nothing in the
+  // app has ever posted CLEAR_CACHES. On a shared or personal device that is a
+  // retention problem no amount of session expiry fixes. Static assets and
+  // navigations are still cached.
+  if (url.pathname.startsWith('/api/proxy/')) return false;
+
   // Bypass slow generation endpoints — let them hit the network directly
   // so the SW never times them out.
   for (const frag of SLOW_API_PATH_FRAGMENTS) {
@@ -223,6 +251,17 @@ self.addEventListener('fetch', (event) => {
   if (!request.url.startsWith('http')) return;
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
+
+  // NOTHING under the BFF proxy is ever cached, whatever its destination.
+  //
+  // Everything authenticated goes through /api/proxy — conversations, message
+  // threads, contact records AND inbound WhatsApp media, which the inbox renders
+  // as a plain <img src="/api/proxy/whatsapp/media/:id">. Excluding it from the
+  // API branch alone was not enough: those requests have destination "image", so
+  // they fell straight through to the image cache instead and customer photos,
+  // screenshots and ID documents sat in Cache Storage after Lock, readable by
+  // anyone with the machine. Bail before every asset branch.
+  if (url.pathname.startsWith('/api/proxy/')) return;
 
   // Navigation — network-first, fallback to offline.
   if (request.mode === 'navigate') {
@@ -367,28 +406,14 @@ async function handleStatic(request) {
   return cached || network;
 }
 
-/* ── Background Sync ───────────────────────────────────────────────── */
+/* ── Background sync ────────────────────────────────────────────────
+   The 'sync' handler and its replayQueue helper were removed: nothing ever
+   registered a sync tag, nothing wrote the `ha-sync-queue` outbox they were
+   meant to drain, and no client listened for the REPLAY_SYNC_QUEUE message
+   they broadcast. Reinstating background sync means building that outbox
+   first — the handler does nothing without it.
+   ────────────────────────────────────────────────────────────────── */
 
-self.addEventListener('sync', (event) => {
-  if (event.tag === 'sync-analytics') {
-    event.waitUntil(replayQueue('analytics'));
-  }
-});
-
-/**
- * Background-sync replay loop. The page-level code stores failed POST
- * payloads in IndexedDB under `ha-sync-queue` keyed by tag. This handler
- * drains them when connectivity returns. Implementation is intentionally
- * minimal — full IDB plumbing lives in src/lib/offline-queue.ts.
- */
-async function replayQueue(tag) {
-  // Lazy IDB open — postMessage to clients lets the page-level helper
-  // do the actual replay so we don't duplicate the fetch logic here.
-  const clients = await self.clients.matchAll({ includeUncontrolled: true });
-  for (const client of clients) {
-    client.postMessage({ type: 'REPLAY_SYNC_QUEUE', tag });
-  }
-}
 /* ── Push notifications ─────────────────────────────────────────────
    The push + notificationclick handlers were removed with the Web Push /
    FCM stack: no backend endpoint accepts a subscription and nothing sends,
