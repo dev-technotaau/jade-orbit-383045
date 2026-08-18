@@ -13,6 +13,7 @@ import {
   analyzeTemplate,
   renderTemplatePreview,
   resolveSampleToken,
+  SAMPLE_CONTACT_NOTE,
   templateExamples,
   tokensWithoutFallback,
   usesSampleContact,
@@ -583,6 +584,29 @@ describe('campaign sample-contact tokens', () => {
   it('is not fooled by inherited object keys', () => {
     expect(resolveSampleToken('toString')).toBe('toString');
     expect(usesSampleContact(['constructor'])).toBe(false);
+  });
+
+  it('shows the attribute KEY when there is no sample value to stand in for', () => {
+    // attr. and attributes. are the same token space on the server; the preview's
+    // job is to say WHERE a value lands, so the key itself is the honest stand-in.
+    expect(resolveSampleToken('{{attr.city}}')).toBe('city');
+    expect(resolveSampleToken('{{attributes.city}}')).toBe('city');
+  });
+
+  it('returns a token-shaped entry we cannot resolve unchanged', () => {
+    // It parses as a token but names nothing we substitute, so it is a literal the
+    // operator typed. Rewriting it would preview a value the send never produces.
+    expect(resolveSampleToken('{{order_id}}')).toBe('{{order_id}}');
+    expect(resolveSampleToken('{{name|Customer}}')).toBe('Priya Sharma');
+    expect(resolveSampleToken('{{unknown|Friend}}')).toBe('{{unknown|Friend}}');
+  });
+
+  it('names every substituted token in the operator-facing note', () => {
+    // The note is what tells an operator the preview is not their real data. If a
+    // sample field is ever added, this fails until the note mentions it too.
+    expect(SAMPLE_CONTACT_NOTE).toContain('{{name}}');
+    expect(SAMPLE_CONTACT_NOTE).toContain('{{phone}}');
+    expect(SAMPLE_CONTACT_NOTE).toContain('attr.');
   });
 
   it('flags a mapping that carries a per-recipient token', () => {
