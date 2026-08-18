@@ -187,7 +187,13 @@ async function createOutboundRow(p: DispatchParams) {
   return prisma.$transaction(async (tx) => {
     // Two int4 keys rather than one: the namespace keeps this lock from
     // colliding with any other advisory lock taken on the same contact id.
-    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext('wa:marketing-cap'), hashtext(${p.contactId}))`;
+    //
+    // $executeRaw, NOT $queryRaw: pg_advisory_xact_lock() returns void, and
+    // $queryRaw asks the driver adapter to deserialize the result set, which
+    // fails with "Failed to deserialize column of type 'void'" (P2010). That
+    // took down every MARKETING template send with a 500 while the cap was
+    // enabled. We discard the result here anyway — the point is the lock.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('wa:marketing-cap'), hashtext(${p.contactId}))`;
     const sentInWindow = await countMarketingInWindow(tx, p.contactId);
     if (sentInWindow >= marketingCapPer24h) throw marketingCapError(marketingCapPer24h);
     return tx.waMessage.create({ data });

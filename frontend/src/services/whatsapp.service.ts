@@ -648,7 +648,9 @@ export const whatsappService = {
   /** Browse Meta's pre-approved template library. */
   async listLibraryTemplates(
     params: { search?: string; language?: string; category?: string; limit?: number } = {},
-  ): Promise<ApiResponse<{ items: WaLibraryTemplate[] }>> {
+    // unavailable: Meta does not expose the library edge to this WABA. Reported
+    // rather than thrown, so the dialog can say so without a 502 in the console.
+  ): Promise<ApiResponse<{ items: WaLibraryTemplate[]; unavailable?: boolean }>> {
     const res = await api.get(API.SUPER_ADMIN.WA_TEMPLATE_LIBRARY, { params });
     return res.data;
   },

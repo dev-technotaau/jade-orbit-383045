@@ -850,7 +850,7 @@ export async function listLibraryTemplates(params: {
   topic?: string;
   usecase?: string;
   limit?: number;
-}): Promise<{ items: WaLibraryTemplate[] }> {
+}): Promise<{ items: WaLibraryTemplate[]; unavailable?: boolean }> {
   const { wabaId, token } = metaConfig();
   const limit = Math.min(100, Math.max(1, Math.trunc(Number(params.limit ?? 50)) || 50));
   const qs = new URLSearchParams({ limit: String(limit) });
@@ -886,13 +886,28 @@ export async function listLibraryTemplates(params: {
   })();
   const data: any = await res.json().catch(() => ({}));
   if (!res.ok) {
+    // Meta code 100 on this edge means "no such field on this node" — the
+    // library simply is not exposed to this WABA. That is a CAPABILITY answer,
+    // not a gateway failure, and throwing 502 for it made every open of the
+    // dialog log a red 502 per query (and again on window refocus), which reads
+    // as an outage. React Query also retried it. Report it as "unavailable" and
+    // let the UI say so, which it already does.
+    const code = data?.error?.code;
+    const message: string = data?.error?.message ?? '';
+    if (code === 100 || /nonexisting field/i.test(message)) {
+      logger.info(
+        '[whatsapp] template library is not enabled for this WABA — Meta: ' +
+          (message || 'no such edge')
+      );
+      return { items: [], unavailable: true };
+    }
     throw new AppError(
       data?.error?.message ?? `Meta template library failed (${res.status})`,
       502,
       'WA_META_ERROR'
     );
   }
-  return { items: (data.data ?? []) as WaLibraryTemplate[] };
+  return { items: (data.data ?? []) as WaLibraryTemplate[], unavailable: false };
 }
 
 /**

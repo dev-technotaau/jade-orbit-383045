@@ -65,6 +65,8 @@ export default function TemplateLibraryModal({ onClose }: { onClose: () => void 
       svc.listLibraryTemplates({ search: search || undefined, category: category || undefined }),
   });
   const items = data?.data?.items ?? [];
+  /** Meta does not expose the library edge to this WABA — a capability answer, not a failure. */
+  const unavailable = data?.data?.unavailable === true;
 
   /** Move to the fill-in step, prefilled from the library entry. */
   const pick = (entry: WaLibraryTemplate) => {
@@ -185,13 +187,17 @@ export default function TemplateLibraryModal({ onClose }: { onClose: () => void 
                   <Loader2 className="h-4 w-4 animate-spin" /> Loading Meta’s library…
                 </div>
               )}
-              {!isLoading && isError && (
+              {/* `unavailable` is the normal answer when Meta does not expose the
+                  library edge to this WABA — it now arrives as a 200 rather than a
+                  502, so the dialog explains it without a console full of errors.
+                  isError stays for genuine failures (timeout, token, outage). */}
+              {!isLoading && (isError || unavailable) && (
                 <p className="py-10 text-center text-sm text-[var(--text-muted)]">
                   Meta’s template library could not be loaded. It is only available to WhatsApp
                   Business Accounts Meta has enabled it for.
                 </p>
               )}
-              {!isLoading && !isError && items.length === 0 && (
+              {!isLoading && !isError && !unavailable && items.length === 0 && (
                 <p className="py-10 text-center text-sm text-[var(--text-muted)]">
                   No library templates matched.
                 </p>

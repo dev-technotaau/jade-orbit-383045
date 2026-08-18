@@ -135,9 +135,18 @@ export default function TemplateComposeModal({
       const when = new Date(contact.marketingRefusedAt).toLocaleString();
       return `Meta refused a marketing message to this contact on ${when} and will refuse a re-send until the 24h hold clears. Use a UTILITY template instead.`;
     }
-    if (!contact.lastInboundAt) {
-      return 'This contact has never messaged you. Meta caps marketing messages to people with no engagement history, so this is likely to be dropped (error 131049). A UTILITY template, or asking them to message you first, is far more likely to land.';
-    }
+    // Deliberately NOT warning on "has never messaged us".
+    //
+    // A first marketing template to an opted-in contact is the ordinary, fully
+    // supported flow — Meta's per-user cap allows it. An earlier version warned
+    // whenever lastInboundAt was null, which fired on every legitimate first
+    // send; that reading came from a test number that had been sent eleven
+    // marketing messages in six hours and was genuinely over the cap, not from
+    // the absence of inbound history. A warning that is wrong on the common case
+    // teaches operators to click through it, so it is worse than none.
+    //
+    // marketingRefusedAt above is the honest signal: Meta actually refused this
+    // recipient, so a re-send really will fail.
     return null;
   })();
 

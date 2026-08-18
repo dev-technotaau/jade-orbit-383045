@@ -207,7 +207,13 @@ describe('proxyOutboundToMeta', () => {
       templateCategory: 'MARKETING',
     });
     // The reservation: lock, re-count, insert — all in one transaction.
-    expect(prismaMock.$queryRaw).toHaveBeenCalled();
+    //
+    // $executeRaw, not $queryRaw: pg_advisory_xact_lock() returns void, and
+    // asking the driver adapter to deserialize that fails with P2010 at runtime
+    // — which took down every marketing send in production while the suite
+    // stayed green, because prisma is mocked here and no real SQL runs.
+    expect(prismaMock.$executeRaw).toHaveBeenCalled();
+    expect(prismaMock.$queryRaw).not.toHaveBeenCalled();
     // The count is keyed on the category the message went out under, NOT on a
     // list of template names resolved at check time.
     expect(prismaMock.waTemplate.findMany).not.toHaveBeenCalled();
