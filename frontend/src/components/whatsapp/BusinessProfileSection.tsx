@@ -9,6 +9,7 @@ import Textarea from '@/components/ui/Textarea';
 import Select from '@/components/ui/Select';
 import { showToast } from '@/components/ui/Toast';
 import { confirmDialog } from '@/components/ui/dialog-service';
+import { API } from '@/constants/api';
 import { whatsappService as svc } from '@/services/whatsapp.service';
 import { WA_PROFILE_VERTICALS, type WaBusinessProfile } from '@/types/whatsapp';
 import type { ApiError } from '@/types/api';
@@ -109,11 +110,13 @@ function ProfileForm({ initial }: { initial: WaBusinessProfile }) {
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-3">
         {form.profilePictureUrl ? (
-          // Meta serves this from a signed, short-lived CDN host, so next/image
-          // cannot be configured for it ahead of time.
+          // Loaded through OUR origin, not Meta's CDN: the CSP is
+          // `img-src 'self' data: blob:` with no remote host allowed, so pointing
+          // straight at the signed CDN URL rendered a broken image. profilePictureUrl
+          // still tells us a photo EXISTS; it is just not what the browser fetches.
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={form.profilePictureUrl}
+            src={`/api/proxy${API.SUPER_ADMIN.WA_BUSINESS_PROFILE_PHOTO}`}
             alt="Business profile"
             className="h-16 w-16 rounded-full object-cover"
           />

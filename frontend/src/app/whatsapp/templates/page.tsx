@@ -446,8 +446,10 @@ function TemplateRow({
         )?.text
       : '') ?? '';
   return (
-    <div className="flex items-start justify-between gap-4 border-b border-[var(--border)] px-4 py-3">
-      <div className="min-w-0">
+    <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2 border-b border-[var(--border)] px-4 py-3">
+      {/* Capped rather than free-growing: on a wide screen the body text ran all
+          the way to the action buttons, which reads as one unbroken line. */}
+      <div className="min-w-0 max-w-3xl flex-1">
         <div className="flex flex-wrap items-center gap-2">
           {/* Opens the preview: the row shows only the body text, so a media
               header, a footer or the buttons were invisible before sending. */}
@@ -490,18 +492,24 @@ function TemplateRow({
           </Tooltip>
         )}
       </div>
-      <div className="flex shrink-0 flex-col items-end gap-1.5">
-        <span
-          className={cn(
-            'rounded-full px-2 py-0.5 text-[10px] font-semibold',
-            STATUS_STYLE[t.status],
-          )}
-        >
-          {t.status}
-        </span>
-        <span className="flex items-center gap-1 text-[10px] text-[var(--text-muted)]">
-          <span className={cn('h-2 w-2 rounded-full', QUALITY_DOT[t.quality])} /> {t.quality}
-        </span>
+      <div className="flex shrink-0 flex-col items-end gap-2">
+        {/* Status and quality read as one line; they are labels, not actions. */}
+        <div className="flex items-center gap-2">
+          <span
+            className={cn(
+              'rounded-full px-2 py-0.5 text-[10px] font-semibold',
+              STATUS_STYLE[t.status],
+            )}
+          >
+            {t.status}
+          </span>
+          <span className="flex items-center gap-1 text-[10px] text-[var(--text-muted)]">
+            <span className={cn('h-2 w-2 rounded-full', QUALITY_DOT[t.quality])} /> {t.quality}
+          </span>
+        </div>
+        {/* Actions flow as a wrapping row. Stacked in a column they made every
+            row as tall as the number of buttons it happened to have. */}
+        <div className="flex flex-wrap items-center justify-end gap-1.5">
         <button
           onClick={() => onPreview(t)}
           className="flex items-center gap-1 rounded-md border border-[var(--border)] px-2 py-1 text-[11px] font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-secondary)]"
@@ -529,9 +537,10 @@ function TemplateRow({
             it from scratch, header sample upload included. */}
         <button
           onClick={() => onAddLanguage(t)}
+          title={`Copy "${t.name}" into a new template in another language — at Meta a template is name + language, so this creates a sibling rather than changing this one`}
           className="flex items-center gap-1 rounded-md border border-[var(--border)] px-2 py-1 text-[11px] font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-secondary)]"
         >
-          <Languages className="h-3.5 w-3.5" /> Add language
+          <Languages className="h-3.5 w-3.5" /> New language
         </button>
         {/* Per-row status re-check. Submitting a template used to mean waiting up
             to six hours for the cron, or re-pulling the entire WABA, to find out
@@ -583,6 +592,7 @@ function TemplateRow({
         >
           <Trash2 className="h-3.5 w-3.5" /> Delete
         </button>
+        </div>
       </div>
     </div>
   );
@@ -596,7 +606,8 @@ export default function SuperAdminWhatsappTemplatesPage() {
   const [editing, setEditing] = useState<WaTemplate | null>(null);
   const [analyticsFor, setAnalyticsFor] = useState<WaTemplate | null>(null);
   const [previewFor, setPreviewFor] = useState<WaTemplate | null>(null);
-  // "Add language": the builder opens on a NEW template seeded from this one.
+  // "New language": the builder opens on a NEW template seeded from this one —
+  // same body, header and buttons, blank language. Not an edit of the original.
   const [cloning, setCloning] = useState<WaTemplate | null>(null);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [search, setSearch] = useState('');

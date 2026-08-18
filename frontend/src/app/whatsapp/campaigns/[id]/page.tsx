@@ -1429,23 +1429,26 @@ export default function CampaignDetailPage() {
                 )}
               </h2>
               <div className="flex items-center gap-2">
-                <select
-                  aria-label="Filter recipients by status"
-                  value={recipStatus}
-                  onChange={(e) => {
-                    setRecipStatus(e.target.value);
-                    resetRecipPaging();
-                  }}
-                  className="rounded-lg border border-[var(--border)] bg-white px-2 py-1 text-xs text-[var(--text)]"
-                >
-                  <option value="">All statuses</option>
-                  <option value="PENDING">Pending</option>
-                  <option value="SENT">Sent</option>
-                  <option value="DELIVERED">Delivered</option>
-                  <option value="READ">Read</option>
-                  <option value="FAILED">Failed</option>
-                  <option value="SKIPPED">Skipped</option>
-                </select>
+                <div className="w-[150px]">
+                  <Select
+                    aria-label="Filter recipients by status"
+                    value={recipStatus}
+                    onChange={(v) => {
+                      setRecipStatus(v);
+                      resetRecipPaging();
+                    }}
+                    placeholder="All statuses"
+                    size="sm"
+                    options={[
+                      { value: 'PENDING', label: 'Pending' },
+                      { value: 'SENT', label: 'Sent' },
+                      { value: 'DELIVERED', label: 'Delivered' },
+                      { value: 'READ', label: 'Read' },
+                      { value: 'FAILED', label: 'Failed' },
+                      { value: 'SKIPPED', label: 'Skipped' },
+                    ]}
+                  />
+                </div>
                 <label className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)]">
                   <input
                     type="checkbox"

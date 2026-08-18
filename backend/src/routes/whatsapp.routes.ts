@@ -263,6 +263,9 @@ router.post(
   audit('WA_PROFILE_UPDATE', 'WaChannel'),
   ctrl.updateBusinessProfileHandler
 );
+// Served from this origin so `img-src 'self'` covers it. The Meta CDN host is
+// deliberately neither allowlisted in the CSP nor exposed to the browser.
+router.get('/business-profile/photo', ctrl.getProfilePhoto);
 router.post(
   '/business-profile/photo',
   upload.single('file'),

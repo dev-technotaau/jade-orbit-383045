@@ -1182,6 +1182,46 @@ export const updateBusinessProfileHandler = async (
  * The handle is what `POST whatsapp_business_profile` accepts; the bytes go up
  * through the same session flow the template media-header sample uses.
  */
+/**
+ * Stream the business profile picture through this origin.
+ *
+ * Meta returns a CDN URL, but the console's CSP is `img-src 'self' data: blob:`
+ * — no remote image host at all, the same rule that keeps archived customer
+ * media off a publicly readable bucket. An <img> pointed straight at that CDN
+ * was blocked before the request left the browser, so the operator saw a broken
+ * icon with nothing explaining it. Proxying keeps the rule intact, and the CDN
+ * link — short-lived and signed — never has to reach the page.
+ */
+export const getProfilePhoto = async (
+  _req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const profile = await getBusinessProfile();
+    const url = profile?.profilePictureUrl;
+    if (!url) throw new AppError('No profile photo set', 404, 'WA_PROFILE_PHOTO_NOT_SET');
+
+    // eslint-disable-next-line n/no-unsupported-features/node-builtins
+    const upstream = await fetch(url);
+    if (!upstream.ok) {
+      throw new AppError(
+        `Could not fetch the profile photo (${upstream.status})`,
+        502,
+        'WA_PROFILE_PHOTO_FETCH_FAILED'
+      );
+    }
+
+    res.setHeader('Content-Type', upstream.headers.get('content-type') ?? 'image/jpeg');
+    // Brief cache only: the photo changes rarely, but a stale one straight after
+    // an upload reads as "the upload failed", and the upstream link expires.
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    res.send(Buffer.from(await upstream.arrayBuffer()));
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const uploadProfilePhoto = async (
   req: Request,
   res: Response,

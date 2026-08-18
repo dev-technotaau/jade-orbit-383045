@@ -69,17 +69,18 @@ const SUPPRESSED_OPTIONS = [
   { value: 'false', label: 'Not suppressed' },
 ];
 
-const OPT_IN_STYLE: Record<string, string> = {
-  OPTED_IN: 'bg-emerald-100 text-emerald-700',
-  OPTED_OUT: 'bg-red-100 text-red-700',
-  UNKNOWN: 'bg-gray-100 text-gray-600',
-};
-
 /**
  * Every state the consent field can hold, so the row control can reach all of
  * them. A two-way toggle could not express UNKNOWN, which is where every new
  * contact starts.
  */
+/** Dot colours for the consent Select — the trigger itself is a plain control. */
+const OPT_IN_DOT: Record<string, string> = {
+  OPTED_IN: 'bg-emerald-500',
+  OPTED_OUT: 'bg-red-500',
+  UNKNOWN: 'bg-gray-400',
+};
+
 const OPT_IN_CHOICES = [
   { value: 'UNKNOWN', label: 'UNKNOWN' },
   { value: 'OPTED_IN', label: 'OPTED IN' },
@@ -968,25 +969,24 @@ export default function SuperAdminWhatsappContactsPage() {
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                <select
-                  value={c.optInStatus}
-                  onChange={(e) =>
-                    updateMut.mutate({ id: c.id, body: { optInStatus: e.target.value } })
-                  }
-                  disabled={updateMut.isPending}
-                  aria-label={`Marketing consent for ${c.name || c.phone}`}
-                  className={cn(
-                    'cursor-pointer rounded-full border-0 px-2 py-0.5 text-[10px] font-semibold',
-                    'disabled:cursor-not-allowed disabled:opacity-60',
-                    OPT_IN_STYLE[c.optInStatus],
-                  )}
-                >
-                  {OPT_IN_CHOICES.map((o) => (
-                    <option key={o.value} value={o.value}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
+                {/* Colour still carries the state at a glance; the shared Select
+                    trigger is a plain control by design, so the dot keeps what the
+                    old coloured pill was doing. */}
+                <span
+                  aria-hidden
+                  className={cn('h-2 w-2 shrink-0 rounded-full', OPT_IN_DOT[c.optInStatus])}
+                />
+                <div className="w-[132px]">
+                  <Select
+                    value={c.optInStatus}
+                    onChange={(v) => updateMut.mutate({ id: c.id, body: { optInStatus: v } })}
+                    options={OPT_IN_CHOICES as unknown as { value: string; label: string }[]}
+                    disabled={updateMut.isPending}
+                    size="sm"
+                    clearable={false}
+                    aria-label={`Marketing consent for ${c.name || c.phone}`}
+                  />
+                </div>
                 <button
                   type="button"
                   onClick={() => updateMut.mutate({ id: c.id, body: { isBlocked: !c.isBlocked } })}
