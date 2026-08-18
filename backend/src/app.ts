@@ -9,6 +9,7 @@ import hpp from 'hpp';
 import swaggerUi from 'swagger-ui-express';
 import { swaggerSpec } from './config/swagger';
 import logger from './config/logger';
+import { env } from './config/env';
 import healthRoutes from './routes/health.routes';
 import metricsRoutes, {
   httpRequestDuration,
@@ -52,7 +53,6 @@ const apiV1Router = Router();
  */
 app.set('trust proxy', parseInt(env.TRUST_PROXY_HOPS, 10));
 
-import { env } from './config/env';
 
 import { xssSanitize } from './middleware/xss-sanitize';
 import { enforceContentType } from './middleware/content-type';
