@@ -24,7 +24,7 @@
     "test:cov": "cross-env NODE_ENV=test jest --coverage",
     "db:generate": "dotenv -- prisma generate",
     "db:push": "dotenv -- prisma db push",
-    "db:deploy": "prisma db push",
+    "db:deploy": "node scripts/db-deploy.js",
     "db:studio": "dotenv -- prisma studio",
     "reencrypt": "ts-node -T src/scripts/reencrypt-fields.ts",
     "postinstall": "prisma generate"

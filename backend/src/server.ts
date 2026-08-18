@@ -2,7 +2,11 @@
 import app from './app';
 import logger from './config/logger';
 import { env } from './config/env';
-import { initializeServices, shutdownServices } from './config/service-init';
+import {
+  initializeServices,
+  shutdownServices,
+  startSearchIndexBuild,
+} from './config/service-init';
 import { initializeWorkers, closeAllWorkers } from './jobs';
 import { captureWaException, initErrorReporting } from './utils/whatsapp-metrics';
 
@@ -30,6 +34,9 @@ const startServer = async () => {
   const server = app.listen(PORT, () => {
     logger.info(`🚀 Server is running on http://localhost:${PORT}`);
     logger.info(`📚 API Docs available at http://localhost:${PORT}/api-docs`);
+    // Only once the port is bound: this can be a long GIN build on a large
+    // table, and holding the port closed for it fails the deploy outright.
+    startSearchIndexBuild();
   });
 
   // Initialize Socket.io

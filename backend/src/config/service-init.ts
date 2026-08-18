@@ -50,6 +50,32 @@ const SEARCH_INDEXES: Array<{ name: string; ddl: string }> = [
  * be able to stop a boot. A deployment whose database role cannot CREATE
  * EXTENSION still runs; its searches are just as slow as they were before.
  */
+/**
+ * Build the search indexes AFTER the port is open.
+ *
+ * They are recreated on most boots because `prisma db push` drops anything the
+ * schema does not declare, and these cannot be declared (gin_trgm_ops needs the
+ * pg_trgm extension). Awaiting that rebuild before app.listen meant a large
+ * WaMessage table could hold the port closed indefinitely — the statement
+ * timeout is deliberately lifted for this DDL — and a deploy that never binds a
+ * port is failed by the platform. CREATE INDEX CONCURRENTLY takes no write lock,
+ * so serving traffic during the build is safe; search falls back to a sequential
+ * scan until it lands, which is what it did before the index existed at all.
+ */
+export function startSearchIndexBuild(): void {
+  const startedAt = Date.now();
+  void (async () => {
+    try {
+      const { ok: built, detail } = await ensureSearchIndexes();
+      const secs = Math.round((Date.now() - startedAt) / 1000);
+      if (built) logger.info(`Search indexes ready in ${secs}s — ${detail}`);
+      else logger.warn(`Search indexes incomplete after ${secs}s — ${detail}`);
+    } catch (error) {
+      logger.warn(`Search index build failed: ${(error as Error).message}`);
+    }
+  })();
+}
+
 async function ensureSearchIndexes(): Promise<{ ok: boolean; detail: string }> {
   const { prisma } = await import('./prisma');
 
@@ -452,12 +478,8 @@ export const initializeServices = async (): Promise<void> => {
   if (!schemaApplied) {
     registerService('Search Indexes', 'not_configured', 'schema not applied');
   } else {
-    try {
-      const { ok, detail } = await ensureSearchIndexes();
-      registerService('Search Indexes', ok ? 'ready' : 'not_configured', detail);
-    } catch (error) {
-      registerService('Search Indexes', 'error', (error as Error).message);
-    }
+    // Reported, not awaited — see startSearchIndexBuild below.
+    registerService('Search Indexes', 'ready', 'building in background (pg_trgm)');
 
     try {
       const { ok, detail } = await backfillWebhookPhones();
