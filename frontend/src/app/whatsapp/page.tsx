@@ -2753,28 +2753,38 @@ export default function SuperAdminWhatsappInboxPage() {
                         </Tooltip>
                       )}
                     </div>
-                    <p className="text-xs text-[var(--text-muted)]">{selected.contact.phone}</p>
-                    <span
-                      className={cn(
-                        'mt-0.5 inline-block rounded-full px-1.5 py-0.5 text-[10px] font-semibold',
-                        INBOX_OPT_IN_STYLE[selected.contact.optInStatus],
+                    {/* One line, not four. The phone, the consent chip and the labels
+                        were each on their own row, so the header grew as tall as
+                        whatever the contact happened to have — while the space to the
+                        right of it sat empty. They are all short, so they read fine
+                        side by side and wrap only when they genuinely run out of room. */}
+                    <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+                      <p className="text-xs text-[var(--text-muted)]">{selected.contact.phone}</p>
+                      <span
+                        className={cn(
+                          'rounded-full px-1.5 py-0.5 text-[10px] font-semibold',
+                          INBOX_OPT_IN_STYLE[selected.contact.optInStatus],
+                        )}
+                      >
+                        {selected.contact.optInStatus.replace('_', ' ')}
+                      </span>
+                      {selected.labels?.length > 0 && (
+                        <span className="flex flex-wrap items-center gap-1">
+                          <TagIcon
+                            className="h-3 w-3 shrink-0 text-[var(--text-muted)]"
+                            aria-hidden="true"
+                          />
+                          {selected.labels.map((label) => (
+                            <span
+                              key={label}
+                              className="text-primary inline-flex items-center rounded-full bg-[var(--primary-light)] px-2 py-0.5 text-[10px] font-medium"
+                            >
+                              {label}
+                            </span>
+                          ))}
+                        </span>
                       )}
-                    >
-                      {selected.contact.optInStatus.replace('_', ' ')}
-                    </span>
-                    {selected.labels?.length > 0 && (
-                      <div className="mt-1 flex flex-wrap items-center gap-1">
-                        <TagIcon className="h-3 w-3 text-[var(--text-muted)]" />
-                        {selected.labels.map((label) => (
-                          <span
-                            key={label}
-                            className="text-primary inline-flex items-center rounded-full bg-[var(--primary-light)] px-2 py-0.5 text-[10px] font-medium"
-                          >
-                            {label}
-                          </span>
-                        ))}
-                      </div>
-                    )}
+                    </div>
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
