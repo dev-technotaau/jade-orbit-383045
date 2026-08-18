@@ -7,7 +7,11 @@ import { Loader2 } from 'lucide-react';
 import Tooltip from '@/components/ui/Tooltip';
 
 const buttonVariants = cva(
-  'inline-flex items-center justify-center font-medium cursor-pointer transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 disabled:cursor-not-allowed',
+  // whitespace-nowrap: a button is a flex item, so it can be shrunk below its
+  // label's width by a busy row and the text then wraps onto two lines — "New
+  // campaign" stacked into "New" / "campaign" even with room to spare. A button
+  // label is a single phrase; it should push the button wider, never fold.
+  'inline-flex items-center justify-center whitespace-nowrap font-medium cursor-pointer transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 disabled:cursor-not-allowed',
   {
     variants: {
       variant: {

@@ -134,7 +134,10 @@ export default function SuperAdminWhatsappCampaignsPage() {
                 setPage(1);
               }}
             />
-            <Link href={ROUTES.SUPER_ADMIN.WHATSAPP_CAMPAIGN_NEW}>
+            {/* shrink-0: the Link is the flex item here, not the Button, so
+                without it the row squeezes the anchor and the button inside it
+                narrows regardless of its own nowrap. */}
+            <Link href={ROUTES.SUPER_ADMIN.WHATSAPP_CAMPAIGN_NEW} className="shrink-0">
               <Button leftIcon={<Plus className="h-4 w-4" />}>New campaign</Button>
             </Link>
           </div>
