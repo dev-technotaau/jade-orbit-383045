@@ -951,6 +951,19 @@ export async function listLibraryTemplates(params: {
     items = items.concat((data.data ?? []) as WaLibraryTemplate[]);
     next = typeof data?.paging?.next === 'string' ? data.paging.next : null;
   }
+
+  // Still holding a cursor means the page budget stopped us, not Meta, and the
+  // list handed back is therefore incomplete. Say so: a truncated catalogue is
+  // indistinguishable from a complete one at the call site, and the bug this
+  // whole function just came out of was exactly a wrong answer that looked
+  // like a legitimate one.
+  if (next) {
+    logger.warn(
+      `[whatsapp] template library truncated at the ${MAX_LIBRARY_PAGES}-page cap ` +
+        `(${items.length} entries, more available). Raise MAX_LIBRARY_PAGES.`
+    );
+  }
+
   // Local category filter — see the note where the query string is built. Meta
   // categorises every library entry as UTILITY or AUTHENTICATION (they are
   // pre-approved, and MARKETING never is), so a MARKETING filter correctly
