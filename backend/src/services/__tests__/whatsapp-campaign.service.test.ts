@@ -62,6 +62,15 @@ jest.mock('../whatsapp-template.service', () => ({
   getTemplate: getTemplateMock,
   analyzeTemplateSpec: analyzeTemplateSpecMock,
   getTemplateHealthStatus: getTemplateHealthStatusMock,
+  // Pure helper, mocked with its real behaviour: the launch gate counts one
+  // supplied link value per dynamic URL button, and a stub returning nothing
+  // would make every campaign look like it was missing its links.
+  urlButtonValues: (supplied: { buttonUrlParam?: string; buttonUrlParams?: string[] }) =>
+    supplied.buttonUrlParams?.length
+      ? supplied.buttonUrlParams
+      : supplied.buttonUrlParam
+        ? [supplied.buttonUrlParam]
+        : [],
 }));
 
 const getDefaultChannelMock = jest.fn();
@@ -158,6 +167,11 @@ const PLAIN_SPEC = {
   bodyPositional: 0,
   bodyNamed: [] as string[],
   buttonUrlVar: false,
+  buttonUrlVarIndexes: [] as number[],
+  needsCatalogThumbnail: false,
+  needsProductSections: false,
+  needsProduct: false,
+  hasFlowButton: false,
   carouselCards: [] as Array<{
     headerFormat: 'IMAGE' | 'VIDEO' | 'NONE';
     bodyPositional: number;

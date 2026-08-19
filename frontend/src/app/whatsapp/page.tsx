@@ -79,6 +79,7 @@ import MessageContact from '@/components/whatsapp/MessageContact';
 import MessageLocation from '@/components/whatsapp/MessageLocation';
 import MessageInteractive from '@/components/whatsapp/MessageInteractive';
 import MessageOrder from '@/components/whatsapp/MessageOrder';
+import MessageTemplate from '@/components/whatsapp/MessageTemplate';
 import MessageText from '@/components/whatsapp/MessageText';
 import HighlightText from '@/components/ui/HighlightText';
 import AttachMenu from '@/components/whatsapp/AttachMenu';
@@ -86,6 +87,7 @@ import VoiceRecorder from '@/components/whatsapp/VoiceRecorder';
 import ContactComposeModal from '@/components/whatsapp/ContactComposeModal';
 import LocationComposeModal from '@/components/whatsapp/LocationComposeModal';
 import MediaComposeModal from '@/components/whatsapp/MediaComposeModal';
+import { parseStoredTemplate } from '@/lib/whatsapp-template-vars';
 import { getOpenConv, restoreOpenConv, setOpenConv, subscribeOpenConv } from '@/lib/wa-open-conv';
 import {
   drainOutbox,
@@ -379,27 +381,30 @@ function MessageProvenance({ message }: { message: WaMessage }) {
   if (isOptimisticId(message.id)) return null;
   const chip =
     'inline-flex max-w-full items-center gap-1 truncate rounded-full bg-white/20 px-1.5 py-0.5 text-[10px] font-medium text-white/90';
-  const row = 'mt-1 flex justify-end';
-  if (message.campaignId) {
+  const row = 'mt-1 flex flex-wrap justify-end gap-1';
+  // BOTH chips when a campaign sent a template, which is the highest-volume
+  // template path there is. Returning on `campaignId` alone meant a broadcast
+  // bubble said only "Campaign": the one place the template's NAME appears was
+  // suppressed for precisely the messages an operator is most often asked to
+  // account for.
+  if (message.campaignId || message.templateName) {
     return (
       <div className={row}>
-        <Link
-          href={ROUTES.SUPER_ADMIN.WHATSAPP_CAMPAIGN_DETAIL(message.campaignId)}
-          className={cn(chip, 'hover:bg-white/30')}
-          title="Sent by a campaign — open it"
-        >
-          <Send className="h-2.5 w-2.5 shrink-0" aria-hidden="true" />
-          Campaign
-        </Link>
-      </div>
-    );
-  }
-  if (message.templateName) {
-    return (
-      <div className={row}>
-        <span className={chip} title={`Approved template: ${message.templateName}`}>
-          <span className="truncate">Template · {message.templateName}</span>
-        </span>
+        {message.campaignId && (
+          <Link
+            href={ROUTES.SUPER_ADMIN.WHATSAPP_CAMPAIGN_DETAIL(message.campaignId)}
+            className={cn(chip, 'hover:bg-white/30')}
+            title="Sent by a campaign — open it"
+          >
+            <Send className="h-2.5 w-2.5 shrink-0" aria-hidden="true" />
+            Campaign
+          </Link>
+        )}
+        {message.templateName && (
+          <span className={chip} title={`Approved template: ${message.templateName}`}>
+            <span className="truncate">Template · {message.templateName}</span>
+          </span>
+        )}
       </div>
     );
   }
@@ -481,6 +486,18 @@ function MessageBubble({
   const outbound = message.direction === 'OUTBOUND';
   const inbound = message.direction === 'INBOUND';
   const reactions = parseReactions(message.reactions);
+  /**
+   * What this template send actually emitted — header, footer, buttons, carousel
+   * cards and all — read back off the row.
+   *
+   * Null for anything that is not a template, and for a template dispatched by
+   * the Chatwoot bridge, whose payload is the raw Cloud API body rather than the
+   * approved layout. Those keep the plain-text fallback further down.
+   */
+  const sentTemplate = useMemo(
+    () => (message.type === 'TEMPLATE' ? parseStoredTemplate(message.payload) : null),
+    [message.type, message.payload],
+  );
   const canRetry = outbound && message.status === 'FAILED' && !!message.text && !!onRetry;
   // Reply is offered on any real (acked) message that has a wamid to quote.
   const canReply = !!onReply && !!message.wamid;
@@ -561,7 +578,14 @@ function MessageBubble({
                   <span className="line-clamp-2 break-words">{quotedText}</span>
                 </div>
               )}
-              {message.mediaId ? (
+              {sentTemplate ? (
+                // Ahead of the mediaId test on purpose: a template with a media
+                // header now carries one, and MessageAttachment dispatches on the
+                // ROW type — every one of these is 'TEMPLATE', so an image header
+                // would land on the generic file-download card. The template's own
+                // header format picks the renderer instead.
+                <MessageTemplate message={message} stored={sentTemplate} highlight={highlight} />
+              ) : message.mediaId ? (
                 <MessageAttachment message={message} outbound={outbound} />
               ) : message.type === 'CONTACTS' ? (
                 <MessageContact payload={message.payload} />

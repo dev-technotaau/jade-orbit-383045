@@ -134,6 +134,9 @@ export function isRetryableErrorCode(code?: string | null): boolean {
 export const WA_TERMINAL_STEP_ERROR_CODES = new Set<string>([
   'WA_TEMPLATE_NOT_APPROVED',
   'WA_TEMPLATE_NOT_FOUND',
+  // The send pre-flight refused: this step's template needs parameters the drip
+  // path cannot supply (it sends body values only). Retrying refuses identically.
+  'WA_TEMPLATE_PARAMS_MISSING',
   'WA_CONTACT_BLOCKED',
   'WA_OPTED_OUT',
   'WA_CONVERSATION_NOT_FOUND',

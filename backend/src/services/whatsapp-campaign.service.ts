@@ -9,8 +9,12 @@ import {
 import { getTemplate, getTemplateHealthStatus } from './whatsapp-template.service';
 import { normalizeWaPhone, segmentContactWhere } from './whatsapp-contact.service';
 import { setSequenceSteps, startSequence, resumeSequence } from './whatsapp-sequence.service';
-import { analyzeTemplateSpec } from './whatsapp-template.service';
-import type { TemplateSendCarouselCard } from './whatsapp-template.service';
+import { analyzeTemplateSpec, urlButtonValues } from './whatsapp-template.service';
+import type {
+  TemplateSendCarouselCard,
+  TemplateProductSection,
+  TemplateSendSpec,
+} from './whatsapp-template.service';
 import { getSegment } from './whatsapp-segment.service';
 import { forEachSuppressedPhonePage, getSuppressedPhonesIn } from './whatsapp-suppression.service';
 import { addCampaignBatchJob } from '../jobs/whatsapp-campaign.queue';
@@ -58,11 +62,48 @@ export interface CampaignTemplateParams {
   headerText?: string;
   headerMediaUrl?: string;
   headerMediaType?: 'image' | 'video' | 'document';
+  /**
+   * DOCUMENT header: the filename the attachment shows on the handset.
+   *
+   * Campaign-wide like the URL itself — one document goes to the whole audience —
+   * and without it every recipient's PDF is named after the URL's last path
+   * segment rather than "Invoice-October.pdf".
+   */
+  headerMediaFilename?: string;
+  /**
+   * LOCATION header pin — one place for the whole audience, like the header
+   * media above.
+   *
+   * A LOCATION-header template used to pass every check on this path and then be
+   * refused by Meta with (#131008) for every single recipient, because nothing
+   * carried the pin from the wizard to the worker.
+   */
+  headerLocation?: { latitude: number; longitude: number; name?: string; address?: string };
+  /** Value for the FIRST dynamic URL button — the single-button shorthand. */
   buttonUrlParam?: string;
+  /**
+   * One value per dynamic URL button, in authored order.
+   *
+   * Meta allows two URL buttons and either may be dynamic. With one scalar only
+   * the first could be filled in, so a two-link template launched clean and was
+   * then refused for the entire audience with (#131008).
+   */
+  buttonUrlParams?: string[];
   /** COPY_CODE button value — one coupon shared by the whole audience. */
   couponCode?: string;
   /** LIMITED_TIME_OFFER countdown expiry, epoch ms. */
   ltoExpirationMs?: number;
+  /**
+   * Catalogue products, campaign-wide like the header media above.
+   *
+   * `catalogThumbnailProductId` is the SKU whose image heads a CATALOG or MPM
+   * card (optional for CATALOG — Meta falls back to the first item in the bound
+   * catalog), `productSections` is a multi-product template's product list, and
+   * `productRetailerId` fills a single-product template's PRODUCT header.
+   */
+  catalogThumbnailProductId?: string;
+  productSections?: TemplateProductSection[];
+  productRetailerId?: string;
   /**
    * CAROUSEL cards, in card order — one entry per card the template was approved
    * with. Campaign-wide, exactly like the header media above: every recipient
@@ -1557,6 +1598,77 @@ export async function campaignPreflight(id: string): Promise<WaCampaignPreflight
   return { canSend, checked, blockers, errors };
 }
 
+/**
+ * The campaign-wide parameters a template still needs, phrased for a human.
+ *
+ * Everything EXCEPT the carousel cards, which are checked separately: a campaign
+ * holds one card set filled in against its main template, so a carousel is
+ * refused outright as a variant or a drip step rather than gap-checked.
+ *
+ * Factored out because a campaign can send more than one template — an A/B
+ * variant, a drip step — and all of them share the single `templateParams` set
+ * the worker forwards. Checking only the base template meant an A/B campaign
+ * validated the one template it never sends.
+ */
+function campaignParamGaps(spec: TemplateSendSpec, params: CampaignTemplateParams): string[] {
+  const missing: string[] = [];
+  if (spec.headerNeedsMedia && !params.headerMediaUrl) {
+    missing.push(`a ${spec.headerFormat.toLowerCase()} header URL`);
+  }
+  if (spec.headerHasTextVar && !params.headerText) missing.push('header text');
+  // LOCATION header. The pin is supplied per SEND, never at authoring time, so a
+  // template with one is unsatisfiable until the campaign carries coordinates —
+  // and this was the one requirement the analyzer detected but nothing on the
+  // campaign path ever read, so the launch passed and Meta then refused every
+  // recipient with (#131008) for the missing header.
+  if (spec.headerNeedsLocation) {
+    const loc = params.headerLocation;
+    if (!loc || !Number.isFinite(loc.latitude) || !Number.isFinite(loc.longitude)) {
+      missing.push('a location pin (latitude and longitude)');
+    }
+  }
+  // ONE value per dynamic URL button. Meta allows two and addresses each by its
+  // own index, so a template with two links and one value supplied is refused in
+  // full — once per recipient, for the whole audience.
+  const urlValues = urlButtonValues(params);
+  spec.buttonUrlVarIndexes.forEach((_index, n) => {
+    if (urlValues[n]?.trim()) return;
+    missing.push(
+      spec.buttonUrlVarIndexes.length > 1 ? `link button ${n + 1}'s value` : 'a URL-button value'
+    );
+  });
+  // The marketing extras. Meta rejects a COPY_CODE template with no coupon
+  // parameter and a LIMITED_TIME_OFFER template with no expiration timestamp,
+  // both with (#131008) — per recipient, for the whole audience.
+  if (spec.needsCouponCode && !params.couponCode) missing.push('a coupon code');
+  if (spec.needsLtoExpiration && !params.ltoExpirationMs) missing.push('an offer expiry');
+  // CATALOGUE products. A multi-product template's sections are the message —
+  // they are chosen per send and exist nowhere else — and a single-product
+  // template's SKU fills its PRODUCT header. A CATALOG button's thumbnail is
+  // deliberately NOT required: Meta documents it as optional and falls back to
+  // the first item in the bound catalog.
+  if (spec.needsProductSections) {
+    if (!params.catalogThumbnailProductId?.trim()) missing.push('a thumbnail product SKU');
+    const items = (params.productSections ?? []).reduce(
+      (n, s) => n + s.productRetailerIds.filter((id) => id?.trim()).length,
+      0
+    );
+    if (items === 0) missing.push('at least one product section with products in it');
+  }
+  if (spec.needsProduct && !params.productRetailerId?.trim()) {
+    missing.push('a product SKU for the header');
+  }
+  if (spec.bodyNamed.length > 0) {
+    // Named body variables resolve per recipient, and the campaign materializer
+    // only produces positional values — so this template cannot be campaign-sent
+    // correctly at all. Say so, rather than fail once per recipient.
+    missing.push(
+      `named body variables (${spec.bodyNamed.join(', ')}) which campaigns cannot supply`
+    );
+  }
+  return missing;
+}
+
 /** Launch (or resume) a campaign: materialize recipients + enqueue batches. */
 export async function launchCampaign(id: string) {
   const campaign = await prisma.waCampaign.findUnique({ where: { id } });
@@ -1595,29 +1707,54 @@ export async function launchCampaign(id: string) {
     })
   ).map((st) => ({ id: st.templateId, label: `step ${st.stepOrder}` }));
   await assertTemplatesApproved([...variantRefs, ...stepRefs]);
+  const params = (campaign.templateParams ?? {}) as CampaignTemplateParams;
+  // EVERY template this campaign can actually send, held to the same bar as the
+  // base one.
+  //
   // A campaign holds ONE set of carousel cards (`templateParams.carouselCards`,
   // filled in against the main template), while a variant and a drip step carry a
   // body mapping and nothing else. A carousel used as either would therefore be
   // sent with no card parameters at all and Meta would refuse every one of its
   // recipients with (#131008) — so refuse it here, where the operator can still
   // swap the template, rather than per recipient once the audience is spent.
+  //
+  // The parameter gap check had the same hole: it ran against the BASE template
+  // alone, which with A/B enabled is the one template that is never sent —
+  // recipients are bound to variants. There is exactly one shared `templateParams`
+  // set, forwarded unchanged to every variant and every drip step, so a variant
+  // with a media header, a dynamic link or a copy-code button the campaign has no
+  // value for launched clean and was then refused for its whole slice of the
+  // audience.
   for (const ref of [...variantRefs, ...stepRefs]) {
     const other = await getTemplate(ref.id);
-    if (analyzeTemplateSpec(other?.components).carouselCards.length > 0) {
+    const otherSpec = analyzeTemplateSpec(other?.components);
+    if (otherSpec.carouselCards.length > 0) {
       throw new AppError(
         `The template for ${ref.label} is a carousel, and a campaign can only supply cards for its main template. Send the carousel as its own broadcast instead.`,
         400,
         'WA_CAROUSEL_TEMPLATE_NOT_SUPPORTED'
       );
     }
+    // Same reasoning as the base template below: one shared parameter set means
+    // one shared one-time code, which is not a second factor at all.
+    if (other?.category === 'AUTHENTICATION') {
+      throw new AppError(
+        `The template for ${ref.label} is an authentication template, and a campaign would send every recipient the same one-time code. Send these from the inbox or an API integration instead.`,
+        400,
+        'WA_AUTH_TEMPLATE_NOT_BROADCASTABLE'
+      );
+    }
+    const gaps = campaignParamGaps(otherSpec, params);
+    if (gaps.length > 0) {
+      throw new AppError(
+        `The template for ${ref.label} needs ${gaps.join(', ')}, which this campaign does not supply — every template a campaign sends shares one parameter set. Provide the value, or pick a template that needs the same parameters as the others.`,
+        400,
+        'WA_TEMPLATE_PARAMS_MISSING'
+      );
+    }
   }
 
   const spec = analyzeTemplateSpec(tpl.components);
-  const params = (campaign.templateParams ?? {}) as CampaignTemplateParams;
-  const missing: string[] = [];
-  if (spec.headerNeedsMedia && !params.headerMediaUrl) {
-    missing.push(`a ${spec.headerFormat.toLowerCase()} header URL`);
-  }
   // An AUTHENTICATION template needs a UNIQUE one-time code per recipient. A
   // campaign has one shared parameter set, so any code it could send would go to
   // the whole audience at once - useless as a second factor and a real security
@@ -1631,13 +1768,7 @@ export async function launchCampaign(id: string) {
       'WA_AUTH_TEMPLATE_NOT_BROADCASTABLE'
     );
   }
-  if (spec.headerHasTextVar && !params.headerText) missing.push('header text');
-  if (spec.buttonUrlVar && !params.buttonUrlParam) missing.push('a URL-button value');
-  // The marketing extras. Meta rejects a COPY_CODE template with no coupon
-  // parameter and a LIMITED_TIME_OFFER template with no expiration timestamp,
-  // both with (#131008) — per recipient, for the whole audience.
-  if (spec.needsCouponCode && !params.couponCode) missing.push('a coupon code');
-  if (spec.needsLtoExpiration && !params.ltoExpirationMs) missing.push('an offer expiry');
+  const missing: string[] = campaignParamGaps(spec, params);
   // CAROUSEL. The media, the card text and the card button values live on the
   // CARDS, so a carousel campaign is unsatisfiable until every card has them —
   // and Meta refuses the whole message per recipient for one missing card image,
@@ -1667,9 +1798,7 @@ export async function launchCampaign(id: string) {
       // values Meta expects -- not an array.
       const expected = cardSpec.bodyPositional;
       if (supplied > expected) {
-        missing.push(
-          `card ${idx + 1} takes ${expected} value(s) but ${supplied} were supplied`
-        );
+        missing.push(`card ${idx + 1} takes ${expected} value(s) but ${supplied} were supplied`);
       }
     });
     if (cards.length < spec.carouselCards.length) {
@@ -1692,19 +1821,15 @@ export async function launchCampaign(id: string) {
         if (blank.length) {
           missing.push(`${label}'s ${blank.map((n) => `{{${n + 1}}}`).join(', ')} value`);
         }
-        if (card.buttonUrlVar && !supplied.buttonUrlParam?.trim()) {
-          missing.push(`${label}'s button link value`);
-        }
+        const cardUrls = urlButtonValues(supplied);
+        card.buttons
+          .filter((b) => b.hasUrlVar)
+          .forEach((_b, n) => {
+            if (cardUrls[n]?.trim()) return;
+            missing.push(`${label}'s button link value`);
+          });
       });
     }
-  }
-  if (spec.bodyNamed.length > 0) {
-    // Named body variables resolve per recipient, and the campaign materializer
-    // only produces positional values — so this template cannot be campaign-sent
-    // correctly at all. Say so, rather than fail once per recipient.
-    missing.push(
-      `named body variables (${spec.bodyNamed.join(', ')}) which campaigns cannot supply`
-    );
   }
   if (missing.length > 0) {
     throw new AppError(

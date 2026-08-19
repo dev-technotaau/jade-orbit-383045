@@ -82,6 +82,12 @@ jest.mock('../whatsapp-template.service', () => ({
   getTemplate: jest.fn(),
   buildTemplateSendComponents: jest.fn(() => []),
   renderTemplateBody: jest.fn(() => ''),
+  // The template send path mints a per-send flow_token for a FLOW button. No
+  // case here reaches it, but a mock that omits it would fail as "not a
+  // function" the moment one does, which reads as a product bug rather than a
+  // missing stub.
+  templateFlowButton: jest.fn(() => null),
+  mintTemplateFlowToken: jest.fn(() => 'flow-token'),
 }));
 
 jest.mock('../../utils/whatsapp-realtime', () => ({ emitWa: jest.fn() }));

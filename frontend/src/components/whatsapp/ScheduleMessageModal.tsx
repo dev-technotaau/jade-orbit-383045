@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import Modal from '@/components/ui/Modal';
 import Input from '@/components/ui/Input';
@@ -11,6 +11,7 @@ import Textarea from '@/components/ui/Textarea';
 import { showToast } from '@/components/ui/Toast';
 import TemplatePicker from '@/components/whatsapp/TemplatePicker';
 import { whatsappService as svc } from '@/services/whatsapp.service';
+import { analyzeTemplate, templateParamsBeyondBody } from '@/lib/whatsapp-template-vars';
 import type { WaTemplate } from '@/types/whatsapp';
 import type { ApiError } from '@/types/api';
 
@@ -57,6 +58,19 @@ export default function ScheduleMessageModal({
 
   const templateId = selectedTemplate?.id ?? '';
   const varCount = selectedTemplate ? bodyVarCount(selectedTemplate) : 0;
+  /**
+   * What this template needs that a scheduled row cannot carry.
+   *
+   * The row holds a template id and an ordered list of body values and nothing
+   * else, so a template with a media header, a location pin, a dynamic link, a
+   * coupon or an offer expiry was scheduled happily and then refused by Meta at
+   * dispatch — and the panel lists PENDING rows, so the FAILED row simply
+   * vanished. The server refuses it too; this says so before the modal closes.
+   */
+  const unsupported = useMemo(
+    () => (selectedTemplate ? templateParamsBeyondBody(analyzeTemplate(selectedTemplate)) : []),
+    [selectedTemplate],
+  );
 
   const mutation = useMutation({
     mutationFn: () => {
@@ -93,6 +107,11 @@ export default function ScheduleMessageModal({
     }
     if (kind === 'text' && !text.trim()) return showToast.error('Enter a message');
     if (kind === 'template' && !templateId) return showToast.error('Pick an approved template');
+    if (kind === 'template' && unsupported.length > 0) {
+      return showToast.error(
+        `This template needs ${unsupported.join(', ')}, which a scheduled message cannot supply. Pick a template that needs body values alone.`,
+      );
+    }
     if (kind === 'media' && !file) return showToast.error('Choose a file');
     mutation.mutate();
   };
@@ -157,6 +176,12 @@ export default function ScheduleMessageModal({
                 setParams([]);
               }}
             />
+            {unsupported.length > 0 && (
+              <p className="text-error text-xs">
+                This template needs {unsupported.join(', ')}. A scheduled message carries its body
+                values only — pick a template that needs nothing else.
+              </p>
+            )}
             {varCount > 0 && (
               <div className="space-y-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-3">
                 <p className="text-xs font-semibold text-[var(--text-muted)]">

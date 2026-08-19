@@ -173,6 +173,13 @@ export async function advanceDueSequenceRecipients(): Promise<void> {
         createdBy: true,
         throttlePerSec: true,
         respectBusinessHours: true,
+        // The campaign-wide send parameters. The broadcast worker has forwarded
+        // these for a while; a drip step sent body values and nothing else, so
+        // any step template with a media header, a location pin, a dynamic link,
+        // a coupon or an offer countdown was refused by Meta with (#131008) —
+        // and that refusal was retryable, so the recipient re-sent the same
+        // unsendable step every 15 minutes until its attempt budget ran out.
+        templateParams: true,
       },
     });
 
@@ -237,6 +244,25 @@ export async function advanceDueSequenceRecipients(): Promise<void> {
         // campaign tick, not per recipient.
         const linkCodes = await getCampaignLinkCodes(campaign.id);
 
+        // Campaign-wide template parameters, shared by every step exactly as they
+        // are by every A/B variant on the broadcast path. `launchCampaign` has
+        // already refused a campaign whose step templates need a value this set
+        // does not carry, so anything missing here was never launchable.
+        const tp = (campaign.templateParams ?? {}) as {
+          headerText?: string;
+          headerMediaUrl?: string;
+          headerMediaType?: 'image' | 'video' | 'document';
+          headerMediaFilename?: string;
+          headerLocation?: { latitude: number; longitude: number; name?: string; address?: string };
+          buttonUrlParam?: string;
+          buttonUrlParams?: string[];
+          couponCode?: string;
+          ltoExpirationMs?: number;
+          catalogThumbnailProductId?: string;
+          productSections?: Array<{ title: string; productRetailerIds: string[] }>;
+          productRetailerId?: string;
+        };
+
         const now = new Date();
         const due = await prisma.waCampaignRecipient.findMany({
           where: {
@@ -300,6 +326,27 @@ export async function advanceDueSequenceRecipients(): Promise<void> {
                 bodyParams: resolveTemplateVars(stepMapping, recipient.contact).map((v) =>
                   appendRecipientToken(v, recipient.contactId, linkCodes)
                 ),
+                // The campaign's shared parameters, exactly as the broadcast
+                // worker forwards them. Emission is gated on each step
+                // template's OWN components, so a value filled in for a step
+                // that needs it is never emitted against one that does not —
+                // which is what makes a single shared set safe here.
+                headerText: tp.headerText,
+                headerMediaUrl: tp.headerMediaUrl,
+                headerMediaType: tp.headerMediaType,
+                headerMediaFilename: tp.headerMediaFilename,
+                headerLocation: tp.headerLocation,
+                buttonUrlParam: tp.buttonUrlParam
+                  ? appendRecipientToken(tp.buttonUrlParam, recipient.contactId, linkCodes)
+                  : undefined,
+                buttonUrlParams: tp.buttonUrlParams?.map((url) =>
+                  url ? appendRecipientToken(url, recipient.contactId, linkCodes) : url
+                ),
+                couponCode: tp.couponCode,
+                ltoExpirationMs: tp.ltoExpirationMs,
+                catalogThumbnailProductId: tp.catalogThumbnailProductId,
+                productSections: tp.productSections,
+                productRetailerId: tp.productRetailerId,
                 campaignId: campaign.id,
               }
             );

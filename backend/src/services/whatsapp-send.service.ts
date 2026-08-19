@@ -31,8 +31,13 @@ import {
   getTemplate,
   buildTemplateSendComponents,
   renderTemplateBody,
+  analyzeTemplateSpec,
+  missingTemplateSendParams,
+  templateFlowButton,
+  mintTemplateFlowToken,
+  urlButtonValues,
 } from './whatsapp-template.service';
-import type { TemplateSendCarouselCard } from './whatsapp-template.service';
+import type { TemplateSendCarouselCard, TemplateProductSection } from './whatsapp-template.service';
 import { emitWa } from '../utils/whatsapp-realtime';
 import { emitWaEvent } from './whatsapp-events.service';
 import { waMessagesTotal, waSendFailuresTotal, waSendDuration } from '../utils/whatsapp-metrics';
@@ -503,7 +508,25 @@ interface TemplateSendInput {
   headerImageId?: string;
   headerMediaUrl?: string;
   headerMediaType?: 'image' | 'video' | 'document';
+  /**
+   * DOCUMENT header: the filename the attachment shows on the handset.
+   *
+   * The ordinary document send has always passed one (`sendMediaMessage`), so
+   * the same PDF arrived correctly named as a session message and named after
+   * its media id — or the last segment of its URL — when it headed a template.
+   */
+  headerMediaFilename?: string;
+  /** Value for the FIRST dynamic URL button — the single-button shorthand. */
   buttonUrlParam?: string;
+  /**
+   * One value per dynamic URL button, in the order the template authored them.
+   *
+   * Meta allows TWO URL buttons and either may carry a {{n}} suffix. Only the
+   * first could ever be filled in, so a template with two — unauthorable here,
+   * but imported APPROVED from Business Manager — was refused for every
+   * recipient with (#131008) because the second button got no parameter.
+   */
+  buttonUrlParams?: string[];
   /**
    * One-time code for an AUTHENTICATION template. Sent as BOTH the body
    * parameter and the button parameter, which is what the Cloud API demands.
@@ -516,6 +539,20 @@ interface TemplateSendInput {
   /** LOCATION header pin. */
   headerLocation?: { latitude: number; longitude: number; name?: string; address?: string };
   /**
+   * FLOW button: the correlation id Meta echoes back on the submission. Left
+   * unset the send mints one, which is the only way the reply can be tied to the
+   * Flow that produced it — Meta's own default cannot be decoded.
+   */
+  flowToken?: string;
+  /** FLOW button: data for the Flow's entry screen (`flow_action_data`). */
+  flowActionData?: Record<string, unknown>;
+  /** CATALOG / MPM button: the SKU whose image heads the card. */
+  catalogThumbnailProductId?: string;
+  /** MPM button: the product list by section — chosen per send, never authored. */
+  productSections?: TemplateProductSection[];
+  /** PRODUCT header (single-product template): the SKU to show. */
+  productRetailerId?: string;
+  /**
    * Per-card values for a CAROUSEL template, in card order.
    *
    * A carousel's media, body values and button values live on the CARDS, not on
@@ -526,6 +563,92 @@ interface TemplateSendInput {
    */
   carouselCards?: TemplateSendCarouselCard[];
   campaignId?: string;
+}
+
+/**
+ * The `WaMessage.payload` a TEMPLATE row carries — the record of what was sent.
+ *
+ * Two halves, and both are needed. `template.components` is the APPROVED template
+ * as Meta returned it, copied onto the row rather than looked up at render time:
+ * a template can be edited, re-approved or re-categorised afterwards, and reading
+ * it live would redraw a message the customer never received with today's wording
+ * (and would show nothing at all once the template is deleted). `values` is what
+ * this particular send filled the placeholders with.
+ *
+ * `values` is always written, even when empty — its presence is what tells the
+ * inbox this payload is ours to render, as opposed to the raw Cloud API body the
+ * Chatwoot bridge stores on the rows it dispatches.
+ */
+export type WaTemplateMessagePayload = {
+  template: {
+    name: string;
+    language: string;
+    category: WaTemplateCategory;
+    components: unknown;
+  };
+  values: {
+    headerText?: string;
+    /** Uploaded header media — also mirrored onto `WaMessage.mediaId`. */
+    headerMediaId?: string;
+    /** Header media by public link; there is no media row behind one of these. */
+    headerMediaUrl?: string;
+    headerMediaType?: 'image' | 'video' | 'document';
+    headerMediaFilename?: string;
+    headerLocation?: { latitude: number; longitude: number; name?: string; address?: string };
+    bodyParams?: string[];
+    bodyNamedParams?: Array<{ name: string; text: string }>;
+    /** One value per DYNAMIC url button, in authored order. */
+    buttonUrlParams?: string[];
+    couponCode?: string;
+    ltoExpirationMs?: number;
+    catalogThumbnailProductId?: string;
+    productSections?: TemplateProductSection[];
+    productRetailerId?: string;
+    carouselCards?: TemplateSendCarouselCard[];
+  };
+};
+
+/**
+ * Build that record from the template row and the values the send resolved.
+ *
+ * Deliberately NOT given the one-time code of an AUTHENTICATION template as a
+ * field of its own. The code is already `bodyParams[0]` here — the send derives
+ * the body parameter from `otpCode` so the body and the copy button cannot
+ * disagree — and storing a live code twice on the same row buys the bubble
+ * nothing it cannot read from the body it renders anyway.
+ */
+function buildTemplateMessagePayload(
+  tpl: { name: string; language: string; category: WaTemplateCategory; components: unknown },
+  input: TemplateSendInput & { bodyParams?: string[] }
+): WaTemplateMessagePayload {
+  const urlValues = urlButtonValues(input);
+  return {
+    template: {
+      name: tpl.name,
+      language: tpl.language,
+      category: tpl.category,
+      components: tpl.components,
+    },
+    values: {
+      ...(input.headerText ? { headerText: input.headerText } : {}),
+      ...(input.headerImageId ? { headerMediaId: input.headerImageId } : {}),
+      ...(input.headerMediaUrl ? { headerMediaUrl: input.headerMediaUrl } : {}),
+      ...(input.headerMediaType ? { headerMediaType: input.headerMediaType } : {}),
+      ...(input.headerMediaFilename ? { headerMediaFilename: input.headerMediaFilename } : {}),
+      ...(input.headerLocation ? { headerLocation: input.headerLocation } : {}),
+      ...(input.bodyParams?.length ? { bodyParams: input.bodyParams } : {}),
+      ...(input.bodyNamedParams?.length ? { bodyNamedParams: input.bodyNamedParams } : {}),
+      ...(urlValues.length ? { buttonUrlParams: urlValues } : {}),
+      ...(input.couponCode ? { couponCode: input.couponCode } : {}),
+      ...(input.ltoExpirationMs !== undefined ? { ltoExpirationMs: input.ltoExpirationMs } : {}),
+      ...(input.catalogThumbnailProductId
+        ? { catalogThumbnailProductId: input.catalogThumbnailProductId }
+        : {}),
+      ...(input.productSections?.length ? { productSections: input.productSections } : {}),
+      ...(input.productRetailerId ? { productRetailerId: input.productRetailerId } : {}),
+      ...(input.carouselCards?.length ? { carouselCards: input.carouselCards } : {}),
+    },
+  };
 }
 
 /**
@@ -642,25 +765,92 @@ export async function sendTemplateToConversation(
   }
   await assertSendAllowed({ contact: conv.contact, category: tpl.category });
 
-  const components = buildTemplateSendComponents({
-    // An AUTHENTICATION template carries the code TWICE: once as the body
-    // parameter and once on the button. Defaulting the body here means a caller
-    // supplies the code once and cannot get the two halves out of sync.
-    bodyParams:
-      input.otpCode && (!input.bodyParams || input.bodyParams.length === 0)
+  const spec = analyzeTemplateSpec(tpl.components);
+
+  // An AUTHENTICATION template carries the code TWICE: once as the body
+  // parameter and once on the button, and Meta shows the body's copy while the
+  // button copies its own — so two DIFFERENT values mean the customer taps
+  // "copy" and pastes a code the message never displayed, and their login fails
+  // while the send looks perfectly successful. The code is therefore the body
+  // parameter for such a template, full stop: whatever the caller put in
+  // `bodyParams` cannot be anything else, and defaulting only when the array was
+  // empty left the two halves free to disagree.
+  const bodyParams =
+    spec.needsOtpCode && input.otpCode
+      ? [input.otpCode]
+      : input.otpCode && (!input.bodyParams || input.bodyParams.length === 0)
         ? [input.otpCode]
-        : input.bodyParams,
+        : input.bodyParams;
+
+  // REFUSE a send this template cannot satisfy, BEFORE Graph is called.
+  //
+  // The campaign path has always run this comparison at launch, so an
+  // unsatisfiable broadcast is refused before an audience is spent. This path —
+  // the inbox, `startConversationWithTemplate`, the scheduled-message runner, the
+  // keyword/bot-flow auto-replies and every drip step — had no equivalent: a
+  // caller could send a template with none of its required parameters and the
+  // only feedback was Meta's opaque (#131008), once per recipient. Same spec,
+  // same wording, answered locally.
+  const missing = missingTemplateSendParams(spec, {
+    ...input,
+    bodyParams,
+  });
+  if (missing.length > 0) {
+    throw new AppError(
+      `Template "${tpl.name}" needs ${missing.join(', ')}. WhatsApp refuses a message whose parameters do not match the approved template.`,
+      400,
+      'WA_TEMPLATE_PARAMS_MISSING'
+    );
+  }
+
+  // A single-product template's header names the SKU *and* the catalog it lives
+  // in. The catalog is a property of the number, never of the caller, so it is
+  // resolved here — and a template that needs one on a number with none bound is
+  // refused with a sentence the operator can act on instead of Meta's (#131008).
+  const catalogId = spec.needsProduct ? await getChannelCatalogId(conv.channelId) : null;
+  if (spec.needsProduct && !catalogId) {
+    throw new AppError(
+      'No catalog is bound to this number, so a product template cannot be sent. ' +
+        'Connect one under Settings → Commerce first.',
+      409,
+      'WA_NO_CATALOG'
+    );
+  }
+
+  // FLOW button: mint the per-send correlation token unless the caller named one.
+  //
+  // Meta defaults this field, so nothing was ever REJECTED for its absence — but
+  // its default is opaque, so every Flow submission arriving from a template
+  // landed with `flowId: null` and the Flows page's per-flow response list stayed
+  // empty no matter how many customers completed it.
+  const flowButton = templateFlowButton(tpl.components);
+  const flowToken =
+    input.flowToken ?? (flowButton ? mintTemplateFlowToken(flowButton.metaFlowId) : undefined);
+
+  const components = buildTemplateSendComponents({
+    bodyParams,
     bodyNamedParams: input.bodyNamedParams,
     headerText: input.headerText,
     headerImageId: input.headerImageId,
     headerMediaUrl: input.headerMediaUrl,
     headerMediaType: input.headerMediaType,
+    headerMediaFilename: input.headerMediaFilename,
     buttonUrlParam: input.buttonUrlParam,
+    buttonUrlParams: input.buttonUrlParams,
     otpCode: input.otpCode,
     couponCode: input.couponCode,
     ltoExpirationMs: input.ltoExpirationMs,
     headerLocation: input.headerLocation,
     carouselCards: input.carouselCards,
+    // Flow + catalogue parameters. All four were unreachable from any send path,
+    // so a FLOW template could not be correlated and a catalog / multi-product
+    // template went out with no products named at all.
+    flowToken,
+    flowActionData: input.flowActionData,
+    catalogThumbnailProductId: input.catalogThumbnailProductId,
+    productSections: input.productSections,
+    productRetailerId: input.productRetailerId,
+    catalogId: catalogId ?? undefined,
     // The authored components decide which INDEX each button parameter carries.
     // Without them the builder numbered buttons by the order it emitted them, so
     // a coupon template whose COPY_CODE button sits after a quick reply was sent
@@ -671,9 +861,15 @@ export async function sendTemplateToConversation(
   // Render the body with variables substituted so the chat bubble shows the
   // actual message (an empty `text` renders as an empty bubble). Falls back to a
   // labelled preview only if the template has no body text.
+  //
+  // Rendered from the SAME array that went to Meta, not from `input.bodyParams`.
+  // An authentication caller supplies the code once as `otpCode` — which is what
+  // the compose modal now does, since asking for the code twice let the body and
+  // the copy button disagree — and reading the raw input here stored the literal
+  // "{{1}} is your verification code" on a row whose recipient saw the real code.
   const renderedBody =
     renderTemplateBody(tpl.components, {
-      bodyParams: input.bodyParams,
+      bodyParams,
       bodyNamedParams: input.bodyNamedParams,
     }) || `[template] ${tpl.name}`;
 
@@ -690,6 +886,25 @@ export async function sendTemplateToConversation(
     templateLanguage: tpl.language,
     templateCategory: tpl.category,
     campaignId: input.campaignId,
+    // WHAT WE SENT, kept on the row so the inbox can draw the message the
+    // customer actually received.
+    //
+    // Everything but the body text used to be discarded the moment Graph
+    // answered: the header, the footer, the buttons, the carousel cards, the
+    // offer countdown. The bubble was one paragraph, so an agent reading the
+    // thread back could not tell an "Order shipped" header from an "Order
+    // cancelled" one when both share a body, could not see which coupon code was
+    // issued when the customer wrote "the code doesn't work", and saw a ten-card
+    // product carousel — the most expensive message this console can send — as a
+    // single line of text.
+    //
+    // Every other rich outbound type (interactive, media, location, contacts)
+    // already stored its payload here; the template path simply never passed one.
+    payload: buildTemplateMessagePayload(tpl, { ...input, bodyParams }),
+    // The header media, in the columns the media renderers already read. Only an
+    // UPLOADED header has an id; a link header is recorded in the payload above,
+    // because there is no media row behind it to fetch.
+    mediaId: input.headerImageId ?? null,
     message: {
       type: 'template',
       template: { name: tpl.name, language: { code: tpl.language }, components },
@@ -1270,11 +1485,23 @@ export async function startConversationWithTemplate(input: {
   headerImageId?: string;
   headerMediaUrl?: string;
   headerMediaType?: 'image' | 'video' | 'document';
+  /** DOCUMENT header: the filename the attachment shows on the handset. */
+  headerMediaFilename?: string;
   buttonUrlParam?: string;
+  /** One value per dynamic URL button, in authored order (Meta allows two). */
+  buttonUrlParams?: string[];
   otpCode?: string;
   couponCode?: string;
   ltoExpirationMs?: number;
   headerLocation?: { latitude: number; longitude: number; name?: string; address?: string };
+  /** FLOW button: data for the Flow's entry screen. The token is minted per send. */
+  flowActionData?: Record<string, unknown>;
+  /** CATALOG / MPM button: the SKU whose image heads the card. */
+  catalogThumbnailProductId?: string;
+  /** MPM button: the product list by section. */
+  productSections?: TemplateProductSection[];
+  /** PRODUCT header (single-product template): the SKU to show. */
+  productRetailerId?: string;
   /** Per-card values for a CAROUSEL template, in card order. */
   carouselCards?: TemplateSendCarouselCard[];
   /** Tag the contact this creates as a test recipient (campaign test-send). */
@@ -1302,15 +1529,21 @@ export async function startConversationWithTemplate(input: {
     headerImageId: input.headerImageId,
     headerMediaUrl: input.headerMediaUrl,
     headerMediaType: input.headerMediaType,
+    headerMediaFilename: input.headerMediaFilename,
     buttonUrlParam: input.buttonUrlParam,
+    buttonUrlParams: input.buttonUrlParams,
     // Forwarded, not dropped. A new conversation opened with an OTP, coupon,
-    // limited-time-offer or location template needs the same runtime parameters
-    // as a send into an existing thread; without them Meta refuses the message
-    // with (#131008) and the conversation never starts at all.
+    // limited-time-offer, location or catalogue template needs the same runtime
+    // parameters as a send into an existing thread; without them Meta refuses the
+    // message with (#131008) and the conversation never starts at all.
     otpCode: input.otpCode,
     couponCode: input.couponCode,
     ltoExpirationMs: input.ltoExpirationMs,
     headerLocation: input.headerLocation,
+    flowActionData: input.flowActionData,
+    catalogThumbnailProductId: input.catalogThumbnailProductId,
+    productSections: input.productSections,
+    productRetailerId: input.productRetailerId,
     carouselCards: input.carouselCards,
   });
   return { conversationId: conversation.id, message };

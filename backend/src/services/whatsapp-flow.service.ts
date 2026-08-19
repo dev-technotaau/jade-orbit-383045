@@ -2,6 +2,7 @@ import { prisma } from '../config/prisma';
 import logger from '../config/logger';
 import { AppError } from '../middleware/error';
 import { env } from '../config/env';
+import { metaFlowIdFromToken } from './whatsapp-template.service';
 
 /**
  * WhatsApp Flows — Meta's native multi-screen forms.
@@ -265,13 +266,32 @@ export async function recordFlowResponse(input: {
           .catch(() => null)
       : null;
 
+    // The lookup above can only ever find a flow on the SECOND submission under
+    // one token — nothing seeds that table with a flowId — so in practice every
+    // row landed with `flowId: null` and the Flows page's per-flow response list
+    // was empty however many customers completed the Flow. A token minted by the
+    // template send path names the Flow itself (see mintTemplateFlowToken), so
+    // decode it when the lookup comes back empty.
+    let flowId = flow?.flowId ?? null;
+    if (!flowId) {
+      const metaId = metaFlowIdFromToken(input.flowToken);
+      if (metaId) {
+        flowId =
+          (
+            await prisma.waFlow
+              .findUnique({ where: { metaId }, select: { id: true } })
+              .catch(() => null)
+          )?.id ?? null;
+      }
+    }
+
     await prisma.waFlowResponse.create({
       data: {
         conversationId: input.conversationId,
         contactId: input.contactId,
         messageId: input.messageId,
         flowToken: input.flowToken ?? null,
-        flowId: flow?.flowId ?? null,
+        flowId,
         responseJson: input.responseJson as never,
       },
     });

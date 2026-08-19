@@ -1,11 +1,10 @@
 'use client';
 
-import { useCallback, useState } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
 import Input from '@/components/ui/Input';
 import TemplatePicker from '@/components/whatsapp/TemplatePicker';
 import type { WaTemplate } from '@/types/whatsapp';
-import { analyzeTemplate } from '@/lib/whatsapp-template-vars';
+import { analyzeTemplate, templateParamsBeyondBody } from '@/lib/whatsapp-template-vars';
 import Button from '@/components/ui/Button';
 
 export interface VariantDraft {
@@ -19,6 +18,16 @@ export interface VariantDraft {
    * recipient a template with blank placeholders.
    */
   variableMapping?: string[];
+  /**
+   * The picked template itself, kept on the row and never sent.
+   *
+   * The picker searches server-side, so nothing else on the page can look the id
+   * up — and without the components the page cannot tell whether the variant
+   * needs parameters the campaign has no field for. It was resolved inside this
+   * builder only, which is why the wizard's submit gate had no way to check a
+   * variant at all.
+   */
+  template?: WaTemplate | null;
 }
 
 interface CampaignVariantBuilderProps {
@@ -43,22 +52,6 @@ export default function CampaignVariantBuilder({
   minVariants = 2,
 }: CampaignVariantBuilderProps) {
   const totalWeight = variants.reduce((sum, v) => sum + (parseInt(v.weight, 10) || 0), 0);
-
-  /**
-   * Templates the pickers have handed back, by id.
-   *
-   * The builder needs the SELECTED template's components to know how many {{n}}
-   * inputs to render. It used to read them out of a list the page pre-fetched,
-   * which capped the choice at whatever that one request returned and left the
-   * campaign detail page (which passed no list at all) unable to render the
-   * parameter inputs for a variant at all. The picker searches server-side, so
-   * the catalogue is never wholly in the browser — what it resolves is kept here
-   * instead.
-   */
-  const [resolved, setResolved] = useState<Record<string, WaTemplate>>({});
-  const remember = useCallback((tpl: WaTemplate) => {
-    setResolved((m) => (m[tpl.id] ? m : { ...m, [tpl.id]: tpl }));
-  }, []);
 
   return (
     <div className="space-y-3">
@@ -97,12 +90,20 @@ export default function CampaignVariantBuilder({
                   value={v.templateId}
                   placeholder="Select a template"
                   onChange={(tpl) => {
-                    if (tpl) remember(tpl);
                     // A different template has a different placeholder count, so
                     // a carried-over mapping would fill the wrong slots.
-                    onChange(i, { templateId: tpl?.id ?? '', variableMapping: [] });
+                    onChange(i, {
+                      templateId: tpl?.id ?? '',
+                      template: tpl ?? null,
+                      variableMapping: [],
+                    });
                   }}
-                  onResolve={remember}
+                  // Fires once when the picker resolves an id it was handed (an
+                  // existing campaign's saved variants), so an edit flow gets the
+                  // components without touching the mapping already loaded.
+                  onResolve={(tpl) => {
+                    if (variants[i]?.template?.id !== tpl.id) onChange(i, { template: tpl });
+                  }}
                 />
               </div>
               <Input
@@ -118,7 +119,7 @@ export default function CampaignVariantBuilder({
               // `variableMapping: undefined` for A/B campaigns and nothing else
               // supplied one, so every recipient received a template with empty
               // placeholders.
-              const tpl = v.templateId ? resolved[v.templateId] : undefined;
+              const tpl = v.templateId ? (v.template ?? undefined) : undefined;
               const variantSpec = tpl ? analyzeTemplate(tpl) : null;
               // A campaign carries ONE carousel card set, filled in against its
               // main template, and a variant carries a body mapping and nothing
@@ -131,6 +132,22 @@ export default function CampaignVariantBuilder({
                   <p className="text-error mt-3 text-[11px]">
                     Carousel templates cannot be A/B variants — a campaign supplies cards for its
                     main template only. Send the carousel as its own broadcast.
+                  </p>
+                );
+              }
+              // Everything else a variant cannot carry, for the same reason: the
+              // campaign's one parameter set is filled in against the MAIN
+              // template and the wizard hides those inputs once A/B is on, so a
+              // variant needing a header, a link value, a coupon or an offer
+              // expiry launched clean and was then refused for its whole slice of
+              // the audience.
+              const unsupported = variantSpec ? templateParamsBeyondBody(variantSpec) : [];
+              if (unsupported.length > 0) {
+                return (
+                  <p className="text-error mt-3 text-[11px]">
+                    This template needs {unsupported.join(', ')}, which an A/B variant cannot
+                    supply — a campaign fills those in for its main template only. Pick a template
+                    that needs body values alone.
                   </p>
                 );
               }

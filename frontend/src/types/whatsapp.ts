@@ -1182,11 +1182,47 @@ export interface WaCampaignTemplateParams {
   headerText?: string;
   headerMediaUrl?: string;
   headerMediaType?: 'image' | 'video' | 'document';
+  /**
+   * DOCUMENT header: the filename the attachment shows on the handset.
+   *
+   * Campaign-wide like the URL itself. Without it every recipient's PDF is named
+   * after the URL's last path segment rather than "Invoice-October.pdf".
+   */
+  headerMediaFilename?: string;
+  /**
+   * LOCATION header pin — one place for the whole audience, like the media above.
+   *
+   * A LOCATION-header template used to pass every check the wizard and the API
+   * make and then be refused by Meta with (#131008) for every recipient, because
+   * nothing on the campaign path carried the pin.
+   */
+  headerLocation?: { latitude: number; longitude: number; name?: string; address?: string };
+  /** Value for the FIRST dynamic URL button — the single-button shorthand. */
   buttonUrlParam?: string;
+  /**
+   * One value per dynamic URL button, in authored order.
+   *
+   * Meta allows two URL buttons and either may be dynamic. One scalar filled only
+   * the first, so a two-link template launched clean and was then refused for the
+   * whole audience with (#131008) for the button nothing addressed.
+   */
+  buttonUrlParams?: string[];
   /** COPY_CODE button value — one coupon shared by the whole audience. */
   couponCode?: string;
   /** LIMITED_TIME_OFFER countdown expiry, epoch ms. */
   ltoExpirationMs?: number;
+  /**
+   * Catalogue products, campaign-wide like the header media.
+   *
+   * The thumbnail SKU heads a CATALOG or MPM card (optional for CATALOG — Meta
+   * falls back to the catalog's first item), the sections are a multi-product
+   * template's product list, and the retailer id fills a single-product
+   * template's PRODUCT header. All three are chosen per send: they exist nowhere
+   * in the approved template.
+   */
+  catalogThumbnailProductId?: string;
+  productSections?: WaTemplateProductSection[];
+  productRetailerId?: string;
   /**
    * CAROUSEL cards, in card order — one entry per card the template carries.
    * Campaign-wide, like the header media above: the whole audience gets the same
@@ -1207,8 +1243,18 @@ export interface WaCarouselCardParams {
   headerMediaType?: 'image' | 'video';
   /** Positional values for this card's own {{n}} placeholders. */
   bodyParams?: string[];
-  /** Value for this card's dynamic {{n}} URL-button suffix. */
+  /** Value for this card's FIRST dynamic {{n}} URL-button suffix. */
   buttonUrlParam?: string;
+  /** One value per dynamic URL button on this card, in authored order. */
+  buttonUrlParams?: string[];
+}
+
+/** One section of a multi-product (MPM) template's product list. */
+export interface WaTemplateProductSection {
+  /** Section heading. Meta caps it at 24 characters. */
+  title: string;
+  /** The SKUs in this section, as they appear in the bound catalog. */
+  productRetailerIds: string[];
 }
 
 export interface WaShortLink {

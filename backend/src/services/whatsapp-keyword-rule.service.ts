@@ -1,5 +1,6 @@
 import { prisma } from '../config/prisma';
 import { AppError } from '../middleware/error';
+import { assertTemplateSendableWithBodyParamsOnly } from './whatsapp-template.service';
 import { Prisma, type WaKeywordMatchType } from '@prisma/client';
 
 /**
@@ -28,6 +29,15 @@ export async function createKeywordRule(input: {
   priority?: number;
   createdBy?: string | null;
 }) {
+  // A rule carries a template id and an ordered list of {{n}} values — there is
+  // no field on it for a header, a link value, a coupon or an offer expiry, so a
+  // template that needs one of those answers every matching customer with
+  // nothing at all: the auto-reply send is refused by Meta with (#131008) and
+  // the failure surfaces only as the rule's `lastError`. Named here, while the
+  // operator is still looking at the template picker.
+  if (input.replyTemplateId) {
+    await assertTemplateSendableWithBodyParamsOnly(input.replyTemplateId, 'a keyword rule');
+  }
   return prisma.waKeywordRule.create({
     data: {
       name: input.name,
@@ -78,6 +88,11 @@ export async function updateKeywordRule(
     priority?: number;
   }
 ) {
+  // Same gate as create: swapping in an unsendable template through an edit is
+  // exactly as silent as choosing one at creation.
+  if (patch.replyTemplateId) {
+    await assertTemplateSendableWithBodyParamsOnly(patch.replyTemplateId, 'a keyword rule');
+  }
   try {
     return await prisma.waKeywordRule.update({
       where: { id },

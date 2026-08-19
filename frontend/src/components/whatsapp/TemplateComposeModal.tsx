@@ -14,11 +14,22 @@ import { whatsappService as svc } from '@/services/whatsapp.service';
 import { cn } from '@/lib/utils';
 import {
   analyzeTemplate,
+  parseProductSkus,
   templateExamples,
   type TemplateSendPayload,
 } from '@/lib/whatsapp-template-vars';
 import type { ApiError } from '@/types/api';
 import type { WaContactLite, WaTemplate } from '@/types/whatsapp';
+
+/**
+ * Is this enough of a number to stage media against?
+ *
+ * A Meta media id is scoped to the phone number that uploaded it, so an upload
+ * has to know which of our numbers the send will resolve to — and that is
+ * decided by the recipient. The same test gates submit, so the upload control is
+ * never enabled for a number the send would then refuse.
+ */
+const plausiblePhone = (value: string): boolean => value.replace(/\D/g, '').length >= 8;
 
 /** File types a media header accepts, by the template's header format. */
 const HEADER_ACCEPT: Record<string, string> = {
@@ -39,7 +50,8 @@ interface CardDraft {
   fileName: string;
   uploading: boolean;
   bodyParams: string[];
-  buttonUrlParam: string;
+  /** One value per dynamic URL button on this card — Meta allows two. */
+  buttonUrlParams: string[];
 }
 
 const EMPTY_CARD: CardDraft = {
@@ -49,8 +61,22 @@ const EMPTY_CARD: CardDraft = {
   fileName: '',
   uploading: false,
   bodyParams: [],
-  buttonUrlParam: '',
+  buttonUrlParams: [],
 };
+
+/**
+ * One MPM section as the form holds it.
+ *
+ * A multi-product template's products are chosen at SEND time — they are not
+ * part of the approved template — and there is no API here for browsing the
+ * bound catalog, so the SKUs are typed (one per line or comma-separated).
+ */
+interface SectionDraft {
+  title: string;
+  skus: string;
+}
+
+const EMPTY_SECTION: SectionDraft = { title: '', skus: '' };
 
 /**
  * Compose + send an approved template — either to start a NEW conversation
@@ -94,6 +120,10 @@ export default function TemplateComposeModal({
   const [headerMediaMode, setHeaderMediaMode] = useState<'upload' | 'url'>('upload');
   const [headerMediaId, setHeaderMediaId] = useState('');
   const [headerFileName, setHeaderFileName] = useState('');
+  // DOCUMENT headers only, and only in URL mode: the name the attachment shows
+  // on the handset. In upload mode the picked file's own name is used, which is
+  // the name the operator already sees on the chip.
+  const [headerDocName, setHeaderDocName] = useState('');
   const [headerObjectUrl, setHeaderObjectUrl] = useState('');
   const [uploadingHeader, setUploadingHeader] = useState(false);
   // Object URLs are process-wide; the local image preview leaks without this.
@@ -102,7 +132,19 @@ export default function TemplateComposeModal({
       if (headerObjectUrl) URL.revokeObjectURL(headerObjectUrl);
     };
   }, [headerObjectUrl]);
-  const [buttonUrlParam, setButtonUrlParam] = useState('');
+  // One value per DYNAMIC URL button: Meta allows two URL buttons and either may
+  // carry a {{n}} suffix. A single field could only fill the first, so a template
+  // with two was refused by Meta with (#131008) for a value the modal never asked
+  // for — an error the operator had no way to act on.
+  const [buttonUrlParams, setButtonUrlParams] = useState<string[]>([]);
+  const setUrlParam = (n: number, value: string) =>
+    setButtonUrlParams((prev) => Object.assign([...prev], { [n]: value }));
+  // Catalogue templates pick their products per send. The thumbnail is optional
+  // (Meta uses the catalog's first item without it); the MPM sections and the
+  // single-product SKU are the message itself.
+  const [catalogThumbnail, setCatalogThumbnail] = useState('');
+  const [productId, setProductId] = useState('');
+  const [sections, setSections] = useState<SectionDraft[]>([EMPTY_SECTION]);
   // Authentication templates: the one-time code. Sent as both the body and the
   // button parameter by the API layer, so it is entered once here.
   const [otpCode, setOtpCode] = useState('');
@@ -112,6 +154,18 @@ export default function TemplateComposeModal({
   const [lng, setLng] = useState('');
   const [placeName, setPlaceName] = useState('');
   const [placeAddress, setPlaceAddress] = useState('');
+
+  /**
+   * May media be staged at Meta yet?
+   *
+   * In 'new' mode the upload has to go up under the number the send will resolve
+   * to, which is decided by the recipient — so until a plausible number is typed
+   * there is nothing to stage against and the backend would fall back to the
+   * default channel. On a multi-number WABA that produced a media id belonging to
+   * the wrong number, and Meta then rejected a send whose upload had visibly
+   * succeeded.
+   */
+  const canStageMedia = mode === 'reply' || plausiblePhone(phone);
 
   const spec = selected ? analyzeTemplate(selected) : null;
   /**
@@ -153,6 +207,7 @@ export default function TemplateComposeModal({
   const clearHeaderMedia = () => {
     setHeaderMediaId('');
     setHeaderFileName('');
+    setHeaderDocName('');
     setHeaderObjectUrl((prev) => {
       if (prev) URL.revokeObjectURL(prev);
       return '';
@@ -165,7 +220,10 @@ export default function TemplateComposeModal({
     setHeaderText('');
     setHeaderMediaUrl('');
     clearHeaderMedia();
-    setButtonUrlParam('');
+    setButtonUrlParams([]);
+    setCatalogThumbnail('');
+    setProductId('');
+    setSections([EMPTY_SECTION]);
     setCards([]);
   };
 
@@ -242,6 +300,37 @@ export default function TemplateComposeModal({
     }
   };
 
+  /**
+   * Drop staged media when the recipient changes.
+   *
+   * The media id was uploaded against whichever number `phone` resolved to at
+   * the time. Typing a different number can resolve the send to a SECOND number
+   * on a multi-number WABA, and Meta then rejects a media id that belongs to the
+   * first — an opaque send failure on an upload that visibly succeeded. Clearing
+   * it makes the operator re-stage against the number that will actually send.
+   *
+   * Done in the field's own change handler rather than an effect keyed on
+   * `phone`: the reset is a consequence of the operator editing the recipient,
+   * not a synchronisation with anything outside React, and an effect would
+   * cascade a second render on every keystroke. The card list is returned
+   * unchanged when nothing is staged so React can bail out of that render.
+   */
+  const onPhoneChange = (next: string) => {
+    setPhone(next);
+    if (mode !== 'new') return;
+    setHeaderMediaId('');
+    setHeaderFileName('');
+    setHeaderObjectUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return '';
+    });
+    setCards((prev) =>
+      prev.some((c) => c.mediaId || c.fileName)
+        ? prev.map((c) => ({ ...c, mediaId: '', fileName: '' }))
+        : prev,
+    );
+  };
+
   /** Build the full send payload from the template's variable spec. */
   const buildPayload = (): TemplateSendPayload => {
     const payload: TemplateSendPayload = { templateId };
@@ -251,7 +340,12 @@ export default function TemplateComposeModal({
         name,
         text: (named[name] ?? '').trim(),
       }));
-    } else if (spec.bodyPositional > 0) {
+    } else if (spec.bodyPositional > 0 && !spec.needsOtpCode) {
+      // An AUTHENTICATION template's body {{1}} IS the one-time code — Meta
+      // renders the code in the body and the copy button copies it, and the two
+      // must be the same string or the customer pastes a code the message never
+      // showed. The server derives the body parameter from `otpCode`, so nothing
+      // is sent from here that could disagree with it.
       payload.bodyParams = Array.from(
         { length: spec.bodyPositional },
         (_, i) => params[i]?.trim() || '',
@@ -267,8 +361,34 @@ export default function TemplateComposeModal({
         payload.headerMediaUrl = headerMediaUrl.trim();
       }
       payload.headerMediaType = spec.headerFormat.toLowerCase() as 'image' | 'video' | 'document';
+      // The name the attachment carries on the handset. Upload mode already has
+      // it (the picked file's own name, which the chip shows); URL mode asks for
+      // it, because a link's last path segment is rarely a name a customer wants
+      // to see on an invoice.
+      if (spec.headerFormat === 'DOCUMENT') {
+        const filename = (headerMediaMode === 'upload' ? headerFileName : headerDocName).trim();
+        if (filename) payload.headerMediaFilename = filename;
+      }
     }
-    if (spec.buttonUrlVar) payload.buttonUrlParam = buttonUrlParam.trim();
+    // One value per dynamic URL button, in the order the template authored them —
+    // the send addresses each by its own index.
+    if (spec.buttonUrlVarIndexes.length) {
+      payload.buttonUrlParams = spec.buttonUrlVarIndexes.map((_index, n) =>
+        (buttonUrlParams[n] ?? '').trim(),
+      );
+    }
+    if (spec.needsCatalogThumbnail || spec.needsProductSections) {
+      const thumbnail = catalogThumbnail.trim();
+      if (thumbnail) payload.catalogThumbnailProductId = thumbnail;
+    }
+    if (spec.needsProductSections) {
+      // Empty sections are dropped rather than sent: Meta refuses a section with
+      // no products, which would fail the whole message.
+      payload.productSections = sections
+        .map((s) => ({ title: s.title.trim(), productRetailerIds: parseProductSkus(s.skus) }))
+        .filter((s) => s.title && s.productRetailerIds.length > 0);
+    }
+    if (spec.needsProduct) payload.productRetailerId = productId.trim();
     if (spec.needsOtpCode) payload.otpCode = otpCode.trim();
     if (spec.needsCouponCode) payload.couponCode = couponCode.trim();
     if (spec.needsLtoExpiration && ltoExpiresAt) {
@@ -292,7 +412,13 @@ export default function TemplateComposeModal({
                 ),
               }
             : {}),
-          ...(card.buttonUrlVar ? { buttonUrlParam: draft.buttonUrlParam.trim() } : {}),
+          ...(card.buttonUrlVar
+            ? {
+                buttonUrlParams: card.buttons
+                  .filter((b) => b.hasUrlVar)
+                  .map((_b, n) => (draft.buttonUrlParams[n] ?? '').trim()),
+              }
+            : {}),
         };
       });
     }
@@ -323,7 +449,9 @@ export default function TemplateComposeModal({
     if (spec.bodyNamed.length) {
       missing = missing || spec.bodyNamed.some((n) => !(named[n] ?? '').trim());
     }
-    if (spec.bodyPositional > 0) {
+    // Not for an AUTHENTICATION template: its body {{1}} is the one-time code,
+    // collected once by the field at the bottom of the form.
+    if (spec.bodyPositional > 0 && !spec.needsOtpCode) {
       missing =
         missing ||
         Array.from({ length: spec.bodyPositional }).some((_, i) => !(params[i] ?? '').trim());
@@ -333,7 +461,19 @@ export default function TemplateComposeModal({
     if (spec.headerNeedsMedia) {
       if (headerMediaMode === 'upload' ? !headerMediaId : !headerMediaUrl.trim()) missing = true;
     }
-    if (spec.buttonUrlVar && !buttonUrlParam.trim()) missing = true;
+    spec.buttonUrlVarIndexes.forEach((_index, n) => {
+      if (!(buttonUrlParams[n] ?? '').trim()) missing = true;
+    });
+    // A multi-product template's sections ARE the message, and Meta requires the
+    // thumbnail SKU alongside them. A catalog button's thumbnail is optional —
+    // Meta falls back to the first item in the bound catalog — so it is not
+    // checked here.
+    if (spec.needsProductSections) {
+      if (!catalogThumbnail.trim()) missing = true;
+      const filled = sections.filter((s) => s.title.trim() && parseProductSkus(s.skus).length > 0);
+      if (filled.length === 0) missing = true;
+    }
+    if (spec.needsProduct && !productId.trim()) missing = true;
     if (spec.needsOtpCode && !otpCode.trim()) missing = true;
     if (spec.needsCouponCode && !couponCode.trim()) missing = true;
     if (spec.needsLtoExpiration && !ltoExpiresAt) missing = true;
@@ -349,7 +489,11 @@ export default function TemplateComposeModal({
       for (let n = 0; n < card.bodyPositional; n += 1) {
         if (!(draft.bodyParams[n] ?? '').trim()) missing = true;
       }
-      if (card.buttonUrlVar && !draft.buttonUrlParam.trim()) missing = true;
+      card.buttons
+        .filter((b) => b.hasUrlVar)
+        .forEach((_b, n) => {
+          if (!(draft.buttonUrlParams[n] ?? '').trim()) missing = true;
+        });
     });
 
     return missing;
@@ -378,7 +522,7 @@ export default function TemplateComposeModal({
   });
 
   const submit = () => {
-    if (mode === 'new' && phone.replace(/\D/g, '').length < 8) {
+    if (mode === 'new' && !plausiblePhone(phone)) {
       return showToast.error('Enter a valid phone number with country code');
     }
     if (!templateId) return showToast.error('Pick an approved template');
@@ -409,7 +553,7 @@ export default function TemplateComposeModal({
             <PhoneInput
               label="Phone number"
               value={phone}
-              onChange={(e) => setPhone(e.target.value)}
+              onChange={(e) => onPhoneChange(e.target.value)}
             />
           )}
           <TemplatePicker
@@ -452,23 +596,38 @@ export default function TemplateComposeModal({
                   </div>
 
                   {headerMediaMode === 'url' ? (
-                    <Input
-                      label={`Header ${spec.headerFormat.toLowerCase()} URL`}
-                      placeholder={`https://… (public ${spec.headerFormat.toLowerCase()} link)`}
-                      value={headerMediaUrl}
-                      onChange={(e) => setHeaderMediaUrl(e.target.value)}
-                      helperText="Meta re-downloads this link on every send."
-                    />
+                    <>
+                      <Input
+                        label={`Header ${spec.headerFormat.toLowerCase()} URL`}
+                        placeholder={`https://… (public ${spec.headerFormat.toLowerCase()} link)`}
+                        value={headerMediaUrl}
+                        onChange={(e) => setHeaderMediaUrl(e.target.value)}
+                        helperText="Meta re-downloads this link on every send."
+                      />
+                      {spec.headerFormat === 'DOCUMENT' && (
+                        <Input
+                          label="File name (optional)"
+                          placeholder="Invoice-October.pdf"
+                          value={headerDocName}
+                          onChange={(e) => setHeaderDocName(e.target.value)}
+                          helperText="What the attachment is called on the recipient's phone. Left blank, WhatsApp names it after the link."
+                        />
+                      )}
+                    </>
                   ) : !headerMediaId ? (
                     <label
                       className={cn(
                         'flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-[var(--border)] bg-white px-3 py-4 text-sm text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-secondary)]',
-                        uploadingHeader && 'pointer-events-none opacity-70',
+                        (uploadingHeader || !canStageMedia) && 'pointer-events-none opacity-70',
                       )}
                     >
                       {uploadingHeader ? (
                         <>
                           <Loader2 className="h-4 w-4 animate-spin" /> Uploading to WhatsApp…
+                        </>
+                      ) : !canStageMedia ? (
+                        <>
+                          <Upload className="h-4 w-4" /> Enter the phone number first
                         </>
                       ) : (
                         <>
@@ -480,7 +639,7 @@ export default function TemplateComposeModal({
                         type="file"
                         className="hidden"
                         accept={HEADER_ACCEPT[spec.headerFormat]}
-                        disabled={uploadingHeader}
+                        disabled={uploadingHeader || !canStageMedia}
                         onChange={(e) => onHeaderFile(e.target.files?.[0])}
                       />
                     </label>
@@ -527,6 +686,12 @@ export default function TemplateComposeModal({
                 />
               )}
 
+              {/* An AUTHENTICATION template's body {{1}} is the one-time code
+                  itself. Rendering it here as well as in the "One-time code"
+                  field below asked for the same value twice with nothing saying
+                  so — and two different entries sent one code in the message and
+                  a different one on the copy button, so the customer's login
+                  failed while the send looked perfectly successful. */}
               {spec.bodyNamed.length > 0
                 ? spec.bodyNamed.map((name) => (
                     <Input
@@ -537,7 +702,7 @@ export default function TemplateComposeModal({
                       onChange={(e) => setNamed((n) => ({ ...n, [name]: e.target.value }))}
                     />
                   ))
-                : Array.from({ length: spec.bodyPositional }, (_, i) => (
+                : Array.from({ length: spec.needsOtpCode ? 0 : spec.bodyPositional }, (_, i) => (
                     <Input
                       key={i}
                       label={`Body {{${i + 1}}}`}
@@ -553,13 +718,113 @@ export default function TemplateComposeModal({
                     />
                   ))}
 
-              {spec.buttonUrlVar && (
+              {/* One field per DYNAMIC url button. A template may carry two, and
+                  Meta addresses each by its own index — filling only the first
+                  had the whole message refused with (#131008). */}
+              {spec.buttonUrlVarIndexes.map((_index, n) => (
                 <Input
-                  label="URL button variable {{1}}"
+                  key={n}
+                  label={
+                    spec.buttonUrlVarIndexes.length > 1
+                      ? `Link button ${n + 1} value`
+                      : 'URL button variable {{1}}'
+                  }
                   placeholder="e.g. the dynamic part of the button link"
-                  value={buttonUrlParam}
-                  onChange={(e) => setButtonUrlParam(e.target.value)}
+                  value={buttonUrlParams[n] ?? ''}
+                  onChange={(e) => setUrlParam(n, e.target.value)}
                 />
+              ))}
+              {(spec.needsCatalogThumbnail || spec.needsProductSections) && (
+                <Input
+                  label={
+                    spec.needsProductSections
+                      ? 'Thumbnail product SKU'
+                      : 'Thumbnail product SKU (optional)'
+                  }
+                  placeholder="e.g. 2lc20305pt"
+                  value={catalogThumbnail}
+                  onChange={(e) => setCatalogThumbnail(e.target.value)}
+                  helperText={
+                    spec.needsProductSections
+                      ? 'The product whose image heads the message. Its SKU as it appears in your catalog.'
+                      : 'The product whose image heads the card. Left blank, WhatsApp uses the first item in your catalog.'
+                  }
+                />
+              )}
+              {spec.needsProduct && (
+                <Input
+                  label="Product SKU"
+                  placeholder="e.g. 2lc20305pt"
+                  value={productId}
+                  onChange={(e) => setProductId(e.target.value)}
+                  helperText="The product this template shows, as it appears in the catalog bound to this number."
+                />
+              )}
+              {spec.needsProductSections && (
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold text-[var(--text-muted)]">
+                    Products (up to 10 sections, 30 products in total)
+                  </p>
+                  {sections.map((section, n) => (
+                    <div
+                      key={n}
+                      className="space-y-2 rounded-lg border border-[var(--border)] bg-white p-2.5"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-semibold text-[var(--text)]">
+                          Section {n + 1}
+                        </span>
+                        {sections.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => setSections((prev) => prev.filter((_s, i) => i !== n))}
+                            className="rounded p-1 text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-red-600"
+                            aria-label={`Remove section ${n + 1}`}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
+                      <Input
+                        id={`mpm-section-${n}-title`}
+                        label="Section title"
+                        inputSize="sm"
+                        maxLength={24}
+                        placeholder="e.g. Popular bundles"
+                        value={section.title}
+                        onChange={(e) =>
+                          setSections((prev) =>
+                            Object.assign([...prev], {
+                              [n]: { ...prev[n], title: e.target.value },
+                            }),
+                          )
+                        }
+                      />
+                      <Input
+                        id={`mpm-section-${n}-skus`}
+                        label="Product SKUs"
+                        inputSize="sm"
+                        placeholder="2lc20305pt, nseiw1x3ch"
+                        value={section.skus}
+                        onChange={(e) =>
+                          setSections((prev) =>
+                            Object.assign([...prev], { [n]: { ...prev[n], skus: e.target.value } }),
+                          )
+                        }
+                        helperText="Separate SKUs with commas or spaces."
+                      />
+                    </div>
+                  ))}
+                  {sections.length < 10 && (
+                    <button
+                      type="button"
+                      onClick={() => setSections((prev) => [...prev, EMPTY_SECTION])}
+                      className="text-primary text-xs font-medium hover:underline"
+                    >
+                      + Add a section
+                    </button>
+                  )}
+                </div>
               )}
               {spec.needsCouponCode && (
                 <Input
@@ -656,12 +921,16 @@ export default function TemplateComposeModal({
                       <label
                         className={cn(
                           'flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-[var(--border)] px-3 py-2.5 text-xs text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-secondary)]',
-                          draft.uploading && 'pointer-events-none opacity-70',
+                          (draft.uploading || !canStageMedia) && 'pointer-events-none opacity-70',
                         )}
                       >
                         {draft.uploading ? (
                           <>
                             <Loader2 className="h-3.5 w-3.5 animate-spin" /> Uploading…
+                          </>
+                        ) : !canStageMedia ? (
+                          <>
+                            <Upload className="h-3.5 w-3.5" /> Enter the phone number first
                           </>
                         ) : (
                           <>
@@ -672,7 +941,7 @@ export default function TemplateComposeModal({
                           type="file"
                           className="hidden"
                           accept={HEADER_ACCEPT[card.headerFormat]}
-                          disabled={draft.uploading}
+                          disabled={draft.uploading || !canStageMedia}
                           onChange={(e) => onCardFile(i, e.target.files?.[0])}
                         />
                       </label>
@@ -709,15 +978,26 @@ export default function TemplateComposeModal({
                       />
                     ))}
 
-                    {card.buttonUrlVar && (
-                      <Input
-                        label={`Card ${i + 1} button link value`}
-                        inputSize="sm"
-                        placeholder="the dynamic part of the card's link"
-                        value={draft.buttonUrlParam}
-                        onChange={(e) => setCard(i, { buttonUrlParam: e.target.value })}
-                      />
-                    )}
+                    {card.buttons
+                      .filter((b) => b.hasUrlVar)
+                      .map((_b, n) => (
+                        <Input
+                          key={n}
+                          label={`Card ${i + 1} button link value${
+                            card.buttons.filter((b) => b.hasUrlVar).length > 1 ? ` ${n + 1}` : ''
+                          }`}
+                          inputSize="sm"
+                          placeholder="the dynamic part of the card's link"
+                          value={draft.buttonUrlParams[n] ?? ''}
+                          onChange={(e) =>
+                            setCard(i, {
+                              buttonUrlParams: Object.assign([...draft.buttonUrlParams], {
+                                [n]: e.target.value,
+                              }),
+                            })
+                          }
+                        />
+                      ))}
                   </div>
                 );
               })}
@@ -745,9 +1025,12 @@ export default function TemplateComposeModal({
               // An uploaded file has no public URL to preview — the local object
               // URL stands in for it so the bubble isn't blank.
               headerMediaUrl: headerMediaMode === 'upload' ? headerObjectUrl : headerMediaUrl,
-              buttonUrlParam,
+              buttonUrlParams,
               otpCode,
               couponCode,
+              // The countdown, so the preview shows the offer the customer will
+              // see running out rather than an offer bubble with no expiry.
+              ltoExpirationMs: ltoExpiresAt ? new Date(ltoExpiresAt).getTime() : undefined,
               headerLocation: { name: placeName, address: placeAddress },
               carouselCards: spec
                 ? spec.carouselCards.map((card, i) => {
@@ -756,7 +1039,7 @@ export default function TemplateComposeModal({
                       headerMediaUrl:
                         draft.mode === 'upload' ? draft.fileName : draft.mediaUrl.trim(),
                       bodyParams: draft.bodyParams,
-                      buttonUrlParam: draft.buttonUrlParam,
+                      buttonUrlParams: draft.buttonUrlParams,
                       headerMediaType: card.headerFormat === 'VIDEO' ? 'video' : 'image',
                     };
                   })

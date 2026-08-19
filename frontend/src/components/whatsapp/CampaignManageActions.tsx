@@ -95,10 +95,15 @@ const EMPTY_SPEC: TemplateVarSpec = {
   bodyPositional: 0,
   bodyNamed: [],
   buttonUrlVar: false,
+  buttonUrlVarIndexes: [],
   needsOtpCode: false,
   headerNeedsLocation: false,
   needsCouponCode: false,
   needsLtoExpiration: false,
+  needsCatalogThumbnail: false,
+  needsProductSections: false,
+  needsProduct: false,
+  hasFlowButton: false,
   carouselCards: [],
   none: true,
 };
@@ -525,11 +530,16 @@ export default function CampaignManageActions({
                     Meta, not approved — it cannot be sent. Pick another one before launching.
                   </p>
                 )}
-                {(spec.headerNeedsMedia || spec.headerHasTextVar || spec.buttonUrlVar) && (
+                {(spec.headerNeedsMedia ||
+                  spec.headerHasTextVar ||
+                  spec.buttonUrlVar ||
+                  spec.needsProductSections ||
+                  spec.needsProduct) && (
                   <p className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
-                    This template also needs send-time parameters (header media, header text or a
-                    dynamic URL-button value). Those are set when the campaign is created — build a
-                    new campaign if this one&apos;s stored values no longer match.
+                    This template also needs send-time parameters (header media, header text, a
+                    dynamic URL-button value or the products it shows). Those are set when the
+                    campaign is created — build a new campaign if this one&apos;s stored values no
+                    longer match.
                   </p>
                 )}
                 {varCount > 0 && (

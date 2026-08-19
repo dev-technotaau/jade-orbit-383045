@@ -1611,7 +1611,14 @@ export const startConversation = async (
       headerImageId: req.body.headerImageId,
       headerMediaUrl: req.body.headerMediaUrl,
       headerMediaType: req.body.headerMediaType,
+      // DOCUMENT header: the name the attachment shows on the handset. Held by
+      // the composer for its own chip and thrown away, so the customer received
+      // an invoice named after its media id.
+      headerMediaFilename: req.body.headerMediaFilename,
       buttonUrlParam: req.body.buttonUrlParam,
+      // A template may carry TWO dynamic URL buttons; the scalar above fills only
+      // the first, and Meta refuses the whole message for the one left unfilled.
+      buttonUrlParams: req.body.buttonUrlParams,
       // Everything `templateSendBody` accepts, forwarded. These four used to be
       // dropped right here: zod parsed them, the composer sent them and the
       // builder knew how to emit them, but the controller copied a fixed subset
@@ -1621,6 +1628,12 @@ export const startConversation = async (
       couponCode: req.body.couponCode,
       ltoExpirationMs: req.body.ltoExpirationMs,
       headerLocation: req.body.headerLocation,
+      // Flow entry-screen data and the catalogue product parameters. The flow
+      // TOKEN is minted per send by the service, not taken from the client.
+      flowActionData: req.body.flowActionData,
+      catalogThumbnailProductId: req.body.catalogThumbnailProductId,
+      productSections: req.body.productSections,
+      productRetailerId: req.body.productRetailerId,
       // A carousel's media and card text ride here, one entry per card. Dropping
       // them would repeat the same mistake for the newest component type.
       carouselCards: req.body.carouselCards,
@@ -1646,11 +1659,19 @@ export const sendTemplate = async (
       headerImageId: req.body.headerImageId,
       headerMediaUrl: req.body.headerMediaUrl,
       headerMediaType: req.body.headerMediaType,
+      headerMediaFilename: req.body.headerMediaFilename,
       buttonUrlParam: req.body.buttonUrlParam,
+      buttonUrlParams: req.body.buttonUrlParams,
       otpCode: req.body.otpCode,
       couponCode: req.body.couponCode,
       ltoExpirationMs: req.body.ltoExpirationMs,
       headerLocation: req.body.headerLocation,
+      // A caller may name its own flow token; left unset the service mints one.
+      flowToken: req.body.flowToken,
+      flowActionData: req.body.flowActionData,
+      catalogThumbnailProductId: req.body.catalogThumbnailProductId,
+      productSections: req.body.productSections,
+      productRetailerId: req.body.productRetailerId,
       carouselCards: req.body.carouselCards,
     });
     res.status(201).json({ success: true, data: message });

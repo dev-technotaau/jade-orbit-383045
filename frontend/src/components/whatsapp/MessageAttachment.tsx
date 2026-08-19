@@ -19,6 +19,14 @@ import MessageAudio from './MessageAudio';
 interface MessageAttachmentProps {
   message: WaMessage;
   outbound: boolean;
+  /**
+   * Name to show on the file card, overriding the one read off the payload.
+   *
+   * A TEMPLATE row's payload is the record of the template send, not a Meta media
+   * callback, so the DOCUMENT header's filename lives under `values` there — and
+   * without it a sent brochure showed up on the operator's side as "template.bin".
+   */
+  filename?: string;
 }
 
 /** Defensive read of a string field off an `unknown` payload. */
@@ -90,7 +98,11 @@ function iconForMime(mime: string | null) {
  * everything else (documents and any other file type) falls back to a download
  * card here.
  */
-export default function MessageAttachment({ message, outbound }: MessageAttachmentProps) {
+export default function MessageAttachment({
+  message,
+  outbound,
+  filename: filenameOverride,
+}: MessageAttachmentProps) {
   if (!message.mediaId) return null;
 
   if (message.type === 'IMAGE' || message.type === 'STICKER') {
@@ -105,7 +117,7 @@ export default function MessageAttachment({ message, outbound }: MessageAttachme
 
   // ── DOCUMENT / any other media-bearing type → file card ────────────────────
   const src = `/api/proxy${API.SUPER_ADMIN.WA_MEDIA(message.mediaId)}`;
-  const payloadName = payloadString(message.payload, 'filename');
+  const payloadName = filenameOverride?.trim() || payloadString(message.payload, 'filename');
   const filename = payloadName || `${message.type.toLowerCase()}.${extFromMime(message.mediaMime)}`;
   const sizeBytes =
     payloadNumber(message.payload, 'fileSize') ?? payloadNumber(message.payload, 'size');

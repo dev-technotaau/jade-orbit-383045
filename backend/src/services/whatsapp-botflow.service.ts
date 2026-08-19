@@ -229,9 +229,30 @@ function assertStepUsable(input: Partial<BotStepInput>): void {
   }
 }
 
+/**
+ * Refuse a `send_template` step whose template the engine could not fill in.
+ *
+ * A bot step stores a template id and an ordered list of {{n}} values, so a
+ * template that also needs a header, a link value, a coupon or an offer expiry
+ * is answered by Meta with (#131008) and the customer, mid-flow, simply receives
+ * nothing. Checked where the step is SAVED, which is the only point the operator
+ * can still choose a different template.
+ *
+ * The template service is loaded on demand rather than imported at the top:
+ * this module's pure helpers (`interpolate`, `validateAnswer`, `entryStep`) are
+ * pulled into the inbound auto-reply engine, and a static import would drag the
+ * Graph/template stack into every consumer of those.
+ */
+async function assertStepTemplateUsable(input: Partial<BotStepInput>): Promise<void> {
+  if (input.kind !== 'send_template' || !input.templateId) return;
+  const { assertTemplateSendableWithBodyParamsOnly } = await import('./whatsapp-template.service');
+  await assertTemplateSendableWithBodyParamsOnly(input.templateId, 'a bot-flow step');
+}
+
 export async function createBotStep(flowId: string, input: BotStepInput) {
   await getBotFlow(flowId);
   assertStepUsable(input);
+  await assertStepTemplateUsable(input);
   return prisma.waBotStep.create({
     data: {
       flowId,
@@ -268,13 +289,23 @@ export async function updateBotStep(flowId: string, stepId: string, patch: Parti
   // Validate the MERGED step, not the patch: a request that only flips `kind` to
   // `choice` has no `choices` of its own, and the row's existing options are
   // what the engine would actually run.
-  assertStepUsable({
+  const merged = {
     kind: patch.kind ?? existing.kind,
     validation: patch.validation ?? existing.validation,
     choices:
       patch.choices !== undefined ? patch.choices : (existing.choices as WaBotChoice[] | null),
     templateId: patch.templateId !== undefined ? patch.templateId : existing.templateId,
-  });
+  };
+  assertStepUsable(merged);
+  // Only when the operator is actually CHOOSING the template — a new one, or a
+  // step that has just become a `send_template`. The step editor has no template
+  // picker (these are set through the API), so re-validating on every save would
+  // let an unsendable template block edits to the prompt or the retry message
+  // with no way to fix it from that screen.
+  const choosingTemplate =
+    (merged.kind === 'send_template' && existing.kind !== 'send_template') ||
+    (patch.templateId !== undefined && patch.templateId !== existing.templateId);
+  if (choosingTemplate) await assertStepTemplateUsable(merged);
   const data: Prisma.WaBotStepUpdateInput = {};
   if (patch.key !== undefined) data.key = patch.key;
   if (patch.kind !== undefined) data.kind = patch.kind;

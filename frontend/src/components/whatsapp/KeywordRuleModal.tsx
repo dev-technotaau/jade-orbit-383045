@@ -11,7 +11,7 @@ import FormattedTextarea from '@/components/whatsapp/FormattedTextarea';
 import TemplatePicker from '@/components/whatsapp/TemplatePicker';
 import { showToast } from '@/components/ui/Toast';
 import { whatsappService as svc } from '@/services/whatsapp.service';
-import { analyzeTemplate } from '@/lib/whatsapp-template-vars';
+import { analyzeTemplate, templateParamsBeyondBody } from '@/lib/whatsapp-template-vars';
 import type { WaKeywordRule, WaMatchType, WaTemplate } from '@/types/whatsapp';
 import type { ApiError } from '@/types/api';
 
@@ -122,6 +122,18 @@ export default function KeywordRuleModal({
 
   const isHandoff = action === 'handoff';
   const shadowedBy = shadowingTriggers(match, faqTriggers);
+  /**
+   * The reply template's spec, once the picker has resolved it.
+   *
+   * A rule stores a template id and an ordered list of {{n}} values and nothing
+   * else, so anything a template needs beyond those cannot be supplied: Meta
+   * refuses the auto-reply with (#131008) and the customer who typed the keyword
+   * simply gets no answer, with the failure visible only as the rule's
+   * `lastError`. The server refuses such a rule now; this names it first.
+   */
+  const replySpec =
+    replyTemplate && replyTemplate.id === replyTemplateId ? analyzeTemplate(replyTemplate) : null;
+  const replyUnsupported = replySpec ? templateParamsBeyondBody(replySpec) : [];
 
   const mutation = useMutation({
     mutationFn: () => {
@@ -172,6 +184,11 @@ export default function KeywordRuleModal({
     }
     if (replyMode === 'template' && !replyTemplateId) {
       return showToast.error('Pick an approved template');
+    }
+    if (replyMode === 'template' && replyUnsupported.length > 0) {
+      return showToast.error(
+        `This template needs ${replyUnsupported.join(', ')}, which an auto-reply cannot supply. Pick a template that needs body values alone.`,
+      );
     }
     mutation.mutate();
   };
@@ -339,14 +356,22 @@ export default function KeywordRuleModal({
               onResolve={setReplyTemplate}
             />
             {(() => {
-              const tpl = replyTemplate?.id === replyTemplateId ? replyTemplate : null;
-              const replySpec = tpl ? analyzeTemplate(tpl) : null;
               if (replySpec && replySpec.carouselCards.length > 0) {
                 return (
                   <p className="text-error mt-3 text-[11px]">
                     A carousel needs media and text for each of its {replySpec.carouselCards.length}{' '}
                     cards, which an auto-reply cannot supply — Meta would refuse every reply and the
                     customer would simply get no answer. Pick a template without cards.
+                  </p>
+                );
+              }
+              // Everything else the rule has no field for, for the same reason.
+              if (replyUnsupported.length > 0) {
+                return (
+                  <p className="text-error mt-3 text-[11px]">
+                    This template needs {replyUnsupported.join(', ')}, which an auto-reply cannot
+                    supply — Meta would refuse every reply and the customer would get no answer.
+                    Pick a template that needs body values alone.
                   </p>
                 );
               }

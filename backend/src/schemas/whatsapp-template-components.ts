@@ -404,18 +404,13 @@ const buttonsComponent = z
         message: 'A template can have at most one OTP button',
       });
     }
-    // Only ONE URL button may carry a variable: the send layer addresses it by
-    // index and can only fill one of them.
-    const dynamicUrls = c.buttons.filter(
-      (b) => b.type === 'URL' && hasPositionalVar(b.url ?? '')
-    ).length;
-    if (dynamicUrls > 1) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['buttons'],
-        message: 'Only one website button can carry a {{1}} variable',
-      });
-    }
+    // BOTH website buttons may carry a {{1}} variable. This used to be refused
+    // here because the send layer kept only the FIRST dynamic URL button's index
+    // and had one value to give it — so a second dynamic link was authorable in
+    // Business Manager, importable as APPROVED, and then refused by Meta on every
+    // send. The send layer now addresses each dynamic URL button by its own index
+    // and collects a value per button, so there is nothing left to protect
+    // against; the count itself is still capped at MAX_URL_BUTTONS above.
     if (count('CATALOG') && c.buttons.length > 1) {
       ctx.addIssue({
         code: 'custom',

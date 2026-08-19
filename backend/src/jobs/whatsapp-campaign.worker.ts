@@ -372,15 +372,22 @@ export async function processCampaignBatch(
         headerText?: string;
         headerMediaUrl?: string;
         headerMediaType?: 'image' | 'video' | 'document';
+        headerMediaFilename?: string;
+        headerLocation?: { latitude: number; longitude: number; name?: string; address?: string };
         buttonUrlParam?: string;
+        buttonUrlParams?: string[];
         couponCode?: string;
         ltoExpirationMs?: number;
+        catalogThumbnailProductId?: string;
+        productSections?: Array<{ title: string; productRetailerIds: string[] }>;
+        productRetailerId?: string;
         carouselCards?: Array<{
           headerMediaId?: string;
           headerMediaUrl?: string;
           headerMediaType?: 'image' | 'video';
           bodyParams?: string[];
           buttonUrlParam?: string;
+          buttonUrlParams?: string[];
         }>;
       };
       const message = await sendTemplateToConversation(conversation.id, campaign.createdBy, {
@@ -389,15 +396,36 @@ export async function processCampaignBatch(
         headerText: tp.headerText,
         headerMediaUrl: tp.headerMediaUrl,
         headerMediaType: tp.headerMediaType,
+        // The DOCUMENT header's filename. Without it every recipient's PDF is
+        // named after the URL's last path segment rather than the operator's own
+        // "Invoice-October.pdf".
+        headerMediaFilename: tp.headerMediaFilename,
+        // The LOCATION header's pin — campaign-wide, like the media above. It was
+        // absent from this forward, so a LOCATION-header broadcast reached Meta
+        // with no header parameter and every recipient was refused with (#131008).
+        headerLocation: tp.headerLocation,
         buttonUrlParam: tp.buttonUrlParam
           ? appendRecipientToken(tp.buttonUrlParam, recipient.contactId, linkCodes)
           : undefined,
+        // A template may carry TWO dynamic URL buttons, each addressed by its own
+        // index. Only the first was forwarded, so the second went out unfilled and
+        // Meta refused every recipient with (#131008). Each link gets the same
+        // per-recipient token appended, for the same reason the first one does.
+        buttonUrlParams: tp.buttonUrlParams?.map((url) =>
+          url ? appendRecipientToken(url, recipient.contactId, linkCodes) : url
+        ),
         // Coupon + offer expiry are campaign-wide, not per recipient: the whole
         // audience shares one code and one countdown. Forwarding them is the
         // other half of the launch gate that now refuses a COPY_CODE or
         // LIMITED_TIME_OFFER campaign with no value supplied.
         couponCode: tp.couponCode,
         ltoExpirationMs: tp.ltoExpirationMs,
+        // Catalogue products, campaign-wide. A multi-product template's sections
+        // are chosen per send and exist nowhere else, so without this forward the
+        // broadcast rendered a product list with no products in it.
+        catalogThumbnailProductId: tp.catalogThumbnailProductId,
+        productSections: tp.productSections,
+        productRetailerId: tp.productRetailerId,
         // Carousel cards, campaign-wide like the header media. Each card's own
         // link button gets the recipient token appended for the same reason the
         // bubble's does: a click is only attributable to a contact if the link
@@ -408,6 +436,9 @@ export async function processCampaignBatch(
           buttonUrlParam: card.buttonUrlParam
             ? appendRecipientToken(card.buttonUrlParam, recipient.contactId, linkCodes)
             : undefined,
+          buttonUrlParams: card.buttonUrlParams?.map((url) =>
+            url ? appendRecipientToken(url, recipient.contactId, linkCodes) : url
+          ),
         })),
         campaignId: campaign.id,
       });

@@ -125,6 +125,15 @@ jest.mock('../../services/whatsapp-template.service', () => ({
       ? up
       : null;
   }),
+  // Pure decoder, mocked with its real behaviour: an nfm_reply's flow_token is
+  // what ties a Flow submission back to the Flow it was launched from, so a stub
+  // returning undefined would silently assert the wrong thing.
+  metaFlowIdFromToken: jest.fn((token?: string | null) => {
+    if (!token) return null;
+    const parts = token.split('.');
+    if (parts.length < 3 || parts[0] !== 'watpl1') return null;
+    return parts[1] || null;
+  }),
 }));
 
 const upsertContactByPhoneMock = jest.fn();

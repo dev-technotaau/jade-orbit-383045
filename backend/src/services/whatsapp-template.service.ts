@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { prisma } from '../config/prisma';
 import { env } from '../config/env';
 import { AppError } from '../middleware/error';
@@ -1109,7 +1110,7 @@ export async function uploadHeaderSampleHandle(buffer: Buffer, mime: string): Pr
 }
 
 export interface TemplateSendSpec {
-  headerFormat: 'NONE' | 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT' | 'LOCATION';
+  headerFormat: 'NONE' | 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT' | 'LOCATION' | 'PRODUCT';
   /** TEXT header carrying a {{n}} variable — needs headerText at send. */
   headerHasTextVar: boolean;
   /** IMAGE/VIDEO/DOCUMENT header — needs headerMediaUrl or headerImageId. */
@@ -1118,8 +1119,18 @@ export interface TemplateSendSpec {
   bodyPositional: number;
   /** Named {{word}} body variables. */
   bodyNamed: string[];
-  /** URL button with a dynamic {{1}} suffix — needs buttonUrlParam. */
+  /** URL button with a dynamic {{1}} suffix — needs a per-send value. */
   buttonUrlVar: boolean;
+  /**
+   * The AUTHORED index of every URL button carrying a {{n}} suffix, in order.
+   *
+   * Meta allows TWO URL buttons and either may be dynamic, each addressed by its
+   * own index. Only the first was ever filled in, so a two-dynamic-URL template
+   * — unauthorable here but imported APPROVED by `syncFromMeta`, which stores
+   * Meta's components verbatim — was refused for every recipient with (#131008)
+   * because the second button got no parameter.
+   */
+  buttonUrlVarIndexes: number[];
   /**
    * Authentication template: carries an OTP button. The Cloud API requires the
    * one-time code to be sent TWICE — as the body parameter and again as the
@@ -1132,8 +1143,43 @@ export interface TemplateSendSpec {
   headerNeedsLocation: boolean;
   /** COPY_CODE button — needs a coupon code at send. */
   needsCouponCode: boolean;
-  /** LIMITED_TIME_OFFER component — needs an expiry timestamp at send. */
+  /**
+   * LIMITED_TIME_OFFER component WITH a countdown — needs an expiry timestamp.
+   *
+   * Gated on `has_expiration`: the offer component alone draws the banner, and
+   * only the countdown consumes `expiration_time_ms`. Reading the component's
+   * mere presence made a `has_expiration: false` template (authorable in
+   * Business Manager, imported verbatim by `syncFromMeta`) demand an expiry in
+   * the UI and then send Meta a parameter the template never declared.
+   */
   needsLtoExpiration: boolean;
+  /**
+   * CATALOG button — the send MAY name the product whose image heads the card.
+   *
+   * Optional by Meta's own rule: "if the parameters object is omitted, the
+   * product image of the first item in your catalog will be used". So this asks
+   * for a value, it never refuses a send without one.
+   */
+  needsCatalogThumbnail: boolean;
+  /**
+   * MPM button — the product SECTIONS are chosen at SEND time and are mandatory.
+   *
+   * There is nowhere else they can come from: a multi-product template is
+   * authored with an empty button and Meta requires `sections` plus a thumbnail
+   * SKU on the send, so one with neither renders no products at all.
+   */
+  needsProductSections: boolean;
+  /**
+   * PRODUCT header (single-product template) — the SKU is supplied per send, in
+   * a header parameter rather than on a button.
+   */
+  needsProduct: boolean;
+  /**
+   * FLOW button. Takes no MANDATORY parameter (Meta defaults `flow_token`), but
+   * a send that names its own token is the only way a submission can be tied
+   * back to the Flow it came from — see `templateFlowButton`.
+   */
+  hasFlowButton: boolean;
   /**
    * The carousel's cards, in authored order — empty for every other template.
    *
@@ -1214,14 +1260,35 @@ export function carouselCardSpecs(components: unknown): TemplateCarouselCardSpec
 }
 
 /**
+ * Does this template's LIMITED_TIME_OFFER actually run a countdown?
+ *
+ * The offer component is what draws the "limited time" banner; `has_expiration`
+ * is what adds the live countdown, and it is the countdown — not the banner —
+ * that the send's `expiration_time_ms` parameter feeds. Both the analyzer and
+ * the emitter used to key off the mere PRESENCE of the component, so an offer
+ * template authored in Business Manager with `has_expiration: false` had the UI
+ * demand an expiry the operator had no way to see the point of, and the send
+ * then carried a parameter the approved template never declared.
+ *
+ * `has_expiration` is optional in Meta's payload, so only an explicit `false`
+ * turns the countdown off — an absent flag keeps the historical behaviour.
+ */
+function templateWantsLtoExpiration(components: unknown): boolean {
+  const cs: any[] = Array.isArray(components) ? components : [];
+  const lto = cs.find((c: any) => String(c?.type ?? '').toUpperCase() === 'LIMITED_TIME_OFFER');
+  return Boolean(lto) && lto?.limited_time_offer?.has_expiration !== false;
+}
+
+/**
  * Parse a stored template's Meta `components` into the parameters a SEND must
  * supply.
  *
  * Deliberately mirrors the frontend `analyzeTemplate()` helper: the UI uses it to
- * render the right inputs, and the server uses it to REFUSE a launch that cannot
- * satisfy them. Client-side checking alone is not enough — a campaign can be
- * created through the API, and a template can be edited in Meta after the
- * campaign was built.
+ * render the right inputs, and the server uses it to REFUSE a campaign launch —
+ * and, via `missingTemplateSendParams`, an individual send — that cannot satisfy
+ * them. Client-side checking alone is not enough — a campaign can be created
+ * through the API, a template can be edited in Meta after the campaign was built,
+ * and the inbox send endpoint has callers that are not this console.
  */
 export function analyzeTemplateSpec(components: unknown): TemplateSendSpec {
   const cs: any[] = Array.isArray(components) ? components : [];
@@ -1238,6 +1305,12 @@ export function analyzeTemplateSpec(components: unknown): TemplateSendSpec {
   ).toUpperCase() as TemplateSendSpec['headerFormat'];
   const bodyVars = varsIn(body?.text);
   const positional = bodyVars.filter((v) => /^\d+$/.test(v)).map(Number);
+  const buttonList: any[] = Array.isArray(buttons?.buttons) ? buttons.buttons : [];
+  const hasButton = (t: string): boolean =>
+    buttonList.some((b: any) => String(b?.type ?? '').toUpperCase() === t);
+  // The dynamic URL buttons, by AUTHORED index — the same walk the emitter does,
+  // so the analyzer can never disagree with it about how many values a send owes.
+  const urlIndexes = templateButtonIndexes(components).urls;
 
   return {
     headerFormat,
@@ -1246,23 +1319,316 @@ export function analyzeTemplateSpec(components: unknown): TemplateSendSpec {
     bodyPositional: positional.length ? Math.max(...positional) : 0,
     bodyNamed: [...new Set(bodyVars.filter((v) => !/^\d+$/.test(v)))],
     headerNeedsLocation: headerFormat === 'LOCATION',
-    needsCouponCode: (buttons?.buttons ?? []).some(
-      (b: any) => String(b?.type ?? '').toUpperCase() === 'COPY_CODE'
-    ),
-    needsLtoExpiration: cs.some(
-      (c: any) => String(c?.type ?? '').toUpperCase() === 'LIMITED_TIME_OFFER'
-    ),
-    needsOtpCode: (buttons?.buttons ?? []).some(
-      (b: any) => String(b?.type ?? '').toUpperCase() === 'OTP'
-    ),
-    buttonUrlVar: (buttons?.buttons ?? []).some(
-      (b: any) =>
-        String(b?.type ?? '').toUpperCase() === 'URL' &&
-        /\{\{\s*\d+\s*\}\}/.test(String(b?.url ?? ''))
-    ),
+    needsCouponCode: hasButton('COPY_CODE'),
+    needsLtoExpiration: templateWantsLtoExpiration(components),
+    needsOtpCode: hasButton('OTP'),
+    buttonUrlVar: urlIndexes.length > 0,
+    buttonUrlVarIndexes: urlIndexes,
+    // Catalogue buttons. CATALOG's thumbnail is optional — Meta falls back to the
+    // first item in the bound catalog — while MPM's product sections are not:
+    // they exist nowhere but the send payload, so a multi-product template sent
+    // without them renders a product list with no products in it.
+    needsCatalogThumbnail: hasButton('CATALOG'),
+    needsProductSections: hasButton('MPM'),
+    // A single-product template carries its SKU in the HEADER, not on a button:
+    // Meta stamps the header `format: PRODUCT` and the send fills it in.
+    needsProduct: headerFormat === 'PRODUCT' || hasButton('SPM'),
+    hasFlowButton: hasButton('FLOW'),
     carouselCards: carouselCardSpecs(components),
   };
 }
+/** The HEADER a template was APPROVED with, as the send path needs to see it. */
+export interface TemplateHeaderSpec {
+  format: TemplateSendSpec['headerFormat'];
+  /** A TEXT header carrying any {{var}} — it takes a parameter, a static one does not. */
+  hasTextVar: boolean;
+  /**
+   * The header variable's token when it is NAMED ({{customer_name}}), null for a
+   * positional {{1}} or a header with no variable. Meta requires `parameter_name`
+   * on every parameter of a NAMED template, headers included.
+   */
+  namedParam: string | null;
+}
+
+/**
+ * The header the template itself declares — `null` when the caller passed no
+ * components, in which case nothing can be known and the caller's own fields
+ * decide (the historical behaviour).
+ *
+ * An EMPTY components array counts as "not supplied": a template row we hold no
+ * components for tells us nothing about its header, and treating that as "no
+ * header" would drop a header parameter the template really does require.
+ */
+export function templateHeaderSpec(components: unknown): TemplateHeaderSpec | null {
+  if (!Array.isArray(components) || components.length === 0) return null;
+  const header = components.find((c: any) => String(c?.type ?? '').toUpperCase() === 'HEADER');
+  const declared = String(
+    header?.format ?? 'NONE'
+  ).toUpperCase() as TemplateSendSpec['headerFormat'];
+  // A single-product template shows its product in the header even when the
+  // approved components declare no HEADER component at all — the SPM button is
+  // what makes it one, and Meta reads the SKU off a header parameter. Without
+  // this the send carried no product and the customer saw an empty card.
+  const hasSpmButton = components.some(
+    (c: any) =>
+      String(c?.type ?? '').toUpperCase() === 'BUTTONS' &&
+      (Array.isArray(c?.buttons) ? c.buttons : []).some(
+        (b: any) => String(b?.type ?? '').toUpperCase() === 'SPM'
+      )
+  );
+  const format: TemplateSendSpec['headerFormat'] =
+    declared === 'NONE' && hasSpmButton ? 'PRODUCT' : declared;
+  const token =
+    format === 'TEXT'
+      ? (String(header?.text ?? '').match(/\{\{\s*(\w+)\s*\}\}/)?.[1] ?? null)
+      : null;
+  return {
+    format,
+    hasTextVar: token !== null,
+    namedParam: token !== null && !/^\d+$/.test(token) ? token : null,
+  };
+}
+
+/** One section of an MPM (multi-product) template's product list. */
+export interface TemplateProductSection {
+  /** Section heading shown above its products. Meta caps this at 24 characters. */
+  title: string;
+  /** The SKUs in this section, as they appear in the bound catalog. */
+  productRetailerIds: string[];
+}
+
+/**
+ * The URL-button values a send is carrying, in dynamic-button order.
+ *
+ * `buttonUrlParam` is the single-value form every caller used while only ONE
+ * dynamic URL button could be filled in; it stays valid and means "the first
+ * one". `buttonUrlParams` supersedes it for a template that has two.
+ */
+export function urlButtonValues(supplied: {
+  buttonUrlParam?: string;
+  buttonUrlParams?: string[];
+}): string[] {
+  if (supplied.buttonUrlParams?.length) return supplied.buttonUrlParams;
+  return supplied.buttonUrlParam ? [supplied.buttonUrlParam] : [];
+}
+
+/**
+ * Everything a template needs at send time OTHER than positional body values,
+ * phrased for a human — empty when positional body values are all it takes.
+ *
+ * Several surfaces store a template id and a list of {{n}} values and nothing
+ * else: a scheduled message, a keyword auto-reply, a bot-flow `send_template`
+ * step, a drip step. They have no field for a header, a link value, a coupon or
+ * an offer expiry, so a template that needs one of those is not "partly"
+ * sendable from them — it is refused by Meta in full with (#131008), and on the
+ * drip path that refusal was caught and retried until the recipient's attempt
+ * budget ran out. Naming the gap where the operator PICKS the template is the
+ * only point at which they can still choose a different one.
+ */
+export function templateParamsBeyondBody(spec: TemplateSendSpec): string[] {
+  const needs: string[] = [];
+  if (spec.headerNeedsMedia) needs.push(`a ${spec.headerFormat.toLowerCase()} header`);
+  if (spec.headerHasTextVar) needs.push('header text');
+  if (spec.headerNeedsLocation) needs.push('a location pin');
+  if (spec.buttonUrlVarIndexes.length > 0) {
+    needs.push(
+      spec.buttonUrlVarIndexes.length > 1
+        ? `${spec.buttonUrlVarIndexes.length} URL-button values`
+        : 'a URL-button value'
+    );
+  }
+  if (spec.needsCouponCode) needs.push('a coupon code');
+  if (spec.needsLtoExpiration) needs.push('an offer expiry');
+  if (spec.needsOtpCode) needs.push('a one-time code');
+  if (spec.needsProductSections) needs.push('a product list');
+  if (spec.needsProduct) needs.push('a product SKU');
+  if (spec.carouselCards.length > 0) needs.push('carousel card media and text');
+  // Named body variables are positional values' opposite number: these surfaces
+  // store an ordered array, and Meta requires `parameter_name` on every
+  // parameter of a NAMED template, so the values cannot be addressed at all.
+  if (spec.bodyNamed.length > 0) {
+    needs.push(`named body values (${spec.bodyNamed.map((n) => `{{${n}}}`).join(', ')})`);
+  }
+  return needs;
+}
+
+/**
+ * Refuse, at SELECTION time, a template that a body-parameters-only surface
+ * could never send.
+ *
+ * `where` names the surface in the operator's own words ("a scheduled message",
+ * "a keyword rule") so the message reads as an explanation rather than an API
+ * error. Throws WA_TEMPLATE_NOT_FOUND / WA_TEMPLATE_PARAMS_UNSUPPORTED; returns
+ * quietly when the template needs nothing but body values.
+ */
+export async function assertTemplateSendableWithBodyParamsOnly(
+  templateId: string,
+  where: string
+): Promise<void> {
+  const tpl = await getTemplate(templateId);
+  if (!tpl) throw new AppError('Template not found', 404, 'WA_TEMPLATE_NOT_FOUND');
+  const needs = templateParamsBeyondBody(analyzeTemplateSpec(tpl.components));
+  if (needs.length === 0) return;
+  throw new AppError(
+    `Template "${tpl.name}" needs ${needs.join(', ')}, and ${where} can only supply the ` +
+      'body variables. WhatsApp refuses a message whose parameters do not match the ' +
+      'approved template, so pick a template that needs body values only.',
+    400,
+    'WA_TEMPLATE_PARAMS_UNSUPPORTED'
+  );
+}
+
+/**
+ * What a template send is still missing, phrased for a human.
+ *
+ * The campaign launch gate has always run this comparison (in its own,
+ * campaign-flavoured wording) so an unsatisfiable broadcast is refused before an
+ * audience is spent. The inbox / start-conversation path had no equivalent, so
+ * any non-browser caller — an API client, a script, the Chatwoot bridge — could
+ * post a template send with no parameters at all and the only feedback was Meta's
+ * opaque (#131008). Same spec, same answer, before Graph is ever called.
+ *
+ * Reports EXTRA parameters as well as missing ones: Meta matches on parameter
+ * COUNT and refuses the message either way.
+ */
+export function missingTemplateSendParams(
+  spec: TemplateSendSpec,
+  supplied: {
+    bodyParams?: string[];
+    bodyNamedParams?: Array<{ name: string; text: string }>;
+    headerText?: string;
+    headerImageId?: string;
+    headerMediaUrl?: string;
+    headerLocation?: { latitude: number; longitude: number };
+    buttonUrlParam?: string;
+    buttonUrlParams?: string[];
+    otpCode?: string;
+    couponCode?: string;
+    ltoExpirationMs?: number;
+    catalogThumbnailProductId?: string;
+    productSections?: TemplateProductSection[];
+    productRetailerId?: string;
+    carouselCards?: TemplateSendCarouselCard[];
+  }
+): string[] {
+  const missing: string[] = [];
+  // An EMPTY parameter is not "unpersonalised" — Meta refuses the whole message —
+  // so a blank string counts as missing, not as a default.
+  const filled = (v: unknown): boolean => String(v ?? '').trim().length > 0;
+
+  if (
+    spec.headerNeedsMedia &&
+    !filled(supplied.headerImageId) &&
+    !filled(supplied.headerMediaUrl)
+  ) {
+    const kind = spec.headerFormat.toLowerCase();
+    missing.push(
+      `${kind === 'image' ? 'an' : 'a'} ${kind} header (an uploaded file or a public URL)`
+    );
+  }
+  if (spec.headerHasTextVar && !filled(supplied.headerText)) missing.push('header text');
+  if (spec.headerNeedsLocation) {
+    const loc = supplied.headerLocation;
+    if (!loc || !Number.isFinite(loc.latitude) || !Number.isFinite(loc.longitude)) {
+      missing.push('a location pin (latitude and longitude)');
+    }
+  }
+  // ONE value per dynamic URL button. Meta allows two of them and addresses each
+  // by its own index, so a template with two dynamic links and one value supplied
+  // is refused in full with (#131008) — for a campaign, once per recipient.
+  const urlValues = urlButtonValues(supplied);
+  spec.buttonUrlVarIndexes.forEach((_index, n) => {
+    if (filled(urlValues[n])) return;
+    missing.push(
+      spec.buttonUrlVarIndexes.length > 1 ? `link button ${n + 1}'s value` : 'a URL-button value'
+    );
+  });
+  if (spec.needsCouponCode && !filled(supplied.couponCode)) missing.push('a coupon code');
+  if (spec.needsLtoExpiration && !supplied.ltoExpirationMs) missing.push('an offer expiry');
+  if (spec.needsOtpCode && !filled(supplied.otpCode)) missing.push('a one-time code');
+  // MULTI-PRODUCT. The sections ARE the message: they are picked per send and
+  // Meta requires both them and the thumbnail SKU, so a template sent without
+  // either renders a product list with nothing in it. Refused here so the
+  // operator hears it at template selection rather than once per recipient.
+  //
+  // A CATALOG button is deliberately NOT checked: Meta documents the parameter
+  // as optional and falls back to the first item in the bound catalog.
+  if (spec.needsProductSections) {
+    if (!filled(supplied.catalogThumbnailProductId)) missing.push('a thumbnail product SKU');
+    const items = (supplied.productSections ?? []).reduce(
+      (n, s) => n + s.productRetailerIds.filter((id) => filled(id)).length,
+      0
+    );
+    if (items === 0) missing.push('at least one product section with products in it');
+  }
+  if (spec.needsProduct && !filled(supplied.productRetailerId)) {
+    missing.push('a product SKU for the header');
+  }
+
+  // BODY. A template is stamped NAMED or POSITIONAL as a whole, so only one of
+  // these two ever applies.
+  if (spec.bodyNamed.length > 0) {
+    const byName = new Map((supplied.bodyNamedParams ?? []).map((p) => [p.name, p.text]));
+    const blank = spec.bodyNamed.filter((n) => !filled(byName.get(n)));
+    if (blank.length > 0) {
+      missing.push(`body values for ${blank.map((n) => `{{${n}}}`).join(', ')}`);
+    }
+  } else if (!spec.needsOtpCode) {
+    // AUTHENTICATION templates are exempt from the count: Meta holds their body
+    // text itself, so the stored components carry no {{1}} while the send still
+    // takes the code as the body parameter (defaulted from `otpCode` by the
+    // caller). Counting them would refuse every OTP send.
+    const count = (supplied.bodyParams ?? []).filter((v) => filled(v)).length;
+    if (count !== spec.bodyPositional) {
+      missing.push(
+        `${spec.bodyPositional} body value(s) — ${count} supplied` +
+          (count > spec.bodyPositional ? ' (extra parameters are refused too)' : '')
+      );
+    }
+  }
+
+  // CAROUSEL. The media, the card text and the card button values live on the
+  // CARDS, and Meta refuses the whole message for one missing card parameter.
+  const cards = supplied.carouselCards ?? [];
+  if (spec.carouselCards.length === 0 && cards.length > 0) {
+    missing.push(
+      'carousel cards were supplied but this template has no carousel component ' +
+        '(they are left over from a different template)'
+    );
+  }
+  if (cards.length > spec.carouselCards.length && spec.carouselCards.length > 0) {
+    missing.push(
+      `only ${spec.carouselCards.length} carousel card(s) on this template, but ${cards.length} were supplied`
+    );
+  }
+  spec.carouselCards.forEach((card, i) => {
+    const value = cards[i];
+    const label = `card ${i + 1}`;
+    if (!value) {
+      missing.push(`${label}'s values`);
+      return;
+    }
+    if (!filled(value.headerMediaId) && !filled(value.headerMediaUrl)) {
+      missing.push(`${label}'s ${card.headerFormat === 'VIDEO' ? 'video' : 'image'}`);
+    }
+    const values = value.bodyParams ?? [];
+    const blank = Array.from({ length: card.bodyPositional }, (_, n) => n).filter(
+      (n) => !filled(values[n])
+    );
+    if (blank.length > 0) {
+      missing.push(`${label}'s ${blank.map((n) => `{{${n + 1}}}`).join(', ')} value`);
+    }
+    const cardUrls = urlButtonValues(value);
+    card.buttons
+      .filter((b) => b.hasUrlVar)
+      .forEach((_b, n) => {
+        if (filled(cardUrls[n])) return;
+        missing.push(`${label}'s button link value`);
+      });
+  });
+  return missing;
+}
+
 /**
  * Where each parameterised button actually sits in a template's authored BUTTONS
  * array.
@@ -1279,31 +1645,107 @@ export function analyzeTemplateSpec(components: unknown): TemplateSendSpec {
  * stored components to hand keeps the old positional behaviour.
  */
 export function templateButtonIndexes(components: unknown): {
-  url: number | null;
+  /**
+   * EVERY dynamic URL button, in authored order. Meta allows two URL buttons and
+   * either may carry a {{n}} suffix; keeping only the first meant the second was
+   * sent no parameter and Meta refused the whole message with (#131008).
+   */
+  urls: number[];
   copyCode: number | null;
   otp: number | null;
+  /** FLOW button — takes an optional `flow_token` / `flow_action_data` action. */
+  flow: number | null;
+  /** CATALOG button — takes an optional thumbnail-product action. */
+  catalog: number | null;
+  /** MPM button — takes the (mandatory) product sections action. */
+  mpm: number | null;
 } {
   const cs: any[] = Array.isArray(components) ? components : [];
   const buttons: any[] =
     cs.find((c) => String(c?.type ?? '').toUpperCase() === 'BUTTONS')?.buttons ?? [];
-  const out: { url: number | null; copyCode: number | null; otp: number | null } = {
-    url: null,
-    copyCode: null,
-    otp: null,
+  const out = {
+    urls: [] as number[],
+    copyCode: null as number | null,
+    otp: null as number | null,
+    flow: null as number | null,
+    catalog: null as number | null,
+    mpm: null as number | null,
   };
   buttons.forEach((b: any, i: number) => {
     const type = String(b?.type ?? '').toUpperCase();
     // Only a URL button carrying a {{n}} suffix takes a send-time parameter — a
     // static URL button must not be addressed at all.
     if (type === 'URL') {
-      if (out.url === null && /\{\{\s*\d+\s*\}\}/.test(String(b?.url ?? ''))) out.url = i;
+      if (/\{\{\s*\d+\s*\}\}/.test(String(b?.url ?? ''))) out.urls.push(i);
     } else if (type === 'COPY_CODE') {
       if (out.copyCode === null) out.copyCode = i;
     } else if (type === 'OTP') {
       if (out.otp === null) out.otp = i;
+    } else if (type === 'FLOW') {
+      if (out.flow === null) out.flow = i;
+    } else if (type === 'CATALOG') {
+      if (out.catalog === null) out.catalog = i;
+    } else if (type === 'MPM') {
+      if (out.mpm === null) out.mpm = i;
     }
   });
   return out;
+}
+
+/** The FLOW button a template carries, with the Flow it opens. */
+export interface TemplateFlowButtonSpec {
+  /** Position in the template's authored BUTTONS array. */
+  index: number;
+  /** The Flow's id ON META (WaFlow.metaId), as authored on the button. */
+  metaFlowId: string | null;
+}
+
+/**
+ * The template's FLOW button, or null when it has none.
+ *
+ * Separate from `templateButtonIndexes` because the send path needs the Flow's
+ * id as well as the button's position: the per-send `flow_token` is minted from
+ * it (see `mintTemplateFlowToken`), which is what makes a submission traceable
+ * back to the Flow that produced it.
+ */
+export function templateFlowButton(components: unknown): TemplateFlowButtonSpec | null {
+  const cs: any[] = Array.isArray(components) ? components : [];
+  const buttons: any[] =
+    cs.find((c) => String(c?.type ?? '').toUpperCase() === 'BUTTONS')?.buttons ?? [];
+  const index = buttons.findIndex((b: any) => String(b?.type ?? '').toUpperCase() === 'FLOW');
+  if (index < 0) return null;
+  const raw = buttons[index]?.flow_id;
+  const metaFlowId = raw == null || String(raw).trim() === '' ? null : String(raw).trim();
+  return { index, metaFlowId };
+}
+
+/** Marks a `flow_token` this console minted, so an inbound reply can decode it. */
+export const TEMPLATE_FLOW_TOKEN_PREFIX = 'watpl1';
+
+/**
+ * Mint the per-send `flow_token` for a template's FLOW button.
+ *
+ * Meta defaults this field, so nothing was REJECTED for its absence — but the
+ * default is opaque, and the submission that comes back is then attributable to
+ * a contact (the inbound worker knows the thread) and to nothing else. Every
+ * WaFlowResponse row therefore carried `flowId: null`, so the Flows page's
+ * per-flow response list was permanently empty for template-launched Flows.
+ *
+ * The token names the Flow and carries a random tail, so two sends of the same
+ * template are still distinguishable. It is echoed back verbatim on the
+ * `nfm_reply`, where `recordFlowResponse` decodes it.
+ */
+export function mintTemplateFlowToken(metaFlowId: string | null): string {
+  const tail = randomUUID();
+  return metaFlowId ? `${TEMPLATE_FLOW_TOKEN_PREFIX}.${metaFlowId}.${tail}` : tail;
+}
+
+/** The Meta Flow id inside a token minted by `mintTemplateFlowToken`, if any. */
+export function metaFlowIdFromToken(token: string | null | undefined): string | null {
+  if (!token) return null;
+  const parts = token.split('.');
+  if (parts.length < 3 || parts[0] !== TEMPLATE_FLOW_TOKEN_PREFIX) return null;
+  return parts[1] || null;
 }
 
 /** The runtime values ONE carousel card is sent with. */
@@ -1323,8 +1765,16 @@ export interface TemplateSendCarouselCard {
   headerMediaType?: 'image' | 'video';
   /** Positional values for the card body's own {{n}} placeholders. */
   bodyParams?: string[];
-  /** Value for this card's dynamic {{n}} URL-button suffix. */
+  /** Value for this card's FIRST dynamic {{n}} URL-button suffix. */
   buttonUrlParam?: string;
+  /**
+   * One value per dynamic URL button on THIS card, in authored order.
+   *
+   * A card may carry two URL buttons and Meta lets both be dynamic. The single
+   * `buttonUrlParam` above was reused for every one of them, so the second
+   * button was sent the first button's link.
+   */
+  buttonUrlParams?: string[];
 }
 
 /**
@@ -1371,6 +1821,8 @@ function buildCarouselCards(
     // Card buttons carry the index they occupy in THIS card's buttons array, not
     // a running count across the carousel — the same rule the bubble's buttons
     // follow (see `templateButtonIndexes`).
+    const cardUrlValues = urlButtonValues(card);
+    let cardUrlSlot = 0;
     for (const button of spec?.buttons ?? []) {
       if (button.type === 'QUICK_REPLY') {
         // Meta's carousel send format addresses every quick reply and expects a
@@ -1385,13 +1837,19 @@ function buildCarouselCards(
           index: String(button.index),
           parameters: [{ type: 'payload', payload: oneLineParam(button.text) || `card_${i + 1}` }],
         });
-      } else if (button.hasUrlVar && card.buttonUrlParam) {
-        components.push({
-          type: 'button',
-          sub_type: 'url',
-          index: String(button.index),
-          parameters: [{ type: 'text', text: oneLineParam(card.buttonUrlParam) }],
-        });
+      } else if (button.hasUrlVar) {
+        // Each dynamic URL button on the card takes its OWN value, in the order
+        // the card authored them.
+        const value = cardUrlValues[cardUrlSlot];
+        cardUrlSlot += 1;
+        if (value) {
+          components.push({
+            type: 'button',
+            sub_type: 'url',
+            index: String(button.index),
+            parameters: [{ type: 'text', text: oneLineParam(value) }],
+          });
+        }
       }
       // A static URL, a call button or a catalog button takes no parameter and
       // must NOT be addressed at all — Meta rejects the send if it is.
@@ -1399,6 +1857,110 @@ function buildCarouselCards(
     out.push({ card_index: i, components });
   }
   return out;
+}
+
+/**
+ * The ONE header parameter a template send may carry.
+ *
+ * Driven by the header the template was APPROVED with whenever its components
+ * are to hand, because Meta refuses the whole message with (#131008) both for a
+ * missing header parameter AND for one the template did not ask for. `authored`
+ * is null only when the caller supplied no components; then the fields it filled
+ * in pick the branch, exactly as before.
+ */
+function buildTemplateHeaderParameter(
+  opts: {
+    headerText?: string;
+    headerImageId?: string;
+    headerMediaUrl?: string;
+    headerMediaType?: 'image' | 'video' | 'document';
+    headerMediaFilename?: string;
+    headerLocation?: { latitude: number; longitude: number; name?: string; address?: string };
+    productRetailerId?: string;
+    catalogId?: string;
+  },
+  authored: TemplateHeaderSpec | null
+): any | null {
+  const authoredKind =
+    authored?.format === 'IMAGE' || authored?.format === 'VIDEO' || authored?.format === 'DOCUMENT'
+      ? (authored.format.toLowerCase() as 'image' | 'video' | 'document')
+      : null;
+  const wantsMedia = authored
+    ? authoredKind !== null
+    : Boolean(opts.headerImageId || opts.headerMediaUrl);
+  if (wantsMedia) {
+    // The approved template names the media KIND. Requiring the caller to restate
+    // it meant a send that passed `headerMediaUrl` alone had its header component
+    // dropped in SILENCE — and Meta then refused every message with (#131008),
+    // which on a campaign is the whole audience, while the launch pre-flight saw
+    // a URL present and waved the launch through.
+    //
+    // An uploaded media id is valid for video and document headers too, and it
+    // was always emitted as `image` — so picking a file for a DOCUMENT-header
+    // template sent Meta an image parameter for a document component and the
+    // whole send was rejected.
+    const kind = authoredKind ?? opts.headerMediaType ?? 'image';
+    // DOCUMENT headers carry the name the attachment shows on the handset. Meta
+    // only accepts `filename` on a document parameter, and without it the
+    // customer receives an invoice or a brochure named after the media id or the
+    // URL's last path segment — while the identical file sent as an ordinary
+    // document message in the same thread arrives correctly named, because that
+    // path has always passed one.
+    const named =
+      kind === 'document' && opts.headerMediaFilename?.trim()
+        ? { filename: opts.headerMediaFilename.trim() }
+        : {};
+    if (opts.headerImageId) return { type: kind, [kind]: { id: opts.headerImageId, ...named } };
+    if (opts.headerMediaUrl) return { type: kind, [kind]: { link: opts.headerMediaUrl, ...named } };
+    return null;
+  }
+  // A SINGLE-PRODUCT template puts its product in the HEADER, not on a button:
+  // Meta stamps the header `format: PRODUCT` and the send names the SKU plus the
+  // catalog it lives in. Nothing emitted it, so such a template — creatable via
+  // the API and importable from Business Manager — went out with no product at
+  // all and Meta refused it.
+  if (authored ? authored.format === 'PRODUCT' : Boolean(opts.productRetailerId)) {
+    if (!opts.productRetailerId || !opts.catalogId) return null;
+    return {
+      type: 'product',
+      product: {
+        product_retailer_id: opts.productRetailerId,
+        catalog_id: opts.catalogId,
+      },
+    };
+  }
+  if (authored ? authored.format === 'LOCATION' : Boolean(opts.headerLocation)) {
+    // LOCATION headers are authored with no configuration and the builder told the
+    // operator the pin is "filled in per send" — but nothing ever filled it, and
+    // the send had no location parameter at all.
+    if (!opts.headerLocation) return null;
+    return {
+      type: 'location',
+      location: {
+        latitude: String(opts.headerLocation.latitude),
+        longitude: String(opts.headerLocation.longitude),
+        ...(opts.headerLocation.name ? { name: opts.headerLocation.name } : {}),
+        ...(opts.headerLocation.address ? { address: opts.headerLocation.address } : {}),
+      },
+    };
+  }
+  // A TEXT header takes a parameter only when it actually carries a variable:
+  // addressing a static header is as fatal as omitting a required one, and a
+  // stale `headerText` left over from a previously selected template would
+  // otherwise fail every recipient.
+  if (authored ? authored.format === 'TEXT' && authored.hasTextVar : Boolean(opts.headerText)) {
+    if (!opts.headerText) return null;
+    return {
+      type: 'text',
+      // NAMED templates ({{customer_name}}) require `parameter_name` on EVERY
+      // parameter, the header included. Such a template cannot be authored here
+      // but imports APPROVED from Business Manager (the sync stores Meta's
+      // components verbatim), and every send of one was refused with (#131008).
+      ...(authored?.namedParam ? { parameter_name: authored.namedParam } : {}),
+      text: oneLineParam(opts.headerText),
+    };
+  }
+  return null;
 }
 
 /**
@@ -1417,9 +1979,18 @@ function buildCarouselCards(
  *  - `carouselCards` emits the `carousel` component, one entry per authored card,
  *    each carrying that card's own media, body values and button parameters.
  *
- * Catalog / product templates carry their product set as authored components at
- * create time — `createTemplate` already persists an arbitrary `components` Json,
- * so no extra send-time mapping is needed for those.
+ * Catalogue templates pick their PRODUCTS at send time, not at authoring time:
+ * `catalogThumbnailProductId` names the SKU whose image heads a CATALOG card
+ * (optional — Meta falls back to the first item in the bound catalog),
+ * `productSections` is the MPM button's product list (mandatory: it exists
+ * nowhere else), and `productRetailerId` + `catalogId` fill a single-product
+ * template's PRODUCT header. This used to say no send-time mapping was needed,
+ * which was true only of the authored button itself.
+ *
+ * Buttons that carry NO variable — a static URL, a phone number, a plain quick
+ * reply — are part of the approved template and must not be addressed at all:
+ * Meta refuses the message with (#131008) for a parameter it did not ask for
+ * just as readily as for a missing one.
  */
 export function buildTemplateSendComponents(opts: {
   bodyParams?: string[];
@@ -1429,12 +2000,46 @@ export function buildTemplateSendComponents(opts: {
   headerImageId?: string;
   /** Header media by public URL (image/video/document) when no uploaded media id. */
   headerMediaUrl?: string;
+  /**
+   * The media kind, for callers that pass no `templateComponents`. Ignored when
+   * the stored template names an IMAGE / VIDEO / DOCUMENT header — the approved
+   * template is the authority, exactly as it is for a carousel card's media.
+   */
   headerMediaType?: 'image' | 'video' | 'document';
+  /**
+   * DOCUMENT header: the name the attachment shows on the recipient's handset.
+   *
+   * Ignored for image and video headers — Meta accepts `filename` on a document
+   * parameter only.
+   */
+  headerMediaFilename?: string;
+  /** Value for the FIRST dynamic URL button — the single-button shorthand. */
   buttonUrlParam?: string;
+  /** One value per dynamic URL button, in authored order (Meta allows two). */
+  buttonUrlParams?: string[];
   couponCode?: string;
   ltoExpirationMs?: number;
   /** One-time code for an AUTHENTICATION template (body + button parameter). */
   otpCode?: string;
+  /**
+   * FLOW button: the correlation id Meta echoes back on the Flow submission.
+   * Optional to Meta (it defaults one), but a default cannot be traced back to
+   * the Flow, so the send path mints one — see `mintTemplateFlowToken`.
+   */
+  flowToken?: string;
+  /** FLOW button: data handed to the Flow's entry screen (`flow_action_data`). */
+  flowActionData?: Record<string, unknown>;
+  /**
+   * CATALOG button: the SKU whose image heads the card. Optional — Meta uses the
+   * first item in the bound catalog when it is omitted.
+   */
+  catalogThumbnailProductId?: string;
+  /** MPM button: the product list, by section. Mandatory for such a template. */
+  productSections?: TemplateProductSection[];
+  /** PRODUCT header (single-product template): the SKU to show. */
+  productRetailerId?: string;
+  /** The catalog the product SKUs live in — resolved from the channel, not the caller. */
+  catalogId?: string;
   /** LOCATION header pin, supplied per send. */
   headerLocation?: {
     latitude: number;
@@ -1452,7 +2057,20 @@ export function buildTemplateSendComponents(opts: {
   templateComponents?: unknown;
 }): any[] {
   const components: any[] = [];
-  if (opts.ltoExpirationMs !== undefined) {
+  // Whether the AUTHORED template is known at all. When it is, the template — not
+  // the caller's leftover fields — decides which components may be emitted: Meta
+  // refuses a message for a parameter the template did not ask for exactly as
+  // firmly as for a missing one. This matters most on the campaign path, where a
+  // single shared `templateParams` set is forwarded to every A/B variant and drip
+  // step: a coupon or an offer expiry filled in for the base template used to be
+  // emitted against a variant that has neither, failing that variant's entire
+  // slice of the audience with (#131008).
+  const authoredKnown =
+    Array.isArray(opts.templateComponents) && opts.templateComponents.length > 0;
+  const wantsLto = authoredKnown
+    ? templateWantsLtoExpiration(opts.templateComponents)
+    : opts.ltoExpirationMs !== undefined;
+  if (wantsLto && opts.ltoExpirationMs !== undefined) {
     components.push({
       type: 'limited_time_offer',
       parameters: [
@@ -1463,47 +2081,13 @@ export function buildTemplateSendComponents(opts: {
       ],
     });
   }
-  if (opts.headerImageId) {
-    // An uploaded media id is valid for video and document headers too, and it
-    // was always emitted as `image` — so picking a file for a DOCUMENT-header
-    // template sent Meta an image parameter for a document component and the
-    // whole send was rejected. Fall back to 'image' only when the caller did not
-    // say (the historical behaviour, and the common case).
-    const t = opts.headerMediaType ?? 'image';
-    components.push({
-      type: 'header',
-      parameters: [{ type: t, [t]: { id: opts.headerImageId } }],
-    });
-  } else if (opts.headerMediaUrl && opts.headerMediaType) {
-    const t = opts.headerMediaType;
-    components.push({
-      type: 'header',
-      parameters: [{ type: t, [t]: { link: opts.headerMediaUrl } }],
-    });
-  } else if (opts.headerLocation) {
-    // LOCATION headers are authored with no configuration and the builder told the
-    // operator the pin is "filled in per send" — but nothing ever filled it, and
-    // the send had no location parameter at all.
-    components.push({
-      type: 'header',
-      parameters: [
-        {
-          type: 'location',
-          location: {
-            latitude: String(opts.headerLocation.latitude),
-            longitude: String(opts.headerLocation.longitude),
-            ...(opts.headerLocation.name ? { name: opts.headerLocation.name } : {}),
-            ...(opts.headerLocation.address ? { address: opts.headerLocation.address } : {}),
-          },
-        },
-      ],
-    });
-  } else if (opts.headerText) {
-    components.push({
-      type: 'header',
-      parameters: [{ type: 'text', text: oneLineParam(opts.headerText) }],
-    });
-  }
+  // WHICH header parameter may be emitted is decided by the TEMPLATE, not by the
+  // fields the caller happened to fill in — see buildTemplateHeaderParameter.
+  const headerParam = buildTemplateHeaderParameter(
+    opts,
+    templateHeaderSpec(opts.templateComponents)
+  );
+  if (headerParam) components.push({ type: 'header', parameters: [headerParam] });
   if (opts.bodyNamedParams?.length) {
     // Named-parameter templates ({{name}}): each parameter MUST carry
     // `parameter_name`, else Meta rejects with (#131008) Required parameter is missing.
@@ -1545,16 +2129,33 @@ export function buildTemplateSendComponents(opts: {
   // survives only as the fallback for callers that pass no template components.
   const authored = templateButtonIndexes(opts.templateComponents);
   let buttonIndex = 0;
-  if (opts.buttonUrlParam) {
+  // One component per DYNAMIC URL button. Meta allows two URL buttons and either
+  // may carry a {{n}} suffix; only the first was ever addressed, so the second
+  // was sent nothing and Meta refused the whole message with (#131008).
+  //
+  // Which buttons exist is decided by the TEMPLATE whenever its components are to
+  // hand — the same rule the header and the carousel follow. A link value left
+  // over from a previously selected template used to be emitted as index 0 against
+  // a template with no dynamic URL button at all, which Meta refuses outright.
+  const urlValues = urlButtonValues(opts);
+  const urlIndexes: Array<number | null> = authoredKnown
+    ? authored.urls
+    : urlValues.map(() => null);
+  urlIndexes.forEach((index, n) => {
+    const value = urlValues[n];
+    if (!value) return;
     components.push({
       type: 'button',
       sub_type: 'url',
-      index: String(authored.url ?? buttonIndex),
-      parameters: [{ type: 'text', text: oneLineParam(opts.buttonUrlParam) }],
+      index: String(index ?? buttonIndex),
+      parameters: [{ type: 'text', text: oneLineParam(value) }],
     });
     buttonIndex++;
-  }
-  if (opts.couponCode) {
+  });
+  // Only for a template that actually HAS a copy-code button. A campaign-wide
+  // coupon is forwarded to every template the campaign can send, so addressing a
+  // button that is not there refused the message outright.
+  if (opts.couponCode && (!authoredKnown || authored.copyCode !== null)) {
     components.push({
       type: 'button',
       sub_type: 'copy_code',
@@ -1563,16 +2164,84 @@ export function buildTemplateSendComponents(opts: {
     });
     buttonIndex++;
   }
-  if (opts.otpCode) {
+  if (opts.otpCode && (!authoredKnown || authored.otp !== null)) {
     // Authentication templates: Meta requires sub_type "url" carrying the same
     // code that appears in the body. Both halves are mandatory — a body parameter
     // alone is rejected with (#131008). The OTP button is normally the template's
-    // only button, so index 0 stays the fallback.
+    // only button, so index 0 stays the fallback for a caller that supplied no
+    // components; when they ARE known, a template with no OTP button is not
+    // addressed at all.
     components.push({
       type: 'button',
       sub_type: 'url',
       index: String(authored.otp ?? 0),
       parameters: [{ type: 'text', text: oneLineParam(opts.otpCode) }],
+    });
+  }
+  // FLOW. Nothing here is mandatory — Meta defaults `flow_token` — so the
+  // component is emitted ONLY for a template that actually has a flow button and
+  // only when there is something to say. Addressing a button the template does
+  // not have is refused with (#131008) just as firmly as omitting a required one.
+  if (authored.flow !== null && (opts.flowToken || opts.flowActionData)) {
+    components.push({
+      type: 'button',
+      sub_type: 'flow',
+      index: String(authored.flow),
+      parameters: [
+        {
+          type: 'action',
+          action: {
+            ...(opts.flowToken ? { flow_token: opts.flowToken } : {}),
+            ...(opts.flowActionData ? { flow_action_data: opts.flowActionData } : {}),
+          },
+        },
+      ],
+    });
+  }
+  // CATALOG. The thumbnail is the one thing a catalog template's send can say,
+  // and it is optional: omitting the parameters object makes Meta use the first
+  // item in the bound catalog. So this is emitted only when a SKU was chosen.
+  if (authored.catalog !== null && opts.catalogThumbnailProductId) {
+    components.push({
+      type: 'button',
+      sub_type: 'catalog',
+      index: String(authored.catalog),
+      parameters: [
+        {
+          type: 'action',
+          action: { thumbnail_product_retailer_id: opts.catalogThumbnailProductId },
+        },
+      ],
+    });
+  }
+  // MPM. The product sections are the message: they are chosen per send, Meta
+  // requires them alongside the thumbnail SKU, and nothing emitted either — so a
+  // multi-product template was approvable here and could never be sent.
+  if (authored.mpm !== null && opts.productSections?.length) {
+    components.push({
+      type: 'button',
+      sub_type: 'mpm',
+      index: String(authored.mpm),
+      parameters: [
+        {
+          type: 'action',
+          action: {
+            ...(opts.catalogThumbnailProductId
+              ? { thumbnail_product_retailer_id: opts.catalogThumbnailProductId }
+              : {}),
+            // A section with no products is refused by Meta and would fail the
+            // whole message, so an empty one is dropped rather than sent.
+            sections: opts.productSections
+              .map((section) => ({
+                title: section.title,
+                product_items: section.productRetailerIds
+                  .filter((id) => String(id ?? '').trim().length > 0)
+                  .map((id) => ({ product_retailer_id: id })),
+              }))
+              .filter((section) => section.product_items.length > 0),
+          },
+        },
+      ],
     });
   }
   return components;

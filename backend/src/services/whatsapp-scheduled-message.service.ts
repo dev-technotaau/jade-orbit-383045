@@ -12,6 +12,7 @@ import { getConversationSenderPhoneId } from './whatsapp-conversation.service';
 import { uploadMediaToMeta } from './whatsapp.service';
 import { downloadFileFromR2, deleteFileFromR2 } from './storage.service';
 import { mediaKindForMime } from '../utils/wa-media-limits';
+import { assertTemplateSendableWithBodyParamsOnly } from './whatsapp-template.service';
 import { acquireChannelSendSlot } from '../jobs/whatsapp-campaign.worker';
 import { env } from '../config/env';
 
@@ -43,6 +44,17 @@ export async function scheduleMessage(input: ScheduleMessageInput) {
   }
   if (!(input.sendAt instanceof Date) || Number.isNaN(input.sendAt.getTime())) {
     throw new AppError('A valid sendAt time is required', 400, 'WA_INVALID_SEND_AT');
+  }
+
+  // A scheduled row stores a template id and an ordered list of body values, and
+  // there is nowhere on it for a header, a link value, a coupon or an offer
+  // expiry. The dispatcher therefore sent body parameters only, Meta refused the
+  // whole message with (#131008), and the panel lists PENDING rows — so the
+  // FAILED row simply vanished and the operator believed it had gone out.
+  // Refusing at SCHEDULE time is the one moment they can still pick another
+  // template.
+  if (input.kind === 'template' && input.templateId) {
+    await assertTemplateSendableWithBodyParamsOnly(input.templateId, 'a scheduled message');
   }
 
   // A free-text send is only legal inside the 24-hour customer service window.

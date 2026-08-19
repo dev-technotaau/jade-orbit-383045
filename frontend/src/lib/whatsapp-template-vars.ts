@@ -12,7 +12,12 @@ type Comp = {
   type?: string;
   format?: string;
   text?: string;
-  buttons?: Array<{ type?: string; url?: string; text?: string }>;
+  buttons?: Array<{ type?: string; url?: string; text?: string; phone_number?: string }>;
+  /**
+   * LIMITED_TIME_OFFER only. `has_expiration` is what adds the live countdown,
+   * and the countdown is the only thing `expiration_time_ms` feeds.
+   */
+  limited_time_offer?: { text?: string; has_expiration?: boolean };
   /** CAROUSEL only: each card is its own mini component list. */
   cards?: Array<{ components?: Comp[] }>;
   /** Meta's approved sample values, kept on the component itself. */
@@ -62,7 +67,7 @@ export interface CarouselCardSpec {
 }
 
 export interface TemplateVarSpec {
-  headerFormat: 'NONE' | 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT' | 'LOCATION';
+  headerFormat: 'NONE' | 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT' | 'LOCATION' | 'PRODUCT';
   /** TEXT header containing a {{1}} variable. */
   headerHasTextVar: boolean;
   /** IMAGE / VIDEO / DOCUMENT header — a media URL must be supplied at send. */
@@ -74,6 +79,16 @@ export interface TemplateVarSpec {
   /** A URL button whose URL has a dynamic {{1}} suffix. */
   buttonUrlVar: boolean;
   /**
+   * The AUTHORED index of every URL button carrying a {{n}} suffix, in order.
+   *
+   * Meta allows TWO URL buttons and either may be dynamic, each addressed by its
+   * own index. One input filled only the first, so a template with two — which
+   * this console refuses to author but imports APPROVED from Business Manager —
+   * was refused by Meta with (#131008) on every send, for a field the operator
+   * had no way to fill in.
+   */
+  buttonUrlVarIndexes: number[];
+  /**
    * Authentication template with an OTP button. The Cloud API needs the code as
    * BOTH the body parameter and a button parameter, and rejects the send without
    * the button component - so these were authorable, approvable and unsendable.
@@ -83,15 +98,42 @@ export interface TemplateVarSpec {
   headerNeedsLocation: boolean;
   /** COPY_CODE button — needs a coupon code at send. */
   needsCouponCode: boolean;
-  /** LIMITED_TIME_OFFER component — needs an expiry at send. */
+  /**
+   * LIMITED_TIME_OFFER component WITH a countdown — needs an expiry at send.
+   * Gated on `has_expiration`: the offer component alone only draws the banner.
+   */
   needsLtoExpiration: boolean;
+  /**
+   * CATALOG button — the send MAY name the SKU whose image heads the card.
+   * Optional: Meta falls back to the first item in the bound catalog.
+   */
+  needsCatalogThumbnail: boolean;
+  /**
+   * MPM button — the product sections ARE the message and are picked per send.
+   * Mandatory: a multi-product template sent without them shows no products.
+   */
+  needsProductSections: boolean;
+  /** PRODUCT header (single-product template) — the SKU is supplied per send. */
+  needsProduct: boolean;
+  /** FLOW button — the send mints a correlation token for it server-side. */
+  hasFlowButton: boolean;
   /** The carousel's cards, in order — empty for every other template. */
   carouselCards: CarouselCardSpec[];
   /** True when the template needs no runtime parameters at all (e.g. hello_world). */
   none: boolean;
 }
 
-function comps(t: WaTemplate): Comp[] {
+/**
+ * The only field the analyzer and the preview renderer ever read off a template.
+ *
+ * A SENT template message carries the approved components on the message row
+ * itself (`WaMessage.payload`), not a `WaTemplate` — the template it came from
+ * may since have been edited, re-approved or deleted at Meta. Both callers want
+ * exactly the same parsing, so neither is made to fabricate a template object.
+ */
+export type TemplateSource = Pick<WaTemplate, 'components'>;
+
+function comps(t: TemplateSource): Comp[] {
   const c = t.components;
   if (Array.isArray(c)) return c as Comp[];
   // Defensive: a stringified JSON column shouldn't happen, but never throw.
@@ -157,7 +199,7 @@ function carouselCardsOf(cs: Comp[]): CarouselCardSpec[] {
   });
 }
 
-export function analyzeTemplate(t: WaTemplate): TemplateVarSpec {
+export function analyzeTemplate(t: TemplateSource): TemplateVarSpec {
   const cs = comps(t);
   const header = cs.find((c) => (c.type ?? '').toUpperCase() === 'HEADER');
   const body = cs.find((c) => (c.type ?? '').toUpperCase() === 'BODY');
@@ -178,15 +220,38 @@ export function analyzeTemplate(t: WaTemplate): TemplateVarSpec {
   const needsCouponCode = (buttonsComp?.buttons ?? []).some(
     (b) => (b.type ?? '').toUpperCase() === 'COPY_CODE',
   );
-  const needsLtoExpiration = cs.some((c) => (c.type ?? '').toUpperCase() === 'LIMITED_TIME_OFFER');
+  // An offer component draws the banner; only `has_expiration` draws the
+  // countdown, and only the countdown consumes the expiry parameter. Keying off
+  // the component's mere presence made a `has_expiration: false` template
+  // (authorable in Business Manager, synced in verbatim) demand an expiry here
+  // and then send Meta a parameter the approved template never declared.
+  const needsLtoExpiration = cs.some(
+    (c) =>
+      (c.type ?? '').toUpperCase() === 'LIMITED_TIME_OFFER' &&
+      c.limited_time_offer?.has_expiration !== false,
+  );
 
   const needsOtpCode = (buttonsComp?.buttons ?? []).some(
     (b) => (b.type ?? '').toUpperCase() === 'OTP',
   );
 
-  const buttonUrlVar = (buttonsComp?.buttons ?? []).some(
-    (b) => (b.type ?? '').toUpperCase() === 'URL' && /\{\{\s*\d+\s*\}\}/.test(b.url ?? ''),
-  );
+  // EVERY dynamic URL button, by authored index — mirrors the server's
+  // `templateButtonIndexes`, so the form asks for exactly the values the send
+  // will emit rather than one for however many buttons the template carries.
+  const buttonUrlVarIndexes = (buttonsComp?.buttons ?? []).reduce<number[]>((acc, b, i) => {
+    if ((b.type ?? '').toUpperCase() === 'URL' && /\{\{\s*\d+\s*\}\}/.test(b.url ?? '')) {
+      acc.push(i);
+    }
+    return acc;
+  }, []);
+  const buttonUrlVar = buttonUrlVarIndexes.length > 0;
+
+  const hasButton = (t: string) =>
+    (buttonsComp?.buttons ?? []).some((b) => (b.type ?? '').toUpperCase() === t);
+  const needsCatalogThumbnail = hasButton('CATALOG');
+  const needsProductSections = hasButton('MPM');
+  const needsProduct = headerFormat === 'PRODUCT' || hasButton('SPM');
+  const hasFlowButton = hasButton('FLOW');
 
   const carouselCards = carouselCardsOf(cs);
 
@@ -200,6 +265,14 @@ export function analyzeTemplate(t: WaTemplate): TemplateVarSpec {
     !headerNeedsMedia &&
     bodyPositional === 0 &&
     bodyNamed.length === 0 &&
+    // A catalogue template shows an input block too: the multi-product list and
+    // the single-product SKU are mandatory, and the catalog thumbnail — while
+    // optional — is the only control an operator has over what the card shows.
+    // Reporting `none` for these is why such a template opened the compose modal
+    // with no fields at all and was then sent with no products named.
+    !needsCatalogThumbnail &&
+    !needsProductSections &&
+    !needsProduct &&
     !buttonUrlVar;
 
   return {
@@ -209,10 +282,15 @@ export function analyzeTemplate(t: WaTemplate): TemplateVarSpec {
     bodyPositional,
     bodyNamed,
     buttonUrlVar,
+    buttonUrlVarIndexes,
     needsOtpCode,
     headerNeedsLocation,
     needsCouponCode,
     needsLtoExpiration,
+    needsCatalogThumbnail,
+    needsProductSections,
+    needsProduct,
+    hasFlowButton,
     carouselCards,
     none,
   };
@@ -307,8 +385,68 @@ export interface TemplateCarouselCardValues {
   headerMediaType?: 'image' | 'video';
   /** Positional values for this card's own {{n}} placeholders. */
   bodyParams?: string[];
-  /** Value for this card's dynamic {{n}} URL-button suffix. */
+  /** Value for this card's FIRST dynamic {{n}} URL-button suffix. */
   buttonUrlParam?: string;
+  /** One value per dynamic URL button on this card, in authored order. */
+  buttonUrlParams?: string[];
+}
+
+/**
+ * Split a typed SKU list into product retailer ids.
+ *
+ * There is no API for browsing a Meta catalog's products from this console, so
+ * the SKUs are typed — one per line or comma-separated, whichever the operator
+ * finds natural. Blank entries are dropped: Meta refuses a product item with an
+ * empty retailer id, which would fail the whole message.
+ */
+export function parseProductSkus(raw: string): string[] {
+  return raw
+    .split(/[\s,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Everything a template needs at send time OTHER than positional body values,
+ * phrased for a human — empty when body values are all it takes.
+ *
+ * Mirrors the server's `templateParamsBeyondBody`. An A/B variant and a drip
+ * step carry a body mapping and nothing else: there is exactly one campaign-wide
+ * `templateParams` set, filled in against the MAIN template, and the wizard hides
+ * those inputs entirely once A/B is on. So a variant with a media header, a
+ * dynamic link or a copy-code button used to pass every check here, launch, and
+ * then be refused by Meta with (#131008) for its whole slice of the audience.
+ */
+export function templateParamsBeyondBody(spec: TemplateVarSpec): string[] {
+  const needs: string[] = [];
+  if (spec.headerNeedsMedia) needs.push(`a ${spec.headerFormat.toLowerCase()} header`);
+  if (spec.headerHasTextVar) needs.push('header text');
+  if (spec.headerNeedsLocation) needs.push('a location pin');
+  if (spec.buttonUrlVarIndexes.length > 0) {
+    needs.push(
+      spec.buttonUrlVarIndexes.length > 1
+        ? `${spec.buttonUrlVarIndexes.length} URL-button values`
+        : 'a URL-button value',
+    );
+  }
+  if (spec.needsCouponCode) needs.push('a coupon code');
+  if (spec.needsLtoExpiration) needs.push('an offer expiry');
+  if (spec.needsOtpCode) needs.push('a one-time code');
+  if (spec.needsProductSections) needs.push('a product list');
+  if (spec.needsProduct) needs.push('a product SKU');
+  if (spec.carouselCards.length > 0) needs.push('carousel card media and text');
+  if (spec.bodyNamed.length > 0) {
+    needs.push(`named body values (${spec.bodyNamed.map((n) => `{{${n}}}`).join(', ')})`);
+  }
+  return needs;
+}
+
+/** One section of a multi-product (MPM) template's product list. */
+export interface TemplateProductSectionValues {
+  /** Section heading. Meta caps it at 24 characters. */
+  title: string;
+  /** The SKUs in this section, as they appear in the bound catalog. */
+  productRetailerIds: string[];
 }
 
 /** Payload shape shared by send-template + start-conversation. */
@@ -326,12 +464,30 @@ export interface TemplateSendPayload {
   headerImageId?: string;
   headerMediaUrl?: string;
   headerMediaType?: 'image' | 'video' | 'document';
+  /**
+   * DOCUMENT header only: the filename the attachment shows on the handset.
+   *
+   * The modal has always held the uploaded file's name and used it purely for
+   * the on-screen chip, so the customer received an invoice or a brochure named
+   * after its media id while the identical file sent as a plain document message
+   * in the same thread arrived correctly named.
+   */
+  headerMediaFilename?: string;
+  /** Value for the FIRST dynamic URL button — the single-button shorthand. */
   buttonUrlParam?: string;
+  /** One value per dynamic URL button, in authored order (Meta allows two). */
+  buttonUrlParams?: string[];
   /** One-time code for an AUTHENTICATION template. */
   otpCode?: string;
   couponCode?: string;
   ltoExpirationMs?: number;
   headerLocation?: { latitude: number; longitude: number; name?: string; address?: string };
+  /** CATALOG / MPM button: the SKU whose image heads the card. */
+  catalogThumbnailProductId?: string;
+  /** MPM button: the product list by section — chosen per send, never authored. */
+  productSections?: TemplateProductSectionValues[];
+  /** PRODUCT header (single-product template): the SKU to show. */
+  productRetailerId?: string;
   /** CAROUSEL cards, in card order — one entry per card the template carries. */
   carouselCards?: TemplateCarouselCardValues[];
 }
@@ -354,8 +510,19 @@ export interface TemplatePreviewValues {
   headerText?: string;
   headerMediaUrl?: string;
   buttonUrlParam?: string;
+  /** One value per dynamic URL button, in authored order. */
+  buttonUrlParams?: string[];
   otpCode?: string;
   couponCode?: string;
+  /**
+   * LIMITED_TIME_OFFER expiry, epoch ms.
+   *
+   * The countdown is the whole point of an offer template and the preview drew
+   * nothing for it, so neither the compose preview nor — once a send was
+   * persisted — the sent bubble could answer "has this customer's offer
+   * expired?", which is exactly what they write in to ask.
+   */
+  ltoExpirationMs?: number;
   headerLocation?: { name?: string; address?: string };
   /** Per-card values, in card order. */
   carouselCards?: TemplateCarouselCardValues[];
@@ -380,6 +547,10 @@ export interface TemplatePreview {
   headerLocation: string | null;
   body: string;
   footer: string | null;
+  /** The LIMITED_TIME_OFFER banner's label, when the template carries one. */
+  offerText: string | null;
+  /** That offer's expiry (epoch ms) — null when it runs no countdown. */
+  offerExpiresAt: number | null;
   buttons: TemplatePreviewButton[];
   /** The carousel's cards, in order — empty for every other template. */
   cards: TemplatePreviewCard[];
@@ -413,6 +584,26 @@ function substitute(
 }
 
 /**
+ * One carousel card's button chips, each dynamic link resolved against its OWN
+ * value — a card may carry two URL buttons and Meta lets both be dynamic.
+ */
+function cardButtonPreviews(
+  buttons: CarouselCardButtonSpec[],
+  supplied: TemplateCarouselCardValues | undefined,
+): TemplatePreviewButton[] {
+  const values = supplied?.buttonUrlParams?.length
+    ? supplied.buttonUrlParams
+    : supplied?.buttonUrlParam
+      ? [supplied.buttonUrlParam]
+      : [];
+  let slot = 0;
+  return buttons.map((b) => {
+    const detail = b.hasUrlVar ? values[slot++]?.trim() || undefined : undefined;
+    return { type: b.type, text: b.text, ...(detail ? { detail } : {}) };
+  });
+}
+
+/**
  * Render the message a send will actually produce — header, body, footer and
  * buttons with the entered values substituted in.
  *
@@ -428,7 +619,7 @@ function substitute(
  * that the one-time code fills body {{1}} when no body value was typed.
  */
 export function renderTemplatePreview(
-  t: WaTemplate,
+  t: TemplateSource,
   values: TemplatePreviewValues = {},
 ): TemplatePreview {
   const cs = comps(t);
@@ -438,6 +629,7 @@ export function renderTemplatePreview(
   const body = find('BODY');
   const footer = find('FOOTER');
   const buttonsComp = find('BUTTONS');
+  const offer = find('LIMITED_TIME_OFFER');
   const unfilled: string[] = [];
   // Whitespace-only input is "not filled" — it would send as a blank slot.
   const val = (s: string | undefined) => s?.trim() || undefined;
@@ -452,24 +644,42 @@ export function renderTemplatePreview(
         body.text,
         (token) => {
           if (!/^\d+$/.test(token)) return val(values.bodyNamedParams?.[token]);
-          const positional = val(values.bodyParams?.[Number(token) - 1]);
-          // An AUTHENTICATION template carries the code as body {{1}}; the send
-          // layer copies otpCode there when no body value was entered.
-          if (!positional && Number(token) === 1 && spec.needsOtpCode) return val(values.otpCode);
-          return positional;
+          // An AUTHENTICATION template's body {{1}} IS the one-time code — Meta
+          // renders it in the body and the button copies it, and the two must be
+          // the same string. The send layer therefore derives the body parameter
+          // from `otpCode` outright, so the preview does too: showing a separately
+          // typed body value here would preview a message no recipient can get.
+          if (Number(token) === 1 && spec.needsOtpCode) return val(values.otpCode);
+          return val(values.bodyParams?.[Number(token) - 1]);
         },
         unfilled,
       )
     : '';
 
+  // Each DYNAMIC url button resolves against its own value. Reusing one value for
+  // all of them previewed a link the second button would never actually carry.
+  const urlValues = values.buttonUrlParams?.length
+    ? values.buttonUrlParams
+    : values.buttonUrlParam
+      ? [values.buttonUrlParam]
+      : [];
+  let urlSlot = 0;
   const buttons: TemplatePreviewButton[] = (buttonsComp?.buttons ?? []).map((b) => {
     const type = (b.type ?? '').toUpperCase();
-    const detail =
-      type === 'COPY_CODE'
-        ? val(values.couponCode)
-        : b.url
-          ? substitute(b.url, () => val(values.buttonUrlParam), unfilled)
-          : undefined;
+    let detail: string | undefined;
+    if (type === 'COPY_CODE') {
+      detail = val(values.couponCode);
+    } else if (type === 'PHONE_NUMBER' || type === 'VOICE_CALL') {
+      // The number is part of the APPROVED template and carries no send
+      // parameter, so it appeared nowhere in the thread: an operator could see
+      // that a "Call us" button had gone out and not which line it dialled.
+      detail = val(b.phone_number);
+    } else if (b.url) {
+      const dynamic = /\{\{\s*\d+\s*\}\}/.test(b.url);
+      const value = dynamic ? urlValues[urlSlot] : undefined;
+      if (dynamic) urlSlot += 1;
+      detail = substitute(b.url, () => val(value), unfilled);
+    }
     return { type, text: b.text ?? '', ...(detail ? { detail } : {}) };
   });
 
@@ -494,10 +704,7 @@ export function renderTemplatePreview(
       headerFormat: card.headerFormat,
       mediaUrl: val(supplied?.headerMediaUrl) ?? val(supplied?.headerMediaId) ?? null,
       body,
-      buttons: card.buttons.map((b) => {
-        const detail = b.hasUrlVar ? val(supplied?.buttonUrlParam) : undefined;
-        return { type: b.type, text: b.text, ...(detail ? { detail } : {}) };
-      }),
+      buttons: cardButtonPreviews(card.buttons, supplied),
     };
   });
 
@@ -513,10 +720,200 @@ export function renderTemplatePreview(
         : null,
     body: renderedBody,
     footer: val(footer?.text) ?? null,
+    offerText: val(offer?.limited_time_offer?.text) ?? null,
+    // Only a countdown offer has an expiry to show. `has_expiration: false`
+    // draws the banner and nothing else, and `needsLtoExpiration` already
+    // encodes that rule for the send.
+    offerExpiresAt: spec.needsLtoExpiration ? (values.ltoExpirationMs ?? null) : null,
     buttons,
     cards,
     unfilled,
   };
+}
+
+/**
+ * A TEMPLATE message row's `payload`, as the send path persists it.
+ *
+ * Mirrors the server's `WaTemplateMessagePayload` (whatsapp-send.service.ts).
+ * The components are the ones the message was APPROVED and SENT with, copied
+ * onto the row: re-reading the template now would redraw an old message with
+ * today's wording, or draw nothing at all once it has been deleted at Meta.
+ */
+export interface StoredTemplateMessage {
+  name: string;
+  language: string;
+  /** The approved Meta components as they stood when this message went out. */
+  components: unknown;
+  /** What this particular send filled the placeholders with. */
+  values: StoredTemplateValues;
+}
+
+/** The per-send values half of that payload. */
+export interface StoredTemplateValues {
+  headerText?: string;
+  /** Uploaded header media — the same id the row carries in `mediaId`. */
+  headerMediaId?: string;
+  /** Header media by public link; there is no media row behind one of these. */
+  headerMediaUrl?: string;
+  headerMediaType?: 'image' | 'video' | 'document';
+  headerMediaFilename?: string;
+  headerLocation?: { latitude?: number; longitude?: number; name?: string; address?: string };
+  bodyParams?: string[];
+  bodyNamedParams?: Array<{ name: string; text: string }>;
+  buttonUrlParams?: string[];
+  couponCode?: string;
+  ltoExpirationMs?: number;
+  carouselCards?: TemplateCarouselCardValues[];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** A non-empty string, or nothing — the same "blank is not a value" rule the preview uses. */
+function readString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined;
+}
+
+/** A string array, with non-strings flattened to '' so a slot never goes missing. */
+function readStrings(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.map((entry) => (typeof entry === 'string' ? entry : ''));
+}
+
+function readNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function readNamedParams(value: unknown): Array<{ name: string; text: string }> | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.flatMap((entry) => {
+    if (!isRecord(entry)) return [];
+    const name = readString(entry.name);
+    return name ? [{ name, text: typeof entry.text === 'string' ? entry.text : '' }] : [];
+  });
+}
+
+function readCardValues(value: unknown): TemplateCarouselCardValues[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.map((raw) => {
+    if (!isRecord(raw)) return {};
+    const type = readString(raw.headerMediaType);
+    return {
+      ...(readString(raw.headerMediaId) ? { headerMediaId: readString(raw.headerMediaId) } : {}),
+      ...(readString(raw.headerMediaUrl) ? { headerMediaUrl: readString(raw.headerMediaUrl) } : {}),
+      ...(type === 'image' || type === 'video' ? { headerMediaType: type } : {}),
+      ...(readStrings(raw.bodyParams) ? { bodyParams: readStrings(raw.bodyParams) } : {}),
+      ...(readStrings(raw.buttonUrlParams)
+        ? { buttonUrlParams: readStrings(raw.buttonUrlParams) }
+        : {}),
+    };
+  });
+}
+
+/**
+ * Read a sent template message's payload, or null when it is not one of ours.
+ *
+ * The `values` object is the discriminator, not the presence of `template`: the
+ * Chatwoot bridge persists the raw Cloud API body on the rows it dispatches, and
+ * that body ALSO has `template.components` — the send PARAMETERS, which say
+ * nothing about the approved layout. Rendering those as if they were authored
+ * components would draw a confidently wrong bubble, so a bridge-sent template
+ * falls back to its body text exactly as it does today.
+ */
+export function parseStoredTemplate(payload: unknown): StoredTemplateMessage | null {
+  if (!isRecord(payload)) return null;
+  const template = payload.template;
+  const values = payload.values;
+  if (!isRecord(template) || !isRecord(values)) return null;
+  if (!Array.isArray(template.components)) return null;
+
+  const headerMediaType = readString(values.headerMediaType);
+  const location = isRecord(values.headerLocation) ? values.headerLocation : null;
+
+  return {
+    name: readString(template.name) ?? '',
+    language: readString(template.language) ?? '',
+    components: template.components,
+    values: {
+      ...(readString(values.headerText) ? { headerText: readString(values.headerText) } : {}),
+      ...(readString(values.headerMediaId)
+        ? { headerMediaId: readString(values.headerMediaId) }
+        : {}),
+      ...(readString(values.headerMediaUrl)
+        ? { headerMediaUrl: readString(values.headerMediaUrl) }
+        : {}),
+      ...(headerMediaType === 'image' ||
+      headerMediaType === 'video' ||
+      headerMediaType === 'document'
+        ? { headerMediaType }
+        : {}),
+      ...(readString(values.headerMediaFilename)
+        ? { headerMediaFilename: readString(values.headerMediaFilename) }
+        : {}),
+      ...(location
+        ? {
+            headerLocation: {
+              ...(readNumber(location.latitude) !== undefined
+                ? { latitude: readNumber(location.latitude) }
+                : {}),
+              ...(readNumber(location.longitude) !== undefined
+                ? { longitude: readNumber(location.longitude) }
+                : {}),
+              ...(readString(location.name) ? { name: readString(location.name) } : {}),
+              ...(readString(location.address) ? { address: readString(location.address) } : {}),
+            },
+          }
+        : {}),
+      ...(readStrings(values.bodyParams) ? { bodyParams: readStrings(values.bodyParams) } : {}),
+      ...(readNamedParams(values.bodyNamedParams)
+        ? { bodyNamedParams: readNamedParams(values.bodyNamedParams) }
+        : {}),
+      ...(readStrings(values.buttonUrlParams)
+        ? { buttonUrlParams: readStrings(values.buttonUrlParams) }
+        : {}),
+      ...(readString(values.couponCode) ? { couponCode: readString(values.couponCode) } : {}),
+      ...(readNumber(values.ltoExpirationMs) !== undefined
+        ? { ltoExpirationMs: readNumber(values.ltoExpirationMs) }
+        : {}),
+      ...(readCardValues(values.carouselCards)
+        ? { carouselCards: readCardValues(values.carouselCards) }
+        : {}),
+    },
+  };
+}
+
+/**
+ * Render a SENT template message the way the compose preview renders the message
+ * it is about to send — same parser, same substitution, same markup.
+ *
+ * The operator used to see the full message in the compose modal, click Send and
+ * watch a stripped-down bubble appear: header, footer, buttons and carousel cards
+ * were all missing from the record of the very message they had just checked.
+ */
+export function storedTemplatePreview(stored: StoredTemplateMessage): TemplatePreview {
+  const v = stored.values;
+  return renderTemplatePreview(
+    { components: stored.components },
+    {
+      bodyParams: v.bodyParams,
+      // The renderer takes named values keyed by token; the send stores them as
+      // the ordered array Meta's `parameter_name` parameters are built from.
+      bodyNamedParams: Object.fromEntries((v.bodyNamedParams ?? []).map((e) => [e.name, e.text])),
+      headerText: v.headerText,
+      headerMediaUrl: v.headerMediaUrl,
+      buttonUrlParams: v.buttonUrlParams,
+      // An AUTHENTICATION send stores the one-time code exactly once, as the body
+      // parameter it was sent as — the send derives one from the other precisely
+      // so the body and the copy button cannot disagree. Feeding it back here
+      // keeps the bubble's body from rendering a bare "{{1}}".
+      otpCode: v.bodyParams?.[0],
+      couponCode: v.couponCode,
+      ltoExpirationMs: v.ltoExpirationMs,
+      headerLocation: v.headerLocation,
+      carouselCards: v.carouselCards,
+    },
+  );
 }
 
 /**

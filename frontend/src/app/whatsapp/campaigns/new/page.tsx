@@ -34,8 +34,10 @@ import { ROUTES } from '@/constants/routes';
 import { whatsappService as svc } from '@/services/whatsapp.service';
 import {
   analyzeTemplate,
+  parseProductSkus,
   resolveSampleToken,
   templateExamples,
+  templateParamsBeyondBody,
   tokensWithoutFallback,
   usesSampleContact,
   SAMPLE_CONTACT_NOTE,
@@ -97,10 +99,15 @@ const EMPTY_SPEC: TemplateVarSpec = {
   bodyPositional: 0,
   bodyNamed: [],
   buttonUrlVar: false,
+  buttonUrlVarIndexes: [],
   needsOtpCode: false,
   headerNeedsLocation: false,
   needsCouponCode: false,
   needsLtoExpiration: false,
+  needsCatalogThumbnail: false,
+  needsProductSections: false,
+  needsProduct: false,
+  hasFlowButton: false,
   carouselCards: [],
   none: true,
 };
@@ -392,9 +399,23 @@ export default function NewCampaignPage() {
   const examples = selected ? templateExamples(selected) : null;
   const [templateParams, setTemplateParams] = useState<WaCampaignTemplateParams>({});
   /** Every campaign-level parameter that is a plain string input. */
-  type StringParam = Exclude<keyof WaCampaignTemplateParams, 'ltoExpirationMs' | 'carouselCards'>;
+  type StringParam = Exclude<
+    keyof WaCampaignTemplateParams,
+    'ltoExpirationMs' | 'carouselCards' | 'headerLocation' | 'buttonUrlParams' | 'productSections'
+  >;
   const setParam = (k: StringParam, v: string) =>
     setTemplateParams((p) => ({ ...p, [k]: v || undefined }));
+  /**
+   * One value per DYNAMIC url button. Meta allows two URL buttons and either may
+   * carry a {{n}} suffix, each addressed by its own index — a single field could
+   * fill only the first, so a two-link template launched clean and was then
+   * refused for the whole audience with (#131008).
+   */
+  const setUrlParam = (n: number, v: string) =>
+    setTemplateParams((p) => ({
+      ...p,
+      buttonUrlParams: Object.assign([...(p.buttonUrlParams ?? [])], { [n]: v }),
+    }));
   /** One carousel card's campaign-wide values, by card index. */
   const cardParam = (i: number): WaCarouselCardParams => templateParams.carouselCards?.[i] ?? {};
   const setCardParam = (i: number, patch: Partial<WaCarouselCardParams>) =>
@@ -423,15 +444,72 @@ export default function NewCampaignPage() {
           return `Card ${i + 1} has no value for {{${n + 1}}} — Meta refuses an empty parameter`;
         }
       }
-      if (card.buttonUrlVar && !values.buttonUrlParam?.trim()) {
-        return `Card ${i + 1} needs the value for its link button`;
+      const cardUrls = values.buttonUrlParams ?? [];
+      const dynamic = card.buttons.filter((b) => b.hasUrlVar);
+      for (let n = 0; n < dynamic.length; n += 1) {
+        if (!(cardUrls[n] ?? '').trim()) {
+          return `Card ${i + 1} needs the value for its link button${
+            dynamic.length > 1 ? ` ${n + 1}` : ''
+          }`;
+        }
       }
     }
     return null;
   };
+  /**
+   * The first dynamic URL button with no value, or null when they are all filled.
+   *
+   * Meta addresses each dynamic URL button by its own index and refuses the whole
+   * message for one it was given no parameter for — so a template with two links
+   * and one value filled in fails for every recipient in the audience.
+   */
+  const urlGap = ((): number | null => {
+    const values = templateParams.buttonUrlParams ?? [];
+    for (let n = 0; n < spec.buttonUrlVarIndexes.length; n += 1) {
+      if (!(values[n] ?? '').trim()) return n;
+    }
+    return null;
+  })();
   // Held as the datetime-local string the input produces and converted to epoch
   // ms only on submit, exactly as the inbox composer does it.
   const [ltoExpiresAt, setLtoExpiresAt] = useState('');
+  // The LOCATION header's pin, kept as the raw strings the inputs produce and
+  // assembled on submit (same reason as the expiry above). A LOCATION template
+  // could be picked here with no way to supply the pin at all, so the campaign
+  // launched and Meta then refused the whole audience with (#131008).
+  const [lat, setLat] = useState('');
+  const [lng, setLng] = useState('');
+  const [placeName, setPlaceName] = useState('');
+  const [placeAddress, setPlaceAddress] = useState('');
+  /**
+   * A multi-product template's sections, as the form holds them.
+   *
+   * The products are chosen per SEND — they are not part of the approved
+   * template, and there is no API here for browsing the bound catalog — so the
+   * SKUs are typed. Assembled into `productSections` on submit, the same way the
+   * location pin and the offer expiry are.
+   */
+  const [sectionDrafts, setSectionDrafts] = useState<Array<{ title: string; skus: string }>>([
+    { title: '', skus: '' },
+  ]);
+  const productSections = sectionDrafts
+    .map((s) => ({ title: s.title.trim(), productRetailerIds: parseProductSkus(s.skus) }))
+    .filter((s) => s.title && s.productRetailerIds.length > 0);
+  /** The pin as the API takes it — null until both coordinates are usable. */
+  const headerLocation: WaCampaignTemplateParams['headerLocation'] | null = (() => {
+    if (!spec.headerNeedsLocation) return null;
+    const latitude = Number(lat);
+    const longitude = Number(lng);
+    if (!lat.trim() || !lng.trim() || !Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      return null;
+    }
+    return {
+      latitude,
+      longitude,
+      ...(placeName.trim() ? { name: placeName.trim() } : {}),
+      ...(placeAddress.trim() ? { address: placeAddress.trim() } : {}),
+    };
+  })();
   // Body values as they will be sent, one slot per {{n}} — blank slots included
   // so the preview can show which placeholder is still unfilled.
   const previewMapping = Array.from({ length: varCount }, (_, i) => mapping[i] ?? '');
@@ -538,9 +616,17 @@ export default function NewCampaignPage() {
                       | 'document',
                   }
                 : {}),
+              // The LOCATION header's pin. Campaign-wide like the media above —
+              // one place for the whole audience — and required, so submit has
+              // already refused a campaign that has no usable coordinates.
+              ...(headerLocation ? { headerLocation } : {}),
               ...(spec.needsLtoExpiration && ltoExpiresAt
                 ? { ltoExpirationMs: new Date(ltoExpiresAt).getTime() }
                 : {}),
+              // A multi-product template's product list. Chosen here because it
+              // exists nowhere in the approved template — Meta reads the products
+              // straight off the send payload.
+              ...(spec.needsProductSections ? { productSections } : {}),
               // Carousel cards, normalised to the number of cards the template
               // was approved with — Meta matches them by card_index, so a stray
               // extra entry would fail the send for the whole audience.
@@ -592,6 +678,36 @@ export default function NewCampaignPage() {
         `Step ${carouselStep + 1} is a carousel template. A campaign can only supply cards for its main template — send the carousel as its own broadcast.`,
       );
     }
+    // The SAME parameter gate the main template gets, applied to every template
+    // this campaign can actually send.
+    //
+    // A drip step and an A/B variant carry a body mapping and nothing else — the
+    // campaign's one `templateParams` set is filled in against the main template,
+    // and every check below is skipped outright once A/B is on. So a step or a
+    // variant needing a media header, a location pin, a dynamic link, a coupon or
+    // an offer expiry passed this form, passed the launch, and was then refused by
+    // Meta with (#131008) for its entire slice of the audience.
+    const paramlessGap = (rows: Array<{ label: string; template?: WaTemplate | null }>) => {
+      for (const row of rows) {
+        if (!row.template) continue;
+        const needs = templateParamsBeyondBody(analyzeTemplate(row.template));
+        if (needs.length > 0) {
+          return `${row.label} needs ${needs.join(', ')}, which a campaign supplies for its main template only. Pick a template that needs body values alone.`;
+        }
+      }
+      return null;
+    };
+    const sendableGap = isSequence
+      ? paramlessGap(steps.map((s, i) => ({ label: `Step ${i + 1}`, template: s.template })))
+      : useAbTest
+        ? paramlessGap(
+            variants.map((v, i) => ({
+              label: v.label.trim() || `Variant ${String.fromCharCode(65 + i)}`,
+              template: v.template,
+            })),
+          )
+        : null;
+    if (sendableGap) return showToast.error(sendableGap);
     const cardGap = useAbTest || isSequence ? null : carouselGap();
     if (isSequence) {
       if (steps.length === 0) return showToast.error('Add at least one sequence step');
@@ -617,8 +733,36 @@ export default function NewCampaignPage() {
       return showToast.error('This template has a media header — add the media URL');
     } else if (!useAbTest && spec.headerHasTextVar && !templateParams.headerText) {
       return showToast.error('This template has a variable header — fill in the header text');
-    } else if (!useAbTest && spec.buttonUrlVar && !templateParams.buttonUrlParam) {
-      return showToast.error('This template has a dynamic URL button — add its value');
+    } else if (!useAbTest && spec.headerNeedsLocation && !headerLocation) {
+      // The pin is supplied per send, never at authoring time. Without it Meta
+      // refuses every recipient with (#131008) — the whole audience, after the
+      // send is committed — which is exactly what this gate exists to prevent.
+      return showToast.error(
+        'This template has a location header — enter a valid latitude and longitude',
+      );
+    } else if (!useAbTest && urlGap !== null) {
+      return showToast.error(
+        spec.buttonUrlVarIndexes.length > 1
+          ? `This template has two dynamic URL buttons — add the value for link button ${urlGap + 1}`
+          : 'This template has a dynamic URL button — add its value',
+      );
+    } else if (
+      !useAbTest &&
+      spec.needsProductSections &&
+      !templateParams.catalogThumbnailProductId
+    ) {
+      // Meta requires the thumbnail SKU alongside an MPM's sections. A CATALOG
+      // button's thumbnail is optional and is deliberately not gated here.
+      return showToast.error(
+        'A multi-product template needs the SKU of the product whose image heads the message',
+      );
+    } else if (!useAbTest && spec.needsProductSections && productSections.length === 0) {
+      return showToast.error(
+        'A multi-product template needs at least one section with a title and product SKUs — ' +
+          'the products are chosen here, not in the template',
+      );
+    } else if (!useAbTest && spec.needsProduct && !templateParams.productRetailerId) {
+      return showToast.error('This template shows a product — add its SKU');
     } else if (!useAbTest && spec.needsCouponCode && !templateParams.couponCode) {
       return showToast.error('This template has a copy-code button — add the coupon code');
     } else if (!useAbTest && spec.needsLtoExpiration && !ltoExpiresAt) {
@@ -748,11 +892,22 @@ export default function NewCampaignPage() {
                       // templateParams: leaving them meant a template with no
                       // carousel shipped the previous template's cards, and Meta
                       // rejected every recipient.
+                      //
+                      // The link values and the catalogue products go the same
+                      // way. They are per-template — a link suffix carried over
+                      // from the last pick would be appended to a DIFFERENT
+                      // template's button and sent to the whole audience.
                       setTemplateParams((p) => {
                         const next = { ...p };
                         delete next.carouselCards;
+                        delete next.buttonUrlParams;
+                        delete next.buttonUrlParam;
+                        delete next.catalogThumbnailProductId;
+                        delete next.productSections;
+                        delete next.productRetailerId;
                         return next;
                       });
+                      setSectionDrafts([{ title: '', skus: '' }]);
                     }}
                   />
                 )}
@@ -806,9 +961,13 @@ export default function NewCampaignPage() {
                 {!useAbTest &&
                   (spec.headerNeedsMedia ||
                     spec.headerHasTextVar ||
+                    spec.headerNeedsLocation ||
                     spec.buttonUrlVar ||
                     spec.needsCouponCode ||
-                    spec.needsLtoExpiration) && (
+                    spec.needsLtoExpiration ||
+                    spec.needsCatalogThumbnail ||
+                    spec.needsProductSections ||
+                    spec.needsProduct) && (
                     <div className="space-y-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-3">
                       <p className="text-xs font-semibold text-[var(--text-muted)]">
                         Template parameters — the same for every recipient
@@ -821,6 +980,18 @@ export default function NewCampaignPage() {
                           placeholder="https://example.com/banner.jpg"
                         />
                       )}
+                      {/* DOCUMENT headers carry the name the attachment shows on
+                          the handset. Without it every recipient's PDF is named
+                          after the URL's last path segment. */}
+                      {spec.headerFormat === 'DOCUMENT' && (
+                        <Input
+                          label="File name (optional)"
+                          value={templateParams.headerMediaFilename ?? ''}
+                          onChange={(e) => setParam('headerMediaFilename', e.target.value)}
+                          placeholder="Invoice-October.pdf"
+                          helperText="What the attachment is called on the recipient's phone."
+                        />
+                      )}
                       {spec.headerHasTextVar && (
                         <Input
                           label="Header text"
@@ -828,13 +999,146 @@ export default function NewCampaignPage() {
                           onChange={(e) => setParam('headerText', e.target.value)}
                         />
                       )}
-                      {spec.buttonUrlVar && (
+                      {/* LOCATION header. The pin is filled in per SEND — the
+                          template carries no coordinates — so without these the
+                          broadcast is unsendable and Meta refuses every recipient. */}
+                      {spec.headerNeedsLocation && (
+                        <>
+                          <Input
+                            label="Latitude"
+                            placeholder="19.0760"
+                            value={lat}
+                            onChange={(e) => setLat(e.target.value)}
+                          />
+                          <Input
+                            label="Longitude"
+                            placeholder="72.8777"
+                            value={lng}
+                            onChange={(e) => setLng(e.target.value)}
+                            helperText="The same pin goes to everyone in the audience."
+                          />
+                          <Input
+                            label="Place name (optional)"
+                            value={placeName}
+                            onChange={(e) => setPlaceName(e.target.value)}
+                          />
+                          <Input
+                            label="Address (optional)"
+                            value={placeAddress}
+                            onChange={(e) => setPlaceAddress(e.target.value)}
+                          />
+                        </>
+                      )}
+                      {/* One field per DYNAMIC url button — Meta allows two and
+                          addresses each by its own index, so filling only the
+                          first has the whole audience refused with (#131008). */}
+                      {spec.buttonUrlVarIndexes.map((_index, n) => (
                         <Input
-                          label="URL button value"
-                          value={templateParams.buttonUrlParam ?? ''}
-                          onChange={(e) => setParam('buttonUrlParam', e.target.value)}
+                          key={n}
+                          label={
+                            spec.buttonUrlVarIndexes.length > 1
+                              ? `Link button ${n + 1} value`
+                              : 'URL button value'
+                          }
+                          value={templateParams.buttonUrlParams?.[n] ?? ''}
+                          onChange={(e) => setUrlParam(n, e.target.value)}
                           placeholder="order/12345"
                         />
+                      ))}
+                      {(spec.needsCatalogThumbnail || spec.needsProductSections) && (
+                        <Input
+                          label={
+                            spec.needsProductSections
+                              ? 'Thumbnail product SKU'
+                              : 'Thumbnail product SKU (optional)'
+                          }
+                          value={templateParams.catalogThumbnailProductId ?? ''}
+                          onChange={(e) => setParam('catalogThumbnailProductId', e.target.value)}
+                          placeholder="2lc20305pt"
+                          helperText={
+                            spec.needsProductSections
+                              ? 'The product whose image heads the message, as its SKU appears in your catalog.'
+                              : 'Left blank, WhatsApp uses the first item in the catalog bound to this number.'
+                          }
+                        />
+                      )}
+                      {spec.needsProduct && (
+                        <Input
+                          label="Product SKU"
+                          value={templateParams.productRetailerId ?? ''}
+                          onChange={(e) => setParam('productRetailerId', e.target.value)}
+                          placeholder="2lc20305pt"
+                          helperText="The product this template shows. The whole audience sees the same one."
+                        />
+                      )}
+                      {spec.needsProductSections && (
+                        <div className="space-y-2">
+                          <p className="text-xs font-semibold text-[var(--text-muted)]">
+                            Products — up to 10 sections, 30 products in total
+                          </p>
+                          {sectionDrafts.map((section, n) => (
+                            <div
+                              key={n}
+                              className="space-y-2 rounded-lg border border-[var(--border)] bg-[var(--bg)] p-2.5"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-xs font-semibold text-[var(--text)]">
+                                  Section {n + 1}
+                                </span>
+                                {sectionDrafts.length > 1 && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setSectionDrafts((prev) => prev.filter((_s, i) => i !== n))
+                                    }
+                                    className="text-[11px] font-medium text-[var(--text-muted)] hover:text-red-600"
+                                  >
+                                    Remove
+                                  </button>
+                                )}
+                              </div>
+                              <Input
+                                id={`mpm-section-${n}-title`}
+                                label="Section title"
+                                maxLength={24}
+                                value={section.title}
+                                onChange={(e) =>
+                                  setSectionDrafts((prev) =>
+                                    Object.assign([...prev], {
+                                      [n]: { ...prev[n], title: e.target.value },
+                                    }),
+                                  )
+                                }
+                                placeholder="Popular bundles"
+                              />
+                              <Input
+                                id={`mpm-section-${n}-skus`}
+                                label="Product SKUs"
+                                value={section.skus}
+                                onChange={(e) =>
+                                  setSectionDrafts((prev) =>
+                                    Object.assign([...prev], {
+                                      [n]: { ...prev[n], skus: e.target.value },
+                                    }),
+                                  )
+                                }
+                                placeholder="2lc20305pt, nseiw1x3ch"
+                                helperText="Separate SKUs with commas or spaces."
+                              />
+                            </div>
+                          ))}
+                          {sectionDrafts.length < 10 && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setSectionDrafts((prev) => [...prev, { title: '', skus: '' }])
+                              }
+                              className="text-primary text-xs font-medium hover:underline"
+                            >
+                              + Add a section
+                            </button>
+                          )}
+                        </div>
                       )}
                       {spec.needsCouponCode && (
                         <Input
@@ -913,14 +1217,28 @@ export default function NewCampaignPage() {
                               }
                             />
                           ))}
-                          {card.buttonUrlVar && (
-                            <Input
-                              label={`Card ${i + 1} button link value`}
-                              value={values.buttonUrlParam ?? ''}
-                              onChange={(e) => setCardParam(i, { buttonUrlParam: e.target.value })}
-                              placeholder="summer-sale"
-                            />
-                          )}
+                          {card.buttons
+                            .filter((b) => b.hasUrlVar)
+                            .map((_b, n) => (
+                              <Input
+                                key={n}
+                                label={`Card ${i + 1} button link value${
+                                  card.buttons.filter((b) => b.hasUrlVar).length > 1
+                                    ? ` ${n + 1}`
+                                    : ''
+                                }`}
+                                value={values.buttonUrlParams?.[n] ?? ''}
+                                onChange={(e) =>
+                                  setCardParam(i, {
+                                    buttonUrlParams: Object.assign(
+                                      [...(values.buttonUrlParams ?? [])],
+                                      { [n]: e.target.value },
+                                    ),
+                                  })
+                                }
+                                placeholder="summer-sale"
+                              />
+                            ))}
                         </div>
                       );
                     })}
@@ -978,7 +1296,11 @@ export default function NewCampaignPage() {
                       bodyParams: previewMapping.map(resolveSampleToken),
                       headerText: templateParams.headerText,
                       headerMediaUrl: templateParams.headerMediaUrl,
-                      buttonUrlParam: templateParams.buttonUrlParam,
+                      // The pin as typed, so a location template previews as the
+                      // recipient will see it rather than as a bare bubble.
+                      headerLocation: { name: placeName, address: placeAddress },
+                      buttonUrlParams: templateParams.buttonUrlParams,
+                      ltoExpirationMs: templateParams.ltoExpirationMs,
                       carouselCards: templateParams.carouselCards,
                     }}
                     note={usesSampleContact(previewMapping) ? SAMPLE_CONTACT_NOTE : undefined}

@@ -160,9 +160,21 @@ export const testSend = async (req: Request, res: Response, next: NextFunction):
       headerText: params.headerText,
       headerMediaUrl: params.headerMediaUrl,
       headerMediaType: params.headerMediaType,
+      // A DOCUMENT header's filename, so the reviewer sees the attachment named
+      // exactly as the audience will.
+      headerMediaFilename: params.headerMediaFilename,
+      // The LOCATION pin, for the same reason: a test send of a store-locator
+      // template is refused outright without it.
+      headerLocation: params.headerLocation,
       buttonUrlParam: params.buttonUrlParam,
+      buttonUrlParams: params.buttonUrlParams,
       couponCode: params.couponCode,
       ltoExpirationMs: params.ltoExpirationMs,
+      // The catalogue products. A test send of a multi-product template without
+      // them is refused with #131008 — the template a reviewer most needs to see.
+      catalogThumbnailProductId: params.catalogThumbnailProductId,
+      productSections: params.productSections,
+      productRetailerId: params.productRetailerId,
       // The carousel's cards. A test send exists to show the message a recipient
       // will get, and for a carousel that message IS the cards — without them
       // Meta refuses the test with #131008 on exactly the template a reviewer

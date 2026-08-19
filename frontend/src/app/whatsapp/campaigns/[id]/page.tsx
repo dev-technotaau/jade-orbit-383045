@@ -50,7 +50,9 @@ import CampaignManageActions from '@/components/whatsapp/CampaignManageActions';
 import TemplatePreviewBubble from '@/components/whatsapp/TemplatePreviewBubble';
 import TemplatePicker, { useTemplatesByIds } from '@/components/whatsapp/TemplatePicker';
 import {
+  analyzeTemplate,
   resolveSampleToken,
+  templateParamsBeyondBody,
   usesSampleContact,
   SAMPLE_CONTACT_NOTE,
 } from '@/lib/whatsapp-template-vars';
@@ -63,6 +65,7 @@ import type {
   WaCampaignTemplateParams,
   WaSequenceStep,
   WaCampaignVariant,
+  WaTemplate,
 } from '@/types/whatsapp';
 import type { ApiError } from '@/types/api';
 
@@ -113,6 +116,13 @@ interface StepDraft {
   templateId: string;
   delayHours: string;
   condition: WaSequenceStep['condition'];
+  /**
+   * The picked template itself, kept on the row and never sent. The picker
+   * searches server-side, so nothing else here can look the id up — and without
+   * the components there is no way to tell that a step needs parameters a
+   * campaign cannot supply.
+   */
+  template?: WaTemplate | null;
 }
 
 const RECIP_STYLE: Record<WaCampaignRecipientStatus, string> = {
@@ -458,6 +468,21 @@ export default function CampaignDetailPage() {
       return showToast.error('Add at least one sequence step');
     if (draftSteps.some((s) => !s.templateId))
       return showToast.error('Every step needs an approved template');
+    // A drip step carries its body mapping and nothing else — the campaign's one
+    // `templateParams` set is filled in against the MAIN template. A step needing
+    // a media header, a location pin, a dynamic link, a coupon or an offer expiry
+    // therefore saves, launches, and is then refused by Meta with (#131008) for
+    // every recipient that reaches it — and on the drip path that refusal is
+    // retried until the recipient's attempt budget runs out.
+    for (const [i, s] of draftSteps.entries()) {
+      if (!s.template) continue;
+      const needs = templateParamsBeyondBody(analyzeTemplate(s.template));
+      if (needs.length > 0) {
+        return showToast.error(
+          `Step ${i + 1} needs ${needs.join(', ')}, which a campaign supplies for its main template only. Pick a template that needs body values alone.`,
+        );
+      }
+    }
     stepsMut.mutate();
   };
 
@@ -559,6 +584,21 @@ export default function CampaignDetailPage() {
       return showToast.error(
         `${badVariant.label || 'A variant'} has a variable with no value — pick a token or type a literal`,
       );
+    // A variant carries its body mapping and nothing else: the campaign's one
+    // `templateParams` set is filled in against the MAIN template. A variant
+    // needing a media header, a location pin, a dynamic link, a coupon or an
+    // offer expiry therefore saves, launches, and is then refused by Meta with
+    // (#131008) for its whole slice of the audience — the launch gate now says
+    // so too, but this is where the template can still be swapped.
+    for (const [i, v] of draftVariants.entries()) {
+      if (!v.template) continue;
+      const needs = templateParamsBeyondBody(analyzeTemplate(v.template));
+      if (needs.length > 0) {
+        return showToast.error(
+          `${v.label.trim() || `Variant ${String.fromCharCode(65 + i)}`} needs ${needs.join(', ')}, which a campaign supplies for its main template only. Pick a template that needs body values alone.`,
+        );
+      }
+    }
     variantsMut.mutate();
   };
 
@@ -877,7 +917,18 @@ export default function CampaignDetailPage() {
             bodyParams: storedMapping.map(resolveSampleToken),
             headerText: storedParams.headerText,
             headerMediaUrl: storedParams.headerMediaUrl,
-            buttonUrlParam: storedParams.buttonUrlParam,
+            // The saved location pin — for a store-locator template the pin IS
+            // the header, so a preview without it shows the bubble alone.
+            headerLocation: storedParams.headerLocation,
+            // Every dynamic link button's saved value. A template may carry two,
+            // and reusing one value for both previewed a link the second button
+            // would never actually carry.
+            buttonUrlParams:
+              storedParams.buttonUrlParams ??
+              (storedParams.buttonUrlParam ? [storedParams.buttonUrlParam] : undefined),
+            // The saved offer expiry, so the preview carries the countdown the
+            // recipients' bubbles do.
+            ltoExpirationMs: storedParams.ltoExpirationMs,
             // The carousel cards as saved — for a carousel campaign the cards ARE
             // the message, so a preview without them shows the bubble alone.
             carouselCards: storedParams.carouselCards,
@@ -1172,7 +1223,13 @@ export default function CampaignDetailPage() {
                         <TemplatePicker
                           label="Template"
                           value={step.templateId}
-                          onChange={(t) => updateDraft(i, { templateId: t?.id ?? '' })}
+                          onChange={(t) =>
+                            updateDraft(i, { templateId: t?.id ?? '', template: t ?? null })
+                          }
+                          // Fires once when the picker resolves a saved step's id.
+                          onResolve={(t) => {
+                            if (step.template?.id !== t.id) updateDraft(i, { template: t });
+                          }}
                         />
                       </div>
                       <Input

@@ -137,10 +137,48 @@ const templateCarouselCards = z
       headerMediaType: z.enum(['image', 'video']).optional(),
       bodyParams: z.array(z.string().max(1024)).max(10).optional(),
       buttonUrlParam: z.string().max(2000).optional(),
+      /** One value per dynamic URL button on THIS card — Meta allows two. */
+      buttonUrlParams: z.array(z.string().max(2000)).max(2).optional(),
     })
   )
   .max(10)
   .optional();
+
+/**
+ * The product list a multi-product (MPM) template is sent with.
+ *
+ * Chosen per send, never at authoring time — an MPM template is approved with an
+ * empty button and Meta reads the products off the send payload — so without
+ * this the message renders a product list with nothing in it. Meta's ceilings:
+ * up to 10 sections, 30 products across all of them, 24-character titles.
+ */
+const templateProductSections = z
+  .array(
+    z.object({
+      title: z.string().min(1).max(24),
+      productRetailerIds: z.array(z.string().min(1).max(200)).min(1).max(30),
+    })
+  )
+  .max(10)
+  .refine((sections) => sections.reduce((n, s) => n + s.productRetailerIds.length, 0) <= 30, {
+    message: 'A multi-product message carries at most 30 products across all sections',
+  })
+  .optional();
+
+/**
+ * A LOCATION header's pin, supplied per send.
+ *
+ * Shared by the inbox send body and the campaign's campaign-wide `templateParams`:
+ * the campaign path had no field for it at all, so a LOCATION-header template
+ * could be selected, validated, launched — and then refused by Meta with
+ * (#131008) for every recipient in the audience.
+ */
+const headerLocationSchema = z.object({
+  latitude: z.number().min(-90).max(90),
+  longitude: z.number().min(-180).max(180),
+  name: z.string().max(200).optional(),
+  address: z.string().max(400).optional(),
+});
 
 const templateSendBody = {
   templateId: z.string().uuid(),
@@ -150,21 +188,33 @@ const templateSendBody = {
   headerImageId: z.string().optional(),
   headerMediaUrl: z.string().url().optional(),
   headerMediaType: z.enum(['image', 'video', 'document']).optional(),
+  // DOCUMENT header only: the name the attachment shows on the handset. Without
+  // it the customer receives an invoice or a brochure named after the media id
+  // or the URL's last path segment, while the identical file sent as an ordinary
+  // document message in the same thread arrives correctly named.
+  headerMediaFilename: z.string().max(240).optional(),
   buttonUrlParam: z.string().optional(),
+  // Meta allows TWO URL buttons and either may carry a {{n}} suffix. One scalar
+  // could only ever fill the first, so a two-dynamic-URL template — imported
+  // APPROVED from Business Manager — was refused with (#131008) on every send.
+  buttonUrlParams: z.array(z.string().max(2000)).max(2).optional(),
   // These three were declared on the builder but no schema could carry them, so
   // coupon, limited-time-offer and location templates were authorable, approvable
   // and unsendable.
   otpCode: z.string().max(64).optional(),
   couponCode: z.string().max(64).optional(),
   ltoExpirationMs: z.number().int().positive().optional(),
-  headerLocation: z
-    .object({
-      latitude: z.number().min(-90).max(90),
-      longitude: z.number().min(-180).max(180),
-      name: z.string().max(200).optional(),
-      address: z.string().max(400).optional(),
-    })
-    .optional(),
+  headerLocation: headerLocationSchema.optional(),
+  // FLOW button. Both are optional to Meta — it defaults a token — but a default
+  // token cannot be decoded, so the send path mints one when the caller does not.
+  flowToken: z.string().max(256).optional(),
+  flowActionData: z.record(z.string(), z.any()).optional(),
+  // Catalogue templates pick their products at SEND time. The thumbnail is
+  // optional (Meta falls back to the catalog's first item); an MPM's sections and
+  // a single-product template's SKU are not, and nothing could carry either.
+  catalogThumbnailProductId: z.string().max(200).optional(),
+  productSections: templateProductSections,
+  productRetailerId: z.string().max(200).optional(),
   // Carousel cards. Nothing could carry them, so a carousel template was
   // authorable (the wizard has a card editor now), approvable and unsendable —
   // Meta refuses the whole message with #131008 for the missing card parameters.
@@ -620,13 +670,28 @@ export const waCreateCampaignSchema = z.object({
         headerText: z.string().max(900).optional(),
         headerMediaUrl: z.string().url().optional(),
         headerMediaType: z.enum(['image', 'video', 'document']).optional(),
+        // DOCUMENT header only: the filename the attachment shows on the handset.
+        headerMediaFilename: z.string().max(240).optional(),
+        // The LOCATION header's pin, campaign-wide like the media above. Nothing
+        // could carry it, so a LOCATION template launched clean and Meta then
+        // refused the entire audience with #131008 for the missing header.
+        headerLocation: headerLocationSchema.optional(),
         buttonUrlParam: z.string().max(2000).optional(),
+        // A second dynamic URL button. Meta allows two, and a template carrying
+        // two was launchable with one value filled in — then refused for the
+        // whole audience with #131008 for the button nothing addressed.
+        buttonUrlParams: z.array(z.string().max(2000)).max(2).optional(),
         // The two marketing extras. `templateSendBody` (the inbox path) has
         // carried them for a while; a campaign could not, so a COPY_CODE or
         // LIMITED_TIME_OFFER template was authorable, approvable and
         // broadcast-unsendable — Meta rejects every recipient with #131008.
         couponCode: z.string().max(64).optional(),
         ltoExpirationMs: z.number().int().positive().optional(),
+        // Catalogue products, campaign-wide like the header media: one thumbnail,
+        // one product list, one SKU for the whole audience.
+        catalogThumbnailProductId: z.string().max(200).optional(),
+        productSections: templateProductSections,
+        productRetailerId: z.string().max(200).optional(),
         // One card set for the whole audience: a carousel's media and card text
         // are campaign-wide, exactly like the header media above. Per-recipient
         // personalisation stays on the body mapping.
@@ -688,9 +753,15 @@ export const waUpdateCampaignSchema = z.object({
         headerText: z.string().max(900).optional(),
         headerMediaUrl: z.string().url().optional(),
         headerMediaType: z.enum(['image', 'video', 'document']).optional(),
+        headerMediaFilename: z.string().max(240).optional(),
+        headerLocation: headerLocationSchema.optional(),
         buttonUrlParam: z.string().max(2000).optional(),
+        buttonUrlParams: z.array(z.string().max(2000)).max(2).optional(),
         couponCode: z.string().max(64).optional(),
         ltoExpirationMs: z.number().int().positive().optional(),
+        catalogThumbnailProductId: z.string().max(200).optional(),
+        productSections: templateProductSections,
+        productRetailerId: z.string().max(200).optional(),
         carouselCards: templateCarouselCards,
       })
       .optional(),

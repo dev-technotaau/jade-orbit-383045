@@ -376,9 +376,16 @@ describe('analyzeTemplate — a fully-parameterized template', () => {
       needsOtpCode: false,
       needsCouponCode: false,
       needsLtoExpiration: false,
+      needsCatalogThumbnail: false,
+      needsProductSections: false,
+      needsProduct: false,
+      hasFlowButton: false,
       bodyPositional: 2,
       bodyNamed: [],
       buttonUrlVar: true,
+      // The dynamic URL button's AUTHORED index: Meta allows two website buttons
+      // and either may be dynamic, so the form needs one value per index.
+      buttonUrlVarIndexes: [0],
       carouselCards: [],
       none: false,
     });
@@ -436,7 +443,7 @@ describe('renderTemplatePreview — body', () => {
   });
 
   it('fills body {{1}} from the one-time code on an OTP template', () => {
-    // Mirrors the send layer: otpCode becomes the body parameter when none was typed.
+    // Mirrors the send layer: otpCode IS the body parameter for such a template.
     const p = renderTemplatePreview(
       tpl([
         { type: 'BODY', text: '*{{1}}* is your verification code.' },
@@ -448,7 +455,11 @@ describe('renderTemplatePreview — body', () => {
     expect(p.unfilled).toEqual([]);
   });
 
-  it('lets an explicit body value win over the one-time code', () => {
+  it('lets the one-time code win over a stray body value', () => {
+    // Meta shows the body's code and the button copies its own, so two different
+    // values mean the customer pastes a code the message never displayed and
+    // their login fails. The send layer derives the body parameter from otpCode
+    // for exactly that reason; the preview has to show what will be sent.
     const p = renderTemplatePreview(
       tpl([
         { type: 'BODY', text: '{{1}} is your code.' },
@@ -456,7 +467,7 @@ describe('renderTemplatePreview — body', () => {
       ]),
       { bodyParams: ['112233'], otpCode: '472913' },
     );
-    expect(p.body).toBe('112233 is your code.');
+    expect(p.body).toBe('472913 is your code.');
   });
 
   it('returns an empty body when the template has none', () => {
@@ -562,6 +573,8 @@ describe('renderTemplatePreview — header, footer and buttons', () => {
       headerLocation: null,
       body: '',
       footer: null,
+      offerText: null,
+      offerExpiresAt: null,
       buttons: [],
       cards: [],
       unfilled: [],
