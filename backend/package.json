@@ -1,7 +1,7 @@
 {
   "name": "backend",
   "version": "1.0.0",
-  "description": "WhatsApp Cloud Module — backend API",
+  "description": "WhatsApp Cloud Module \u00e2\u20ac\u201d backend API",
   "private": true,
   "engines": {
     "node": ">=20.0.0"
@@ -27,6 +27,7 @@
     "db:deploy": "node scripts/db-deploy.js",
     "db:studio": "dotenv -- prisma studio",
     "reencrypt": "ts-node -T src/scripts/reencrypt-fields.ts",
+    "backfill:template-category": "ts-node -T src/scripts/backfill-template-category.ts",
     "postinstall": "prisma generate"
   },
   "keywords": [],

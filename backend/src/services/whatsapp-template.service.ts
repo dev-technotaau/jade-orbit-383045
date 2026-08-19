@@ -852,20 +852,29 @@ export async function listLibraryTemplates(params: {
   usecase?: string;
   limit?: number;
 }): Promise<{ items: WaLibraryTemplate[]; unavailable?: boolean }> {
-  const { wabaId, token } = metaConfig();
+  const { token } = metaConfig();
   const limit = Math.min(100, Math.max(1, Math.trunc(Number(params.limit ?? 50)) || 50));
   const qs = new URLSearchParams({ limit: String(limit) });
   if (params.search) qs.set('search', params.search);
   if (params.language) qs.set('language', params.language);
-  if (params.category) qs.set('category', params.category);
   if (params.topic) qs.set('topic', params.topic);
   if (params.usecase) qs.set('usecase', params.usecase);
+  // `category` is deliberately NOT forwarded. Graph accepts the parameter and
+  // then ignores it — `category=MARKETING` returns byte-identical UTILITY rows
+  // to no filter at all — so sending it would make the dropdown silently lie.
+  // Applied locally on the response instead, below.
 
   // Same timeout discipline as syncFromMeta: a hung Graph connection must not
   // hold the request open until the global 30s timeout kills it.
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), LIBRARY_TIMEOUT_MS);
-  const url = `${GRAPH}/${graphVersion()}/${wabaId}/message_template_library?${qs.toString()}`;
+  // NOTE: the library is a GLOBAL edge — it takes NO node id. Meta's catalogue
+  // is the same for every business, so it does not hang off the WABA. Calling
+  // `/{wabaId}/message_template_library` returns `(#100) Tried accessing
+  // nonexisting field`, which this function used to report as "the library is
+  // not enabled for your WABA" — a capability answer to what was really a
+  // malformed URL, so the dialog claimed no access on accounts that had it.
+  const url = `${GRAPH}/${graphVersion()}/message_template_library?${qs.toString()}`;
   const res = await (async () => {
     try {
       // eslint-disable-next-line n/no-unsupported-features/node-builtins
@@ -887,12 +896,12 @@ export async function listLibraryTemplates(params: {
   })();
   const data: any = await res.json().catch(() => ({}));
   if (!res.ok) {
-    // Meta code 100 on this edge means "no such field on this node" — the
-    // library simply is not exposed to this WABA. That is a CAPABILITY answer,
-    // not a gateway failure, and throwing 502 for it made every open of the
-    // dialog log a red 502 per query (and again on window refocus), which reads
-    // as an outage. React Query also retried it. Report it as "unavailable" and
-    // let the UI say so, which it already does.
+    // Retained as a safety net, but it should no longer fire in normal use: the
+    // #100 this used to catch was self-inflicted by addressing the edge under a
+    // node id (see the URL note above), and it made a plain bug look like an
+    // account-capability limit. Kept because reporting a genuine capability gap
+    // as "unavailable" still beats a red 502 on every open of the dialog and on
+    // every window refocus, which reads as an outage and React Query retries.
     const code = data?.error?.code;
     const message: string = data?.error?.message ?? '';
     if (code === 100 || /nonexisting field/i.test(message)) {
@@ -908,7 +917,16 @@ export async function listLibraryTemplates(params: {
       'WA_META_ERROR'
     );
   }
-  return { items: (data.data ?? []) as WaLibraryTemplate[], unavailable: false };
+  let items = (data.data ?? []) as WaLibraryTemplate[];
+  // Local category filter — see the note where the query string is built. Meta
+  // categorises every library entry as UTILITY or AUTHENTICATION (they are
+  // pre-approved, and MARKETING never is), so a MARKETING filter correctly
+  // yields nothing rather than the unfiltered list Graph would hand back.
+  if (params.category) {
+    const want = params.category.trim().toUpperCase();
+    items = items.filter((t) => (t.category ?? '').toUpperCase() === want);
+  }
+  return { items, unavailable: false };
 }
 
 /**
