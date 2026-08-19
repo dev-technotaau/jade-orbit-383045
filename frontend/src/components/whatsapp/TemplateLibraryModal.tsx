@@ -53,6 +53,16 @@ export default function TemplateLibraryModal({ onClose }: { onClose: () => void 
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('');
   const [selected, setSelected] = useState<WaLibraryTemplate | null>(null);
+  /**
+   * Language the CATALOGUE is browsed in — distinct from `language` below,
+   * which is the language the new template is created in.
+   *
+   * Meta keeps every translation of every library template as its own entry, so
+   * browsing unfiltered returns ~65 consecutive rows of the same template and
+   * looks like the library holds nothing else. One language is one row per
+   * template.
+   */
+  const [browseLanguage, setBrowseLanguage] = useState('en_US');
 
   // Fill-in state for the selected entry.
   const [name, setName] = useState('');
@@ -60,9 +70,13 @@ export default function TemplateLibraryModal({ onClose }: { onClose: () => void 
   const [buttonInputs, setButtonInputs] = useState<ButtonInputDraft[]>([]);
 
   const { data, isLoading, isError } = useQuery({
-    queryKey: ['wa-template-library', search, category],
+    queryKey: ['wa-template-library', search, category, browseLanguage],
     queryFn: () =>
-      svc.listLibraryTemplates({ search: search || undefined, category: category || undefined }),
+      svc.listLibraryTemplates({
+        search: search || undefined,
+        category: category || undefined,
+        language: browseLanguage || undefined,
+      }),
   });
   const items = data?.data?.items ?? [];
   /** Meta does not expose the library edge to this WABA — a capability answer, not a failure. */
@@ -179,6 +193,15 @@ export default function TemplateLibraryModal({ onClose }: { onClose: () => void 
                 </div>
                 <div className="w-48">
                   <Select value={category} onChange={setCategory} options={CATEGORY_OPTIONS} />
+                </div>
+                <div className="w-44">
+                  <Select
+                    value={browseLanguage}
+                    onChange={setBrowseLanguage}
+                    options={LANGUAGE_OPTIONS}
+                    searchable
+                    clearable={false}
+                  />
                 </div>
               </div>
 

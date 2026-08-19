@@ -819,6 +819,25 @@ export async function submitDraftTemplate(id: string, input: { createdBy: string
 /** Per-call timeout for the library browse — same budget as a sync page. */
 const LIBRARY_TIMEOUT_MS = 15_000;
 
+/**
+ * Language the catalogue is browsed in when the caller does not pick one.
+ *
+ * Meta stores every TRANSLATION of every library template as its own row — on
+ * the order of 180 templates x 65 languages — so an unfiltered browse burns the
+ * whole first page on one template's translations and reads as "the library
+ * only contains account_creation_confirmation_3". Pinning a language yields one
+ * row per template, which is what the picker is for; the language to CREATE in
+ * is a separate choice made on the selected entry.
+ */
+const DEFAULT_LIBRARY_LANGUAGE = 'en_US';
+
+/**
+ * Page budget for the browse. One language is ~180 entries (two pages at
+ * Meta's max page size of 100); the cap only exists so a paging bug upstream
+ * cannot spin this into an unbounded crawl of ~12k rows.
+ */
+const MAX_LIBRARY_PAGES = 6;
+
 /** One entry of Meta's pre-approved template catalogue, as Graph returns it. */
 export interface WaLibraryTemplate {
   id?: string;
@@ -853,71 +872,85 @@ export async function listLibraryTemplates(params: {
   limit?: number;
 }): Promise<{ items: WaLibraryTemplate[]; unavailable?: boolean }> {
   const { token } = metaConfig();
-  const limit = Math.min(100, Math.max(1, Math.trunc(Number(params.limit ?? 50)) || 50));
+  const limit = Math.min(100, Math.max(1, Math.trunc(Number(params.limit ?? 100)) || 100));
   const qs = new URLSearchParams({ limit: String(limit) });
   if (params.search) qs.set('search', params.search);
-  if (params.language) qs.set('language', params.language);
   if (params.topic) qs.set('topic', params.topic);
   if (params.usecase) qs.set('usecase', params.usecase);
+  // Always browse in ONE language — see DEFAULT_LIBRARY_LANGUAGE for why an
+  // unfiltered browse makes the catalogue look like a single template.
+  qs.set('language', params.language?.trim() || DEFAULT_LIBRARY_LANGUAGE);
   // `category` is deliberately NOT forwarded. Graph accepts the parameter and
   // then ignores it — `category=MARKETING` returns byte-identical UTILITY rows
   // to no filter at all — so sending it would make the dropdown silently lie.
   // Applied locally on the response instead, below.
 
-  // Same timeout discipline as syncFromMeta: a hung Graph connection must not
-  // hold the request open until the global 30s timeout kills it.
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), LIBRARY_TIMEOUT_MS);
   // NOTE: the library is a GLOBAL edge — it takes NO node id. Meta's catalogue
   // is the same for every business, so it does not hang off the WABA. Calling
   // `/{wabaId}/message_template_library` returns `(#100) Tried accessing
   // nonexisting field`, which this function used to report as "the library is
   // not enabled for your WABA" — a capability answer to what was really a
   // malformed URL, so the dialog claimed no access on accounts that had it.
-  const url = `${GRAPH}/${graphVersion()}/message_template_library?${qs.toString()}`;
-  const res = await (async () => {
-    try {
-      // eslint-disable-next-line n/no-unsupported-features/node-builtins
-      return await fetch(url, {
-        headers: { Authorization: `Bearer ${token}` },
-        signal: controller.signal,
-      });
-    } catch (e) {
+  let next: string | null = `${GRAPH}/${graphVersion()}/message_template_library?${qs.toString()}`;
+  let items: WaLibraryTemplate[] = [];
+
+  // Cursor paging, so it is sequential by construction: one language is ~180
+  // entries and Meta's page size caps at 100, so a single page would silently
+  // truncate the catalogue at whatever fits.
+  for (let page = 0; next && page < MAX_LIBRARY_PAGES; page++) {
+    // Same timeout discipline as syncFromMeta, applied per page: a hung Graph
+    // connection must not hold the request open until the global 30s timeout
+    // kills it.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), LIBRARY_TIMEOUT_MS);
+    const pageUrl: string = next;
+
+    const res = await (async () => {
+      try {
+        // eslint-disable-next-line n/no-unsupported-features/node-builtins
+        return await fetch(pageUrl, {
+          headers: { Authorization: `Bearer ${token}` },
+          signal: controller.signal,
+        });
+      } catch (e) {
+        throw new AppError(
+          (e as Error).name === 'AbortError'
+            ? `Meta did not respond within ${LIBRARY_TIMEOUT_MS / 1000}s — template library unavailable`
+            : `Meta template library failed: ${(e as Error).message}`,
+          504,
+          'WA_META_TIMEOUT'
+        );
+      } finally {
+        clearTimeout(timer);
+      }
+    })();
+
+    const data: any = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      // Retained as a safety net, but it should no longer fire in normal use: the
+      // #100 this used to catch was self-inflicted by addressing the edge under a
+      // node id (see the URL note above), and it made a plain bug look like an
+      // account-capability limit. Kept because reporting a genuine capability gap
+      // as "unavailable" still beats a red 502 on every open of the dialog and on
+      // every window refocus, which reads as an outage and React Query retries.
+      const code = data?.error?.code;
+      const message: string = data?.error?.message ?? '';
+      if (code === 100 || /nonexisting field/i.test(message)) {
+        logger.info(
+          '[whatsapp] template library is not enabled for this WABA — Meta: ' +
+            (message || 'no such edge')
+        );
+        return { items: [], unavailable: true };
+      }
       throw new AppError(
-        (e as Error).name === 'AbortError'
-          ? `Meta did not respond within ${LIBRARY_TIMEOUT_MS / 1000}s — template library unavailable`
-          : `Meta template library failed: ${(e as Error).message}`,
-        504,
-        'WA_META_TIMEOUT'
+        data?.error?.message ?? `Meta template library failed (${res.status})`,
+        502,
+        'WA_META_ERROR'
       );
-    } finally {
-      clearTimeout(timer);
     }
-  })();
-  const data: any = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    // Retained as a safety net, but it should no longer fire in normal use: the
-    // #100 this used to catch was self-inflicted by addressing the edge under a
-    // node id (see the URL note above), and it made a plain bug look like an
-    // account-capability limit. Kept because reporting a genuine capability gap
-    // as "unavailable" still beats a red 502 on every open of the dialog and on
-    // every window refocus, which reads as an outage and React Query retries.
-    const code = data?.error?.code;
-    const message: string = data?.error?.message ?? '';
-    if (code === 100 || /nonexisting field/i.test(message)) {
-      logger.info(
-        '[whatsapp] template library is not enabled for this WABA — Meta: ' +
-          (message || 'no such edge')
-      );
-      return { items: [], unavailable: true };
-    }
-    throw new AppError(
-      data?.error?.message ?? `Meta template library failed (${res.status})`,
-      502,
-      'WA_META_ERROR'
-    );
+    items = items.concat((data.data ?? []) as WaLibraryTemplate[]);
+    next = typeof data?.paging?.next === 'string' ? data.paging.next : null;
   }
-  let items = (data.data ?? []) as WaLibraryTemplate[];
   // Local category filter — see the note where the query string is built. Meta
   // categorises every library entry as UTILITY or AUTHENTICATION (they are
   // pre-approved, and MARKETING never is), so a MARKETING filter correctly
