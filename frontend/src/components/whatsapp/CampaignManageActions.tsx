@@ -348,11 +348,22 @@ export default function CampaignManageActions({
             audienceFilter:
               draft.audienceType === 'segment'
                 ? {
+                    // Carried through from what was stored. This dialog has
+                    // inputs for tags and opt-in only, and rebuilding the filter
+                    // from those two ERASED the rest of it: an audience defined
+                    // with advanced rules ("tagged mumbai AND premium",
+                    // "messaged us in the last 30 days") lost every rule the
+                    // moment someone corrected the schedule here, silently
+                    // widening the send to the whole tag.
+                    ...asFilter(campaign.audienceFilter),
                     tags: draft.tags
                       .split(',')
                       .map((s) => s.trim())
                       .filter(Boolean),
                     optInStatus: draft.optInStatus || undefined,
+                    // Owned by the upload branch, never by a segment audience.
+                    phones: undefined,
+                    recipients: undefined,
                   }
                 : uploadAudienceFilter(),
           };

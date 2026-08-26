@@ -174,10 +174,23 @@ function CampaignForm({
   // discarding whatever had been typed since. The loader below holds the form
   // back until the data is here, so a seed is all that is needed.
   const initialParams: WaCampaignTemplateParams = initial?.templateParams ?? {};
-  const initialAudience = (initial?.audienceFilter ?? {}) as {
-    tags?: string[];
-    optInStatus?: string;
-    phones?: string[];
+  const initialAudience: WaSegmentFilter = (initial?.audienceFilter ?? {}) as WaSegmentFilter;
+  // An uploaded audience is stored in one of TWO shapes: the older `phones`, or
+  // `recipients` once a file brought columns with it. Reading only `phones`
+  // opened a personalised campaign with an EMPTY number box, and saving then
+  // wrote that emptiness back over the real audience.
+  const initialUpload = {
+    lines: Array.isArray(initialAudience.recipients)
+      ? initialAudience.recipients.map((r) => r.phone).filter(Boolean)
+      : (initialAudience.phones ?? []),
+    columns: Object.fromEntries(
+      (initialAudience.recipients ?? [])
+        .filter((r) => r.phone && (r.name || (r.vars && Object.keys(r.vars).length)))
+        .map((r) => [
+          normalizeForDedupe(r.phone),
+          { ...(r.name ? { name: r.name } : {}), ...(r.vars ? { vars: r.vars } : {}) },
+        ]),
+    ) as Record<string, { name?: string; vars?: Record<string, string> }>,
   };
   const [campaignType, setCampaignType] = useState<CampaignType>('BROADCAST');
   const [name, setName] = useState(initial?.name ?? '');
@@ -186,16 +199,20 @@ function CampaignForm({
   // the id alone can no longer be resolved against a locally fetched list.
   const [selected, setSelected] = useState<WaTemplate | null>(initialTemplate);
   const [audienceType, setAudienceType] = useState(initial?.audienceType ?? 'segment');
-  const [segmentId, setSegmentId] = useState(initial?.segmentId ?? '');
+  // Deliberately NOT seeded from the campaign. `segmentId` is provenance only —
+  // the audience itself is the snapshot frozen into `audienceFilter` at write
+  // time — so re-sending it would re-resolve the segment as it is TODAY and
+  // silently retarget a campaign built against yesterday's members.
+  const [segmentId, setSegmentId] = useState('');
   const [tags, setTags] = useState((initialAudience.tags ?? []).join(', '));
   const [optInStatus, setOptInStatus] = useState(initialAudience.optInStatus ?? '');
   // The advanced half of the inline filter — the same rule grammar a saved
   // segment stores. Without it the wizard could only express "any of these tags",
   // so "tagged mumbai AND premium", "messaged us in the last 30 days" or "did not
   // reply to the Diwali campaign" had to be assembled outside the product.
-  const [rules, setRules] = useState<WaSegmentRule[]>([]);
-  const [ruleOp, setRuleOp] = useState<'and' | 'or'>('and');
-  const [phones, setPhones] = useState((initialAudience.phones ?? []).join('\n'));
+  const [rules, setRules] = useState<WaSegmentRule[]>(initialAudience.rules ?? []);
+  const [ruleOp, setRuleOp] = useState<'and' | 'or'>(initialAudience.op ?? 'and');
+  const [phones, setPhones] = useState(initialUpload.lines.join('\n'));
   // "Upload phone numbers" was paste-only, so a 4,000-row CSV of targets had to
   // be imported as permanent contacts and tagged just to be sent to once. The
   // file is parsed in the browser and its numbers are merged into the SAME
@@ -222,7 +239,7 @@ function CampaignForm({
    */
   const [uploadColumns, setUploadColumns] = useState<
     Record<string, { name?: string; vars?: Record<string, string> }>
-  >({});
+  >(initialUpload.columns);
   const [mapping, setMapping] = useState<string[]>(
     Array.isArray(initial?.variableMapping) ? (initial.variableMapping as string[]) : [],
   );
@@ -363,11 +380,21 @@ function CampaignForm({
       };
     }
     const filter: WaSegmentFilter = {
+      // Start from what was stored so a key this form has no input for —
+      // `attributes` today, whatever is added later — is carried through rather
+      // than dropped by the act of editing something else.
+      ...(isEditing ? initialAudience : {}),
       tags: tags
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean),
       optInStatus: optInStatus || undefined,
+      // Owned by the inputs below; a stale value from the spread would survive
+      // the operator clearing it.
+      rules: undefined,
+      op: undefined,
+      phones: undefined,
+      recipients: undefined,
     };
     // A half-filled rule row narrows nothing — the backend ignores it — so it is
     // dropped rather than stored as a condition that reads as active.
@@ -964,11 +991,18 @@ function CampaignForm({
       requiredPermission="whatsapp.campaigns.create"
     >
       <div className="space-y-6">
+        {/* Editing is always entered FROM a campaign, so back means that
+            campaign — returning to the list would make the operator find it
+            again to see whether the edit took. */}
         <Link
-          href={ROUTES.SUPER_ADMIN.WHATSAPP_CAMPAIGNS}
+          href={
+            editId
+              ? ROUTES.SUPER_ADMIN.WHATSAPP_CAMPAIGN_DETAIL(editId)
+              : ROUTES.SUPER_ADMIN.WHATSAPP_CAMPAIGNS
+          }
           className="inline-flex items-center gap-1.5 text-sm text-[var(--text-muted)] transition-colors hover:text-[var(--text)]"
         >
-          <ArrowLeft className="h-4 w-4" /> Back to campaigns
+          <ArrowLeft className="h-4 w-4" /> {editId ? 'Back to campaign' : 'Back to campaigns'}
         </Link>
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-bold text-[var(--text)]">
@@ -1981,6 +2015,41 @@ function CampaignFormLoader() {
       <DashboardLayout>
         <div className="flex items-center justify-center gap-2 py-16 text-sm text-[var(--text-muted)]">
           <Loader2 className="h-4 w-4 animate-spin" /> Loading campaign…
+        </div>
+      </DashboardLayout>
+    );
+  }
+
+  // An A/B test's variants and a drip sequence's steps are fixed at creation —
+  // updateCampaign accepts neither — so this form cannot represent either kind
+  // honestly. Showing the broadcast UI for one would let an operator "edit"
+  // variants that silently do not save, and would write a templateParams set to
+  // a campaign whose variants each carry their own template. Refused, with the
+  // one surface that CAN change these named.
+  const unsupported =
+    initial && (initial.isAbTest || initial.type === 'SEQUENCE')
+      ? initial.isAbTest
+        ? 'an A/B test'
+        : 'a drip sequence'
+      : null;
+  if (unsupported && editId) {
+    return (
+      <DashboardLayout>
+        <div className="mx-auto max-w-lg space-y-4 py-16 text-center">
+          <p className="text-sm text-[var(--text)]">
+            This campaign is {unsupported}. Its {initial?.isAbTest ? 'variants' : 'steps'} are fixed
+            once it is created, so it cannot be opened in the full editor.
+          </p>
+          <p className="text-xs text-[var(--text-muted)]">
+            Its name, audience, schedule and throughput can still be changed with Quick reschedule
+            on the campaign page.
+          </p>
+          <Link
+            href={ROUTES.SUPER_ADMIN.WHATSAPP_CAMPAIGN_DETAIL(editId)}
+            className="text-primary inline-flex items-center gap-1.5 text-sm font-medium hover:underline"
+          >
+            <ArrowLeft className="h-4 w-4" /> Back to campaign
+          </Link>
         </div>
       </DashboardLayout>
     );
