@@ -30,6 +30,22 @@ export function normalizeWaPhone(raw: string): string {
   let digits = trimmed.replace(/[^\d]/g, '');
   if (!digits) return raw;
 
+  const ccEarly = (env.DEFAULT_COUNTRY_CODE || '').replace(/[^\d]/g, '');
+  // A trunk `0` that survived AFTER the country code: `91` + `09417264466`,
+  // which is how a national-format number reads once someone prefixes it by
+  // hand or in a spreadsheet. The rule below only catches a `0` at the very
+  // START, so this fell straight through to `+9109417264466` — 13 digits, a
+  // second identity for a contact already stored correctly, and one Meta
+  // silently repaired on send (the wamid decoded to 919417264466) so nothing
+  // ever surfaced it. E.164 never carries a trunk prefix, so a `0` directly
+  // after the country code is always spurious.
+  //
+  // Guarded on total length so it cannot fire on a country whose subscriber
+  // numbers legitimately begin with 0 at a shorter length.
+  if (ccEarly && digits.startsWith(`${ccEarly}0`) && digits.length > ccEarly.length + 10) {
+    digits = ccEarly + digits.slice(ccEarly.length).replace(/^0+/, '');
+  }
+
   // An explicit `+` means the caller already gave a country code.
   if (trimmed.startsWith('+')) return `+${digits}`;
 

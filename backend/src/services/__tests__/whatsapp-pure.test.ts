@@ -103,6 +103,15 @@ describe('normalizeWaPhone', () => {
     ['919876543210', '+919876543210', 'bare international digits'],
     ['9876543210', '+919876543210', '10-digit national number gets the country code'],
     ['09876543210', '+919876543210', 'leading 0 is a trunk prefix, not part of the number'],
+    // The trunk 0 can also survive AFTER the country code, which is what a
+    // national-format number looks like once someone prefixes it by hand or in
+    // a spreadsheet. Two real uploaded rows arrived this way and were stored as
+    // 13-digit `+910…` contacts — a second identity for people already in the
+    // book. Meta repaired them on send, so nothing ever surfaced it.
+    ['9109417264466', '+919417264466', 'trunk 0 after the country code'],
+    ['+9109417264466', '+919417264466', 'same, already + prefixed'],
+    ['91 0 9417264466', '+919417264466', 'same, with the 0 spaced out'],
+    ['918168291701', '+918168291701', 'a valid 12-digit +91 number is left alone'],
     ['00919876543210', '+919876543210', '00 is the international access prefix'],
     ['+1 555 123 4567', '+15551234567', 'a non-default country code survives'],
     ['+919876543210', '+919876543210', 'already normalized — idempotent'],
@@ -111,7 +120,13 @@ describe('normalizeWaPhone', () => {
   });
 
   it('is idempotent — normalizing twice changes nothing', () => {
-    for (const input of ['9876543210', '09876543210', '00919876543210', '+91 98765 43210']) {
+    for (const input of [
+      '9876543210',
+      '09876543210',
+      '00919876543210',
+      '+91 98765 43210',
+      '9109417264466',
+    ]) {
       const once = normalizeWaPhone(input);
       expect(normalizeWaPhone(once)).toBe(once);
     }
