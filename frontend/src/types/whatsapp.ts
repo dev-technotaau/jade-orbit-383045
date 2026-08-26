@@ -580,6 +580,13 @@ export interface WaCampaign {
   createdAt: string;
   updatedAt: string;
   template?: { name: string; language?: string; category: string; status?: string };
+  /**
+   * The campaign-wide send parameters. Returned by GET /campaigns/:id and
+   * declared here so the editor can read them back — without it, opening a
+   * campaign for editing started from blank header media, coupon code, offer
+   * expiry and product SKUs, and saving would then wipe what was there.
+   */
+  templateParams?: WaCampaignTemplateParams | null;
 }
 
 export interface WaCampaignsPage {

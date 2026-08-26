@@ -3,7 +3,7 @@
 import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useQuery, useMutation } from '@tanstack/react-query';
-import { Copy, Save, Send, CalendarClock, FileUp } from 'lucide-react';
+import { Copy, Save, Send, CalendarClock, FileUp, Pencil } from 'lucide-react';
 import Button from '@/components/ui/Button';
 import Modal from '@/components/ui/Modal';
 import Input from '@/components/ui/Input';
@@ -18,6 +18,7 @@ import {
   parseContactsFile,
 } from '@/lib/parse-contacts';
 import { WA_UPLOAD_PAYLOAD_MAX_BYTES } from '@/constants/config';
+import { ROUTES } from '@/constants/routes';
 import { formatFileSize } from '@/lib/utils';
 import { whatsappService as svc } from '@/services/whatsapp.service';
 import TemplatePicker from '@/components/whatsapp/TemplatePicker';
@@ -444,6 +445,24 @@ export default function CampaignManageActions({
   return (
     <>
       <div className="flex flex-wrap items-center gap-2">
+        {/* The full editor. This dialog can only reach name, audience, schedule
+            and throughput; every TEMPLATE parameter — header media, coupon code,
+            offer expiry, product SKUs, carousel cards — lives on the campaign
+            form, so a campaign whose launch failed for a missing header could
+            not be repaired from here at all. Rather than duplicate ~380 lines of
+            inputs and let the two drift, the form itself does both jobs. */}
+        {editable && (
+          <Button
+            variant="outline"
+            size="sm"
+            leftIcon={<Pencil className="h-4 w-4" />}
+            onClick={() =>
+              router.push(`${ROUTES.SUPER_ADMIN.WHATSAPP_CAMPAIGN_NEW}?edit=${campaign.id}`)
+            }
+          >
+            Edit campaign
+          </Button>
+        )}
         {editable && (
           <Button
             variant="outline"
@@ -451,7 +470,7 @@ export default function CampaignManageActions({
             leftIcon={<CalendarClock className="h-4 w-4" />}
             onClick={openEdit}
           >
-            Edit / reschedule
+            Quick reschedule
           </Button>
         )}
         <Button

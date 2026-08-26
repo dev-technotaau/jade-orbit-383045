@@ -1090,7 +1090,15 @@ export const whatsappService = {
       audienceType?: string;
       audienceFilter?: WaSegmentFilter;
       variableMapping?: string[];
+      /**
+       * The campaign-wide send parameters. The API has always accepted these on
+       * a PATCH; this signature omitted them, so the editor could not repair a
+       * campaign whose header media, coupon code or offer expiry was wrong — the
+       * one thing its own launch error tells the operator to go and do.
+       */
+      templateParams?: WaCampaignTemplateParams;
       scheduledAt?: string | null;
+      respectBusinessHours?: boolean;
       batchSize?: number;
       throttlePerSec?: number;
       recurrenceDays?: number | null;

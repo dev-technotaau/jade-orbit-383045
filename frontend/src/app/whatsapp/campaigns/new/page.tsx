@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useEffect, useRef, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import Link from 'next/link';
 import {
@@ -60,6 +60,7 @@ import TemplatePicker from '@/components/whatsapp/TemplatePicker';
 import { WA_UPLOAD_PAYLOAD_MAX_BYTES, WA_UPLOAD_PHONE_MAX } from '@/constants/config';
 import type {
   WaAbMetric,
+  WaCampaign,
   WaCampaignTemplateParams,
   WaCarouselCardParams,
   WaSegmentFilter,
@@ -141,25 +142,60 @@ function tierDailyLimit(tier: string | null | undefined): number | null {
   return Math.round(n * mult);
 }
 
-export default function NewCampaignPage() {
+/**
+ * An ISO instant as `<input type="datetime-local">` wants it: local wall-clock,
+ * no zone, minute precision. Slicing the ISO string instead would show a UTC
+ * time in a local-time field, so a campaign scheduled for 18:00 IST reopened as
+ * 12:30 and saving it moved the send.
+ */
+function toDateTimeLocal(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function CampaignForm({
+  editId,
+  initial,
+  initialTemplate,
+}: {
+  /** Present when editing an existing campaign; null when creating a new one. */
+  editId: string | null;
+  initial: WaCampaign | null;
+  initialTemplate: WaTemplate | null;
+}) {
   const router = useRouter();
+  const isEditing = Boolean(editId);
+  // Every field below SEEDS from `initial` rather than being written into state
+  // by an effect. A prefill effect would fire setState on mount (which the
+  // set-state-in-effect lint rule refuses, and which renders the form once empty
+  // before filling it), and would re-fire on react-query's focus refetch,
+  // discarding whatever had been typed since. The loader below holds the form
+  // back until the data is here, so a seed is all that is needed.
+  const initialParams: WaCampaignTemplateParams = initial?.templateParams ?? {};
+  const initialAudience = (initial?.audienceFilter ?? {}) as {
+    tags?: string[];
+    optInStatus?: string;
+    phones?: string[];
+  };
   const [campaignType, setCampaignType] = useState<CampaignType>('BROADCAST');
-  const [name, setName] = useState('');
-  const [description, setDescription] = useState('');
+  const [name, setName] = useState(initial?.name ?? '');
+  const [description, setDescription] = useState(initial?.description ?? '');
   // The picked broadcast template itself — the picker searches server-side, so
   // the id alone can no longer be resolved against a locally fetched list.
-  const [selected, setSelected] = useState<WaTemplate | null>(null);
-  const [audienceType, setAudienceType] = useState('segment');
-  const [segmentId, setSegmentId] = useState('');
-  const [tags, setTags] = useState('');
-  const [optInStatus, setOptInStatus] = useState('');
+  const [selected, setSelected] = useState<WaTemplate | null>(initialTemplate);
+  const [audienceType, setAudienceType] = useState(initial?.audienceType ?? 'segment');
+  const [segmentId, setSegmentId] = useState(initial?.segmentId ?? '');
+  const [tags, setTags] = useState((initialAudience.tags ?? []).join(', '));
+  const [optInStatus, setOptInStatus] = useState(initialAudience.optInStatus ?? '');
   // The advanced half of the inline filter — the same rule grammar a saved
   // segment stores. Without it the wizard could only express "any of these tags",
   // so "tagged mumbai AND premium", "messaged us in the last 30 days" or "did not
   // reply to the Diwali campaign" had to be assembled outside the product.
   const [rules, setRules] = useState<WaSegmentRule[]>([]);
   const [ruleOp, setRuleOp] = useState<'and' | 'or'>('and');
-  const [phones, setPhones] = useState('');
+  const [phones, setPhones] = useState((initialAudience.phones ?? []).join('\n'));
   // "Upload phone numbers" was paste-only, so a 4,000-row CSV of targets had to
   // be imported as permanent contacts and tagged just to be sent to once. The
   // file is parsed in the browser and its numbers are merged into the SAME
@@ -187,14 +223,20 @@ export default function NewCampaignPage() {
   const [uploadColumns, setUploadColumns] = useState<
     Record<string, { name?: string; vars?: Record<string, string> }>
   >({});
-  const [mapping, setMapping] = useState<string[]>([]);
-  const [throttle, setThrottle] = useState('15');
-  const [scheduledAt, setScheduledAt] = useState('');
+  const [mapping, setMapping] = useState<string[]>(
+    Array.isArray(initial?.variableMapping) ? (initial.variableMapping as string[]) : [],
+  );
+  const [throttle, setThrottle] = useState(String(initial?.throttlePerSec ?? 15));
+  const [scheduledAt, setScheduledAt] = useState(
+    initial?.scheduledAt ? toDateTimeLocal(initial.scheduledAt) : '',
+  );
   // Hold sends outside the configured business hours. `scheduledAt` is one
   // absolute instant, so without this a campaign armed for 10:00 local reaches an
   // international list in the middle of the night — and night-time marketing is
   // what drives the blocks and reports that degrade a number's quality rating.
-  const [respectBusinessHours, setRespectBusinessHours] = useState(false);
+  const [respectBusinessHours, setRespectBusinessHours] = useState(
+    initial?.respectBusinessHours ?? false,
+  );
   const [steps, setSteps] = useState<StepDraft[]>([
     { templateId: '', delayHours: '0', condition: 'any' },
   ]);
@@ -206,9 +248,13 @@ export default function NewCampaignPage() {
   // A/B TEST PHASE. Blank = send to everyone at once, the old behaviour. Set it
   // and the launch stops at that share of the audience, so a winner can be picked
   // on real numbers and the rest sent the template that actually won.
-  const [abSamplePct, setAbSamplePct] = useState('');
-  const [abMetric, setAbMetric] = useState<WaAbMetric>('replied');
-  const [recurrenceDays, setRecurrenceDays] = useState('');
+  const [abSamplePct, setAbSamplePct] = useState(
+    initial?.abTestSamplePct != null ? String(initial.abTestSamplePct) : '',
+  );
+  const [abMetric, setAbMetric] = useState<WaAbMetric>(initial?.abTestMetric ?? 'replied');
+  const [recurrenceDays, setRecurrenceDays] = useState(
+    initial?.recurrenceDays ? String(initial.recurrenceDays) : '',
+  );
 
   const onPhoneFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -405,7 +451,7 @@ export default function NewCampaignPage() {
    * mapping reaches the whole audience at once.
    */
   const examples = selected ? templateExamples(selected) : null;
-  const [templateParams, setTemplateParams] = useState<WaCampaignTemplateParams>({});
+  const [templateParams, setTemplateParams] = useState<WaCampaignTemplateParams>(initialParams);
   /** Every campaign-level parameter that is a plain string input. */
   type StringParam = Exclude<
     keyof WaCampaignTemplateParams,
@@ -423,9 +469,13 @@ export default function NewCampaignPage() {
    * prefers the uploaded id — so switching mode clears the other one rather than
    * leaving a stale value behind to be sent.
    */
-  const [headerMediaMode, setHeaderMediaMode] = useState<'upload' | 'url'>('url');
+  const [headerMediaMode, setHeaderMediaMode] = useState<'upload' | 'url'>(
+    initialParams.headerMediaId ? 'upload' : 'url',
+  );
   const [headerUploading, setHeaderUploading] = useState(false);
-  const [headerFileName, setHeaderFileName] = useState('');
+  const [headerFileName, setHeaderFileName] = useState(
+    initialParams.headerMediaId ? 'Previously uploaded file' : '',
+  );
 
   const switchHeaderMode = (mode: 'upload' | 'url') => {
     setHeaderMediaMode(mode);
@@ -520,15 +570,23 @@ export default function NewCampaignPage() {
   })();
   // Held as the datetime-local string the input produces and converted to epoch
   // ms only on submit, exactly as the inbox composer does it.
-  const [ltoExpiresAt, setLtoExpiresAt] = useState('');
+  const [ltoExpiresAt, setLtoExpiresAt] = useState(
+    initialParams.ltoExpirationMs
+      ? toDateTimeLocal(new Date(initialParams.ltoExpirationMs).toISOString())
+      : '',
+  );
   // The LOCATION header's pin, kept as the raw strings the inputs produce and
   // assembled on submit (same reason as the expiry above). A LOCATION template
   // could be picked here with no way to supply the pin at all, so the campaign
   // launched and Meta then refused the whole audience with (#131008).
-  const [lat, setLat] = useState('');
-  const [lng, setLng] = useState('');
-  const [placeName, setPlaceName] = useState('');
-  const [placeAddress, setPlaceAddress] = useState('');
+  const [lat, setLat] = useState(
+    initialParams.headerLocation ? String(initialParams.headerLocation.latitude ?? '') : '',
+  );
+  const [lng, setLng] = useState(
+    initialParams.headerLocation ? String(initialParams.headerLocation.longitude ?? '') : '',
+  );
+  const [placeName, setPlaceName] = useState(initialParams.headerLocation?.name ?? '');
+  const [placeAddress, setPlaceAddress] = useState(initialParams.headerLocation?.address ?? '');
   /**
    * A multi-product template's sections, as the form holds them.
    *
@@ -537,9 +595,14 @@ export default function NewCampaignPage() {
    * SKUs are typed. Assembled into `productSections` on submit, the same way the
    * location pin and the offer expiry are.
    */
-  const [sectionDrafts, setSectionDrafts] = useState<Array<{ title: string; skus: string }>>([
-    { title: '', skus: '' },
-  ]);
+  const [sectionDrafts, setSectionDrafts] = useState<Array<{ title: string; skus: string }>>(() =>
+    initialParams.productSections?.length
+      ? initialParams.productSections.map((s) => ({
+          title: s.title ?? '',
+          skus: (s.productRetailerIds ?? []).join(', '),
+        }))
+      : [{ title: '', skus: '' }],
+  );
   const productSections = sectionDrafts
     .map((s) => ({ title: s.title.trim(), productRetailerIds: parseProductSkus(s.skus) }))
     .filter((s) => s.title && s.productRetailerIds.length > 0);
@@ -641,6 +704,73 @@ export default function NewCampaignPage() {
             abTestMetric: abMetric,
           }
         : {};
+      // Built once and used by BOTH the create and the edit call below, so the
+      // two can never disagree about what a campaign's parameters are.
+      const campaignTemplateParams = useAbTest
+        ? undefined
+        : {
+            ...templateParams,
+            // Meta needs the media KIND alongside the URL; it comes from the
+            // template's own header format, not from operator input.
+            ...(spec.headerNeedsMedia
+              ? {
+                  headerMediaType: spec.headerFormat.toLowerCase() as
+                    'image' | 'video' | 'document',
+                }
+              : {}),
+            // The LOCATION header's pin. Campaign-wide like the media above —
+            // one place for the whole audience — and required, so submit has
+            // already refused a campaign that has no usable coordinates.
+            ...(headerLocation ? { headerLocation } : {}),
+            ...(spec.needsLtoExpiration && ltoExpiresAt
+              ? { ltoExpirationMs: new Date(ltoExpiresAt).getTime() }
+              : {}),
+            // A multi-product template's product list. Chosen here because it
+            // exists nowhere in the approved template — Meta reads the products
+            // straight off the send payload.
+            ...(spec.needsProductSections ? { productSections } : {}),
+            // Carousel cards, normalised to the number of cards the template
+            // was approved with — Meta matches them by card_index, so a stray
+            // extra entry would fail the send for the whole audience.
+            ...(spec.carouselCards.length
+              ? {
+                  carouselCards: spec.carouselCards.map((card, i) => ({
+                    ...cardParam(i),
+                    headerMediaType: (card.headerFormat === 'VIDEO' ? 'video' : 'image') as
+                      'image' | 'video',
+                  })),
+                }
+              : {}),
+          };
+
+      const variableMapping = useAbTest
+        ? undefined
+        : Array.from({ length: varCount }, (_, i) => mapping[i] || '');
+      const scheduledAtIso = scheduledAt ? new Date(scheduledAt).toISOString() : undefined;
+      const throttlePerSec = parseInt(throttle, 10) || 15;
+
+      // EDIT takes a strict subset: `type`, `steps`, `variants` and `isAbTest`
+      // are fixed at creation. Cleared values go as null rather than undefined —
+      // on this PATCH, undefined means "leave it alone", so clearing a schedule
+      // with undefined would silently keep the old one.
+      if (isEditing) {
+        return svc.updateCampaign(String(editId), {
+          name: name.trim(),
+          description: description.trim() || null,
+          templateId: useAbTest ? variants[0].templateId : templateId,
+          audienceType,
+          audienceFilter,
+          ...(usingSavedSegment ? { segmentId } : {}),
+          templateParams: campaignTemplateParams,
+          variableMapping,
+          throttlePerSec,
+          scheduledAt: scheduledAtIso ?? null,
+          respectBusinessHours,
+          recurrenceDays: recurrence > 0 ? recurrence : null,
+          ...(useAbTest ? { abTestSamplePct: samplePct, abTestMetric: abMetric } : {}),
+        });
+      }
+
       return svc.createCampaign({
         name: name.trim(),
         description: description.trim() || undefined,
@@ -650,47 +780,10 @@ export default function NewCampaignPage() {
         audienceType,
         audienceFilter,
         ...(usingSavedSegment ? { segmentId } : {}),
-        templateParams: useAbTest
-          ? undefined
-          : {
-              ...templateParams,
-              // Meta needs the media KIND alongside the URL; it comes from the
-              // template's own header format, not from operator input.
-              ...(spec.headerNeedsMedia
-                ? {
-                    headerMediaType: spec.headerFormat.toLowerCase() as
-                      'image' | 'video' | 'document',
-                  }
-                : {}),
-              // The LOCATION header's pin. Campaign-wide like the media above —
-              // one place for the whole audience — and required, so submit has
-              // already refused a campaign that has no usable coordinates.
-              ...(headerLocation ? { headerLocation } : {}),
-              ...(spec.needsLtoExpiration && ltoExpiresAt
-                ? { ltoExpirationMs: new Date(ltoExpiresAt).getTime() }
-                : {}),
-              // A multi-product template's product list. Chosen here because it
-              // exists nowhere in the approved template — Meta reads the products
-              // straight off the send payload.
-              ...(spec.needsProductSections ? { productSections } : {}),
-              // Carousel cards, normalised to the number of cards the template
-              // was approved with — Meta matches them by card_index, so a stray
-              // extra entry would fail the send for the whole audience.
-              ...(spec.carouselCards.length
-                ? {
-                    carouselCards: spec.carouselCards.map((card, i) => ({
-                      ...cardParam(i),
-                      headerMediaType: (card.headerFormat === 'VIDEO' ? 'video' : 'image') as
-                        'image' | 'video',
-                    })),
-                  }
-                : {}),
-            },
-        variableMapping: useAbTest
-          ? undefined
-          : Array.from({ length: varCount }, (_, i) => mapping[i] || ''),
-        throttlePerSec: parseInt(throttle, 10) || 15,
-        scheduledAt: scheduledAt ? new Date(scheduledAt).toISOString() : undefined,
+        templateParams: campaignTemplateParams,
+        variableMapping,
+        throttlePerSec,
+        scheduledAt: scheduledAtIso,
         respectBusinessHours,
         type: 'BROADCAST',
         ...abFields,
@@ -698,8 +791,14 @@ export default function NewCampaignPage() {
       });
     },
     onSuccess: (res) => {
-      showToast.success(scheduledAt ? 'Campaign scheduled' : 'Campaign created as draft');
-      const id = res.data?.id;
+      showToast.success(
+        isEditing
+          ? 'Campaign updated'
+          : scheduledAt
+            ? 'Campaign scheduled'
+            : 'Campaign created as draft',
+      );
+      const id = editId ?? res.data?.id;
       router.push(
         id
           ? ROUTES.SUPER_ADMIN.WHATSAPP_CAMPAIGN_DETAIL(id)
@@ -707,7 +806,10 @@ export default function NewCampaignPage() {
       );
     },
     onError: (e) =>
-      showToast.error((e as unknown as ApiError).message || 'Failed to create campaign'),
+      showToast.error(
+        (e as unknown as ApiError).message ||
+          (isEditing ? 'Failed to update campaign' : 'Failed to create campaign'),
+      ),
   });
 
   const submit = () => {
@@ -869,13 +971,15 @@ export default function NewCampaignPage() {
           <ArrowLeft className="h-4 w-4" /> Back to campaigns
         </Link>
         <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-bold text-[var(--text)]">New campaign</h1>
+          <h1 className="text-2xl font-bold text-[var(--text)]">
+            {isEditing ? 'Edit campaign' : 'New campaign'}
+          </h1>
           <Button
             leftIcon={<Send className="h-4 w-4" />}
             onClick={submit}
             isLoading={mutation.isPending}
           >
-            {isSequence ? 'Create sequence draft' : 'Create draft'}
+            {isEditing ? 'Save changes' : isSequence ? 'Create sequence draft' : 'Create draft'}
           </Button>
         </div>
 
@@ -1836,5 +1940,72 @@ export default function NewCampaignPage() {
         </Card>
       </div>
     </DashboardLayout>
+  );
+}
+
+/**
+ * Resolves `?edit=<id>` into the campaign (and its template) before the form is
+ * mounted at all.
+ *
+ * The form seeds every input from these on first render, so it must not mount
+ * until they are here — hence the hold below rather than a prefill effect. The
+ * `key` remounts the form when switching between creating and editing, so no
+ * value can survive from one to the other.
+ */
+function CampaignFormLoader() {
+  const editId = useSearchParams().get('edit');
+
+  const { data: campaignData, isError: campaignFailed } = useQuery({
+    queryKey: ['wa-campaign', editId],
+    queryFn: () => svc.getCampaign(String(editId)),
+    enabled: Boolean(editId),
+  });
+  const initial = campaignData?.data ?? null;
+
+  // The campaign row carries the template's name and category but not its
+  // components, and the components are what say which parameters to ask for.
+  const { data: templateData, isError: templateFailed } = useQuery({
+    queryKey: ['wa-template', initial?.templateId],
+    queryFn: () => svc.getTemplate(String(initial?.templateId)),
+    enabled: Boolean(initial?.templateId),
+  });
+
+  const waiting =
+    Boolean(editId) &&
+    !campaignFailed &&
+    !templateFailed &&
+    (!initial || (Boolean(initial.templateId) && !templateData?.data));
+
+  if (waiting) {
+    return (
+      <DashboardLayout>
+        <div className="flex items-center justify-center gap-2 py-16 text-sm text-[var(--text-muted)]">
+          <Loader2 className="h-4 w-4 animate-spin" /> Loading campaign…
+        </div>
+      </DashboardLayout>
+    );
+  }
+
+  return (
+    <CampaignForm
+      key={editId ?? 'new'}
+      editId={editId}
+      initial={initial}
+      initialTemplate={templateData?.data ?? null}
+    />
+  );
+}
+
+/**
+ * Suspense boundary for `useSearchParams`.
+ *
+ * The form reads `?edit=<id>` to decide whether it is creating or editing, and
+ * Next refuses to prerender a page that reads search params outside a boundary.
+ */
+export default function NewCampaignPage() {
+  return (
+    <Suspense fallback={null}>
+      <CampaignFormLoader />
+    </Suspense>
   );
 }
