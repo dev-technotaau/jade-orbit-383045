@@ -35,3 +35,29 @@ export const HEADER_ACCEPT_HINT: Record<string, string> = {
   VIDEO: 'MP4 or 3GPP.',
   DOCUMENT: 'PDF, Word, Excel, PowerPoint or plain text.',
 };
+
+/**
+ * The header's kind with the article English actually wants — "an image", but
+ * "a video" and "a document".
+ *
+ * Every one of these labels is built from the template's OWN header format, so
+ * a video-header template reads "video" throughout; interpolating the word
+ * straight after a bare "a" is what produced "a image file".
+ */
+export function headerNoun(format: string): string {
+  const kind = format.toLowerCase();
+  return `${kind === 'image' ? 'an' : 'a'} ${kind}`;
+}
+
+/** Sentence-case kind for a field label: "Image header URL", "Video header URL". */
+export function headerLabel(format: string): string {
+  const kind = format.toLowerCase();
+  return kind.charAt(0).toUpperCase() + kind.slice(1);
+}
+
+/** An example link that matches the format, rather than a .jpg under a video header. */
+export const HEADER_URL_PLACEHOLDER: Record<string, string> = {
+  IMAGE: 'https://example.com/banner.jpg',
+  VIDEO: 'https://example.com/clip.mp4',
+  DOCUMENT: 'https://example.com/brochure.pdf',
+};

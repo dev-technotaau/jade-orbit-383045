@@ -75,6 +75,19 @@ export const HEADER_FORMAT_KIND: Record<WaHeaderMediaFormat, MetaMediaKind> = {
 };
 
 /**
+ * The header's kind carrying the article English wants — "an image", but "a
+ * video" and "a document".
+ *
+ * Every one of these strings is built from the template's own header format, so
+ * writing `a ${format.toLowerCase()}` produced "a image header" wherever an
+ * image template was involved.
+ */
+export function headerNoun(format: string): string {
+  const kind = format.toLowerCase();
+  return `${kind === 'image' ? 'an' : 'a'} ${kind}`;
+}
+
+/**
  * A human list of what a header format takes, for the message shown when the
  * chosen file is the wrong type. `image/jpeg` means nothing to an operator
  * looking at a logo they exported as WebP.

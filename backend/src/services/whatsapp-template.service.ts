@@ -7,6 +7,7 @@ import { templateComponentsSchema } from '../schemas/whatsapp-template-component
 import { graphVersion } from './whatsapp.service';
 import { fetchNodeHealthStatus, type WaHealthStatus } from './whatsapp-channel.service';
 import { oneLineParam } from '../utils/whatsapp-template-params';
+import { headerNoun } from '../utils/wa-media-limits';
 import type {
   Prisma,
   WaTemplateCategory,
@@ -1491,7 +1492,7 @@ export function urlButtonValues(supplied: {
  */
 export function templateParamsBeyondBody(spec: TemplateSendSpec): string[] {
   const needs: string[] = [];
-  if (spec.headerNeedsMedia) needs.push(`a ${spec.headerFormat.toLowerCase()} header`);
+  if (spec.headerNeedsMedia) needs.push(`${headerNoun(spec.headerFormat)} header`);
   if (spec.headerHasTextVar) needs.push('header text');
   if (spec.headerNeedsLocation) needs.push('a location pin');
   if (spec.buttonUrlVarIndexes.length > 0) {

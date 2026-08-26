@@ -12,6 +12,9 @@ import TemplatePreviewBubble from '@/components/whatsapp/TemplatePreviewBubble';
 import TemplatePicker from '@/components/whatsapp/TemplatePicker';
 import { whatsappService as svc } from '@/services/whatsapp.service';
 import { cn } from '@/lib/utils';
+// Shared with the campaign form so the accept lists cannot drift from each
+// other or from the backend's allowlist.
+import { HEADER_ACCEPT, headerNoun } from '@/lib/wa-header-media';
 import {
   analyzeTemplate,
   parseProductSkus,
@@ -30,11 +33,6 @@ import type { WaContactLite, WaTemplate } from '@/types/whatsapp';
  * never enabled for a number the send would then refuse.
  */
 const plausiblePhone = (value: string): boolean => value.replace(/\D/g, '').length >= 8;
-
-/** File types a media header accepts, by the template's header format. */
-// Shared with the campaign form so the two cannot drift — and so DOCUMENT
-// offers Meta's whole office set rather than the PDF-only list this had.
-import { HEADER_ACCEPT } from '@/lib/wa-header-media';
 
 /**
  * The inputs one carousel card needs. `mode` mirrors the header's upload-or-URL
@@ -629,8 +627,7 @@ export default function TemplateComposeModal({
                         </>
                       ) : (
                         <>
-                          <Upload className="h-4 w-4" /> Choose a {spec.headerFormat.toLowerCase()}{' '}
-                          file
+                          <Upload className="h-4 w-4" /> Choose {headerNoun(spec.headerFormat)} file
                         </>
                       )}
                       <input

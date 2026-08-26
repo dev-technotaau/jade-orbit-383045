@@ -18,7 +18,7 @@ import type {
 import { getSegment } from './whatsapp-segment.service';
 import { forEachSuppressedPhonePage, getSuppressedPhonesIn } from './whatsapp-suppression.service';
 import { addCampaignBatchJob } from '../jobs/whatsapp-campaign.queue';
-import type { WaHeaderMediaFormat } from '../utils/wa-media-limits';
+import { headerNoun, type WaHeaderMediaFormat } from '../utils/wa-media-limits';
 import { emitWaEvent } from './whatsapp-events.service';
 import { emitWa } from '../utils/whatsapp-realtime';
 import { Prisma } from '@prisma/client';
@@ -1625,7 +1625,7 @@ function campaignParamGaps(spec: TemplateSendSpec, params: CampaignTemplateParam
   // campaign form could offer an upload and then refuse to launch what it had
   // just accepted.
   if (spec.headerNeedsMedia && !params.headerMediaUrl && !params.headerMediaId) {
-    missing.push(`a ${spec.headerFormat.toLowerCase()} header (an uploaded file or a public URL)`);
+    missing.push(`${headerNoun(spec.headerFormat)} header (an uploaded file or a public URL)`);
   }
   if (spec.headerHasTextVar && !params.headerText) missing.push('header text');
   // LOCATION header. The pin is supplied per SEND, never at authoring time, so a

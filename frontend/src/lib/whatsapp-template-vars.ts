@@ -1,4 +1,5 @@
 import type { WaTemplate } from '@/types/whatsapp';
+import { headerNoun } from './wa-header-media';
 
 /**
  * Parse an APPROVED template's Meta `components` into the exact set of runtime
@@ -419,7 +420,7 @@ export function parseProductSkus(raw: string): string[] {
  */
 export function templateParamsBeyondBody(spec: TemplateVarSpec): string[] {
   const needs: string[] = [];
-  if (spec.headerNeedsMedia) needs.push(`a ${spec.headerFormat.toLowerCase()} header`);
+  if (spec.headerNeedsMedia) needs.push(`${headerNoun(spec.headerFormat)} header`);
   if (spec.headerHasTextVar) needs.push('header text');
   if (spec.headerNeedsLocation) needs.push('a location pin');
   if (spec.buttonUrlVarIndexes.length > 0) {

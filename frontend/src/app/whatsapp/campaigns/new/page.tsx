@@ -13,6 +13,7 @@ import {
   ArrowDown,
   AlertTriangle,
   FileUp,
+  Loader2,
 } from 'lucide-react';
 import DashboardLayout from '@/components/layout/DashboardLayout';
 import Card from '@/components/ui/Card';
@@ -24,7 +25,13 @@ import Button from '@/components/ui/Button';
 import Switch from '@/components/ui/Switch';
 import { showToast } from '@/components/ui/Toast';
 import { cn, formatFileSize } from '@/lib/utils';
-import { HEADER_ACCEPT, HEADER_ACCEPT_HINT } from '@/lib/wa-header-media';
+import {
+  HEADER_ACCEPT,
+  HEADER_ACCEPT_HINT,
+  HEADER_URL_PLACEHOLDER,
+  headerLabel,
+  headerNoun,
+} from '@/lib/wa-header-media';
 import {
   describePhoneImport,
   mergePhoneLines,
@@ -1042,30 +1049,74 @@ export default function NewCampaignPage() {
 
                           {headerMediaMode === 'url' ? (
                             <Input
-                              label={`${spec.headerFormat.charAt(0)}${spec.headerFormat.slice(1).toLowerCase()} header URL`}
+                              label={`${headerLabel(spec.headerFormat)} header URL`}
                               value={templateParams.headerMediaUrl ?? ''}
                               onChange={(e) => setParam('headerMediaUrl', e.target.value)}
-                              placeholder="https://example.com/banner.jpg"
+                              placeholder={
+                                HEADER_URL_PLACEHOLDER[spec.headerFormat] ?? 'https://example.com/…'
+                              }
                               helperText={`Meta re-downloads this link on every send. ${
                                 HEADER_ACCEPT_HINT[spec.headerFormat] ?? ''
                               }`}
                             />
-                          ) : (
-                            <div className="space-y-1">
+                          ) : !templateParams.headerMediaId ? (
+                            // Same control the composer uses: a label wrapping a
+                            // hidden input, because the browser's native file
+                            // input cannot be styled and rendered as a bare
+                            // "Choose File / No file chosen" next to buttons that
+                            // look nothing like it.
+                            <label
+                              className={cn(
+                                'flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-[var(--border)] bg-white px-3 py-4 text-sm text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-secondary)]',
+                                (headerUploading || !defaultChannel) &&
+                                  'pointer-events-none opacity-70',
+                              )}
+                            >
+                              {headerUploading ? (
+                                <>
+                                  <Loader2 className="h-4 w-4 animate-spin" /> Uploading to
+                                  WhatsApp…
+                                </>
+                              ) : !defaultChannel ? (
+                                <>
+                                  <FileUp className="h-4 w-4" /> Connect a WhatsApp number first
+                                </>
+                              ) : (
+                                <>
+                                  <FileUp className="h-4 w-4" /> Choose{' '}
+                                  {headerNoun(spec.headerFormat)} file
+                                </>
+                              )}
                               <input
                                 type="file"
+                                className="hidden"
                                 accept={HEADER_ACCEPT[spec.headerFormat]}
                                 disabled={headerUploading || !defaultChannel}
                                 onChange={(e) => void onHeaderFile(e.target.files?.[0])}
-                                className="block w-full text-xs file:mr-3 file:rounded-md file:border-0 file:bg-[var(--bg-secondary)] file:px-3 file:py-1.5 file:text-xs file:font-medium"
                               />
-                              <p className="text-[11px] text-[var(--text-muted)]">
-                                {headerUploading
-                                  ? 'Uploading…'
-                                  : templateParams.headerMediaId
-                                    ? `Uploaded${headerFileName ? ` — ${headerFileName}` : ''}. WhatsApp keeps an uploaded file for about 30 days; use a URL for a campaign scheduled further out.`
-                                    : (HEADER_ACCEPT_HINT[spec.headerFormat] ?? '')}
-                              </p>
+                            </label>
+                          ) : (
+                            <div className="flex items-center gap-3 rounded-lg border border-[var(--border)] bg-white p-2.5">
+                              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-[var(--bg-secondary)] text-[var(--text-muted)]">
+                                <FileUp className="h-4 w-4" />
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-sm font-medium text-[var(--text)]">
+                                  {headerFileName || 'Uploaded'}
+                                </p>
+                                <p className="text-[11px] text-emerald-600">
+                                  Uploaded — WhatsApp keeps it about 30 days, so use a URL for a
+                                  campaign scheduled further out.
+                                </p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => switchHeaderMode('upload')}
+                                className="rounded p-1 text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-red-600"
+                                aria-label="Remove header media"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
                             </div>
                           )}
                         </div>
