@@ -250,7 +250,17 @@ export default function SuperAdminWhatsappCampaignsPage() {
                       )}
                     </div>
                     <p className="text-xs text-[var(--text-muted)]">
-                      {c.template?.name ?? '—'} · {c.totalRecipients} recipients
+                      {c.template?.name ?? '—'} ·{' '}
+                      {/* `totalRecipients` counts the recipient rows a LAUNCH
+                          materialises, so it is legitimately 0 until then — but
+                          printing "0 recipients" said the campaign would reach
+                          nobody, when the audience simply has not been resolved
+                          yet. The live count is a query per campaign, which the
+                          detail page runs for one and this list cannot run for
+                          every row, so it says so instead of guessing. */}
+                      {c.startedAt || c.totalRecipients > 0
+                        ? `${c.totalRecipients.toLocaleString('en-IN')} recipients`
+                        : 'audience resolved at launch'}
                     </p>
                   </div>
                   <div className="w-32 shrink-0">
