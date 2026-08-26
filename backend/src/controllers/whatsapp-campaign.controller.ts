@@ -49,6 +49,15 @@ export const create = async (req: Request, res: Response, next: NextFunction): P
       audienceType: req.body.audienceType,
       audienceFilter: req.body.audienceFilter,
       variableMapping: req.body.variableMapping,
+      // The campaign-wide send parameters — header media, header text, the
+      // URL-button suffix. This controller copies req.body field by field, and
+      // templateParams was the one the list never gained: the wizard collected
+      // it, the schema validated it, the service and the worker both read it,
+      // and it was dropped here in between, so EVERY campaign was stored with
+      // templateParams = null. A media-header broadcast then failed its own
+      // launch check ("this template needs an image header") reporting a value
+      // the operator had demonstrably filled in.
+      templateParams: req.body.templateParams,
       scheduledAt: req.body.scheduledAt,
       respectBusinessHours: req.body.respectBusinessHours,
       batchSize: req.body.batchSize,
@@ -78,6 +87,10 @@ export const update = async (req: Request, res: Response, next: NextFunction): P
       audienceType: req.body.audienceType,
       audienceFilter: req.body.audienceFilter,
       variableMapping: req.body.variableMapping,
+      // Same omission as `create` above, with the same effect: editing a
+      // campaign to ADD the missing header media saved every other field and
+      // silently discarded that one, so the fix never took.
+      templateParams: req.body.templateParams,
       scheduledAt: req.body.scheduledAt,
       respectBusinessHours: req.body.respectBusinessHours,
       batchSize: req.body.batchSize,
