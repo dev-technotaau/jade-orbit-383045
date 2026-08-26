@@ -84,18 +84,56 @@ export async function handleWaSyncTemplates(): Promise<void> {
   }
 }
 
-/** Launch any SCHEDULED campaigns whose scheduledAt has arrived. */
+/**
+ * Launch any SCHEDULED campaigns whose scheduledAt has arrived.
+ *
+ * A launch can fail two very different ways, and treating them alike left a
+ * campaign that could NEVER launch sitting SCHEDULED and overdue forever, retried
+ * on every tick and logging the identical error each time — for days, with the
+ * only symptom in the backend log and the campaign still reading "SCHEDULED" to
+ * the operator, as if it were about to go out.
+ *
+ *   - 4xx: the campaign is wrong and only an operator can fix it (a media header
+ *     with no file, a carousel used as a variant, an expired offer). Retrying is
+ *     futile, so it is returned to DRAFT — the state whose whole purpose is
+ *     "needs editing" — and unscheduled, which is exactly what the error text
+ *     already asks for ("Edit the campaign and provide it before launching").
+ *   - anything else: transient (Meta down, a database blip). Left SCHEDULED so
+ *     the next tick tries again, which is the behaviour that matters there.
+ */
 export async function handleWaScheduledCampaigns(): Promise<void> {
   const due = await prisma.waCampaign.findMany({
     where: { status: 'SCHEDULED', scheduledAt: { lte: new Date() } },
-    select: { id: true },
+    select: { id: true, name: true },
   });
   for (const c of due) {
     try {
       await launchCampaign(c.id);
       logger.info(`Launched scheduled WhatsApp campaign ${c.id}`);
     } catch (e) {
-      logger.error(`Scheduled WhatsApp campaign ${c.id} launch failed: ${(e as Error).message}`);
+      const status = (e as { statusCode?: number }).statusCode;
+      const permanent = typeof status === 'number' && status >= 400 && status < 500;
+      const reason = (e as Error).message;
+      if (!permanent) {
+        logger.error(`Scheduled WhatsApp campaign ${c.id} launch failed, will retry: ${reason}`);
+        continue;
+      }
+      await prisma.waCampaign
+        .update({ where: { id: c.id }, data: { status: 'DRAFT', scheduledAt: null } })
+        .catch((err) =>
+          logger.error(`Could not unschedule campaign ${c.id}: ${(err as Error).message}`)
+        );
+      logger.error(
+        `Scheduled WhatsApp campaign ${c.id} ("${c.name}") cannot launch and has been ` +
+          `returned to DRAFT — it will not be retried: ${reason}`
+      );
+      // Surface it where the operator actually is. Without this the only sign a
+      // scheduled broadcast never went out was a line in the server log.
+      emitWaEvent('whatsapp.campaign.unscheduled', {
+        campaignId: c.id,
+        name: c.name,
+        reason,
+      }).catch(() => {});
     }
   }
 }
