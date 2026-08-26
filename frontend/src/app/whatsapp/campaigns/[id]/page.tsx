@@ -705,7 +705,13 @@ export default function CampaignDetailPage() {
   const canCancel = ['RUNNING', 'PAUSED', 'SCHEDULED', 'QUEUED'].includes(c.status);
   const canRetry = c.failedCount > 0 && ['COMPLETED', 'PAUSED', 'RUNNING'].includes(c.status);
   const estCostPaise = c.estimatedCostPaise ?? preview?.estimatedCostPaise ?? 0;
-  const hasActualCost = c.actualCostPaise != null;
+  // `> 0`, not `!= null`. The column is `@default(0)`, so it is never null and
+  // this guard never fired — the card printed "₹0" next to an estimate of
+  // ₹127.28 and read as "this campaign was free". Actual cost is only known
+  // when Meta's delivery webhook carries a per-message amount, which for most
+  // accounts it does not: 91 billable messages on this campaign produced no
+  // amount at all. "—" says that; "₹0" claims something false.
+  const hasActualCost = (c.actualCostPaise ?? 0) > 0;
   const rupees = (paise: number) => (paise / 100).toLocaleString('en-IN');
 
   // Delivery funnel — each stage as a count + % of the campaign total.
@@ -942,13 +948,20 @@ export default function CampaignDetailPage() {
           <div className="h-2 w-full overflow-hidden rounded-full bg-[var(--bg-secondary)]">
             <div className="h-full bg-emerald-500 transition-all" style={{ width: `${pct}%` }} />
           </div>
-          <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-8">
+          <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-9">
             <Stat label="Total" value={c.totalRecipients} />
             <Stat label="Sent" value={c.sentCount} />
             <Stat label="Delivered" value={c.deliveredCount} />
             <Stat label="Read" value={c.readCount} />
             <Stat label="Replied" value={c.repliedCount} />
             <Stat label="Failed" value={c.failedCount} />
+            {/* SKIPPED is a recipient state like any other and the filter below
+                has always been able to list them — but nothing up here counted
+                them, so on a real send 34 of 148 recipients simply went missing
+                from the summary and Total stopped reconciling with the parts.
+                It is not a rounding error either: Meta's per-user marketing cap
+                puts roughly a fifth of an Indian audience here. */}
+            <Stat label="Skipped" value={c.skippedCount} />
             <Stat label="Est. cost" value={`₹${rupees(estCostPaise)}`} />
             <Stat
               label="Actual cost"
