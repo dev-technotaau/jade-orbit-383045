@@ -1633,6 +1633,11 @@ export const startConversation = async (
       // A template may carry TWO dynamic URL buttons; the scalar above fills only
       // the first, and Meta refuses the whole message for the one left unfilled.
       buttonUrlParams: req.body.buttonUrlParams,
+      // The caller's own Flow correlation token. The reply endpoint has always
+      // forwarded it; this one did not, so the same integration got its id kept
+      // on a reply and quietly swapped for a minted one when the template opened
+      // a new conversation.
+      flowToken: req.body.flowToken,
       // Everything `templateSendBody` accepts, forwarded. These four used to be
       // dropped right here: zod parsed them, the composer sent them and the
       // builder knew how to emit them, but the controller copied a fixed subset

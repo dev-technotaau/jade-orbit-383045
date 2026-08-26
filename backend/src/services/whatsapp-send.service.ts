@@ -1599,7 +1599,17 @@ export async function startConversationWithTemplate(input: {
   couponCode?: string;
   ltoExpirationMs?: number;
   headerLocation?: { latitude: number; longitude: number; name?: string; address?: string };
-  /** FLOW button: data for the Flow's entry screen. The token is minted per send. */
+  /**
+   * FLOW button: the caller's own correlation token.
+   *
+   * Optional — one is minted when it is absent, which is why Flows worked here
+   * regardless. But the reply path has always accepted a caller-supplied token
+   * and this one did not, so an integration that correlates Flow responses by
+   * its own id got that id honoured when replying in a thread and silently
+   * replaced by a minted one when the same template opened a new conversation.
+   */
+  flowToken?: string;
+  /** FLOW button: data for the Flow's entry screen. */
   flowActionData?: Record<string, unknown>;
   /** CATALOG / MPM button: the SKU whose image heads the card. */
   catalogThumbnailProductId?: string;
@@ -1645,6 +1655,7 @@ export async function startConversationWithTemplate(input: {
     couponCode: input.couponCode,
     ltoExpirationMs: input.ltoExpirationMs,
     headerLocation: input.headerLocation,
+    flowToken: input.flowToken,
     flowActionData: input.flowActionData,
     catalogThumbnailProductId: input.catalogThumbnailProductId,
     productSections: input.productSections,
