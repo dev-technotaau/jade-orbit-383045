@@ -89,12 +89,21 @@ import type {
  */
 const UPLOAD_TIMEOUT_MS = 120_000;
 
-function toMediaForm(file: File, conversationId?: string, phone?: string): FormData {
+function toMediaForm(
+  file: File,
+  conversationId?: string,
+  phone?: string,
+  channelId?: string,
+): FormData {
   const form = new FormData();
   form.append('file', file);
   if (conversationId) form.append('conversationId', conversationId);
   // Only when there is no conversation yet; the backend prefers conversationId.
   else if (phone) form.append('phone', phone);
+  // A campaign has neither: its header media is one file for the whole audience,
+  // staged under the campaign's own channel so the media id is scoped to the
+  // number the broadcast actually sends from.
+  else if (channelId) form.append('channelId', channelId);
   return form;
 }
 
@@ -537,10 +546,11 @@ export const whatsappService = {
    */
   async uploadMedia(
     file: File,
-    target?: string | { conversationId?: string; phone?: string },
+    target?: string | { conversationId?: string; phone?: string; channelId?: string },
   ): Promise<string> {
     const conversationId = typeof target === 'string' ? target : target?.conversationId;
     const phone = typeof target === 'string' ? undefined : target?.phone;
+    const channelId = typeof target === 'string' ? undefined : target?.channelId;
     assertWaMediaSize(file);
     const res =
       file.size > MAX_UPLOAD_BYTES
@@ -552,12 +562,13 @@ export const whatsappService = {
               filename: file.name,
               ...(conversationId ? { conversationId } : {}),
               ...(!conversationId && phone ? { phone } : {}),
+              ...(!conversationId && !phone && channelId ? { channelId } : {}),
             },
             { timeout: UPLOAD_TIMEOUT_MS },
           )
         : await api.post(
             API.SUPER_ADMIN.WA_MEDIA_UPLOAD,
-            toMediaForm(file, conversationId, phone),
+            toMediaForm(file, conversationId, phone, channelId),
             {
               headers: { 'Content-Type': 'multipart/form-data' },
               timeout: UPLOAD_TIMEOUT_MS,

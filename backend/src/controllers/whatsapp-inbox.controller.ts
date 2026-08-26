@@ -61,6 +61,7 @@ import { safeCsvCell } from '../utils/whatsapp-csv';
 import { AppError } from '../middleware/error';
 import { randomUUID } from 'crypto';
 import path from 'path';
+import { prisma } from '../config/prisma';
 import type { WaConversationStatus, WaOptInStatus } from '@prisma/client';
 
 /** Bulk action over many conversations (archive/resolve/assign/label/snooze/markRead/status). */
@@ -442,11 +443,24 @@ export const uploadMedia = async (
     // this the upload silently used the env default number while the send used
     // the contact's existing thread, and Meta rejected the mismatch.
     const recipientPhone = (req.body.phone as string) || undefined;
+    // A campaign has no conversation and no single recipient — its header media
+    // is one file for the whole audience — but it does have a channel, and a
+    // Meta media id is scoped to the number that uploaded it. Without this the
+    // campaign's file staged under the env default number while the broadcast
+    // went out from the campaign's own channel, and Meta refused the mismatch.
+    const channelId = (req.body.channelId as string) || undefined;
     const senderPhoneId = conversationId
       ? await conversationService.getConversationSenderPhoneId(conversationId)
-      : recipientPhone
-        ? await conversationService.resolveSenderPhoneIdForPhone(recipientPhone)
-        : undefined;
+      : channelId
+        ? ((
+            await prisma.waChannel.findUnique({
+              where: { id: channelId },
+              select: { phoneNumberId: true },
+            })
+          )?.phoneNumberId ?? undefined)
+        : recipientPhone
+          ? await conversationService.resolveSenderPhoneIdForPhone(recipientPhone)
+          : undefined;
     const mediaId = await uploadMediaToMeta(buffer, mime, filename, senderPhoneId);
     if (!mediaId) {
       throw new AppError(

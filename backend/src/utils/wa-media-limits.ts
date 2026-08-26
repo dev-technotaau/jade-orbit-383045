@@ -36,6 +36,60 @@ export const META_MEDIA_LIMITS: Record<MetaMediaKind, number> = {
 /** Meta's ceiling for an ANIMATED WebP sticker — five times the static one. */
 export const ANIMATED_STICKER_LIMIT = 500 * 1024;
 
+/** The three media formats a template HEADER can be authored as. */
+export type WaHeaderMediaFormat = 'IMAGE' | 'VIDEO' | 'DOCUMENT';
+
+/**
+ * Exactly what Meta accepts for each template-header format.
+ *
+ * Deliberately NOT `image/*` / `video/*`. Meta's image rule is jpeg and png
+ * ONLY — a WebP is a sticker to Meta, and pointing an IMAGE header at one is
+ * refused with `(#131053) Media upload error`. That error arrives on the
+ * DELIVERY webhook, long after the send was accepted, so nothing on the send
+ * path could tell the operator what was wrong with the file they chose; on a
+ * campaign it lands once per recipient for the whole audience.
+ *
+ * Document covers Meta's full office set rather than PDF alone, which is all
+ * the upload control used to offer.
+ */
+export const HEADER_FORMAT_MIMES: Record<WaHeaderMediaFormat, readonly string[]> = {
+  IMAGE: ['image/jpeg', 'image/png'],
+  VIDEO: ['video/mp4', 'video/3gpp'],
+  DOCUMENT: [
+    'application/pdf',
+    'text/plain',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.ms-excel',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-powerpoint',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  ],
+};
+
+/** Which size ceiling a header format is judged against. */
+export const HEADER_FORMAT_KIND: Record<WaHeaderMediaFormat, MetaMediaKind> = {
+  IMAGE: 'image',
+  VIDEO: 'video',
+  DOCUMENT: 'document',
+};
+
+/**
+ * A human list of what a header format takes, for the message shown when the
+ * chosen file is the wrong type. `image/jpeg` means nothing to an operator
+ * looking at a logo they exported as WebP.
+ */
+export function headerFormatHint(format: WaHeaderMediaFormat): string {
+  switch (format) {
+    case 'IMAGE':
+      return 'JPG or PNG (WebP and GIF are not accepted for image headers)';
+    case 'VIDEO':
+      return 'MP4 or 3GPP';
+    default:
+      return 'PDF, Word, Excel, PowerPoint or plain text';
+  }
+}
+
 /**
  * True when a WebP buffer carries an animation.
  *

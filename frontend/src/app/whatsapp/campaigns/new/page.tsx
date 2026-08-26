@@ -24,6 +24,7 @@ import Button from '@/components/ui/Button';
 import Switch from '@/components/ui/Switch';
 import { showToast } from '@/components/ui/Toast';
 import { cn, formatFileSize } from '@/lib/utils';
+import { HEADER_ACCEPT, HEADER_ACCEPT_HINT } from '@/lib/wa-header-media';
 import {
   describePhoneImport,
   mergePhoneLines,
@@ -405,6 +406,46 @@ export default function NewCampaignPage() {
   >;
   const setParam = (k: StringParam, v: string) =>
     setTemplateParams((p) => ({ ...p, [k]: v || undefined }));
+
+  /**
+   * Header media: upload a file, or point Meta at a public URL.
+   *
+   * The inbox composer has offered both for a while; a campaign could only ever
+   * take a URL, so an operator with the file on their desk had to publish it
+   * somewhere public first. The two are mutually exclusive — the send path
+   * prefers the uploaded id — so switching mode clears the other one rather than
+   * leaving a stale value behind to be sent.
+   */
+  const [headerMediaMode, setHeaderMediaMode] = useState<'upload' | 'url'>('url');
+  const [headerUploading, setHeaderUploading] = useState(false);
+  const [headerFileName, setHeaderFileName] = useState('');
+
+  const switchHeaderMode = (mode: 'upload' | 'url') => {
+    setHeaderMediaMode(mode);
+    setHeaderFileName('');
+    setTemplateParams((p) => ({ ...p, headerMediaId: undefined, headerMediaUrl: undefined }));
+  };
+
+  const onHeaderFile = async (file: File | undefined) => {
+    if (!file) return;
+    if (!defaultChannel) return showToast.error('No WhatsApp number is connected to upload under');
+    setHeaderUploading(true);
+    try {
+      // Staged under the campaign's OWN channel: a Meta media id belongs to the
+      // number that uploaded it, so a file staged under any other number is
+      // refused when the broadcast goes out.
+      const mediaId = await svc.uploadMedia(file, { channelId: defaultChannel.id });
+      if (!mediaId) throw new Error('Upload returned no media id');
+      setHeaderFileName(file.name);
+      setTemplateParams((p) => ({ ...p, headerMediaId: mediaId, headerMediaUrl: undefined }));
+    } catch (err) {
+      showToast.error(
+        (err as { message?: string })?.message || 'Failed to upload the header media',
+      );
+    } finally {
+      setHeaderUploading(false);
+    }
+  };
   /**
    * One value per DYNAMIC url button. Meta allows two URL buttons and either may
    * carry a {{n}} suffix, each addressed by its own index — a single field could
@@ -611,9 +652,7 @@ export default function NewCampaignPage() {
               ...(spec.headerNeedsMedia
                 ? {
                     headerMediaType: spec.headerFormat.toLowerCase() as
-                      | 'image'
-                      | 'video'
-                      | 'document',
+                      'image' | 'video' | 'document',
                   }
                 : {}),
               // The LOCATION header's pin. Campaign-wide like the media above —
@@ -635,8 +674,7 @@ export default function NewCampaignPage() {
                     carouselCards: spec.carouselCards.map((card, i) => ({
                       ...cardParam(i),
                       headerMediaType: (card.headerFormat === 'VIDEO' ? 'video' : 'image') as
-                        | 'image'
-                        | 'video',
+                        'image' | 'video',
                     })),
                   }
                 : {}),
@@ -729,8 +767,13 @@ export default function NewCampaignPage() {
         return showToast.error(
           `${badVariant.label || 'A variant'} has a variable with no value — pick a token or type a literal`,
         );
-    } else if (!useAbTest && spec.headerNeedsMedia && !templateParams.headerMediaUrl) {
-      return showToast.error('This template has a media header — add the media URL');
+    } else if (
+      !useAbTest &&
+      spec.headerNeedsMedia &&
+      !templateParams.headerMediaUrl &&
+      !templateParams.headerMediaId
+    ) {
+      return showToast.error('This template has a media header — upload a file or add a media URL');
     } else if (!useAbTest && spec.headerHasTextVar && !templateParams.headerText) {
       return showToast.error('This template has a variable header — fill in the header text');
     } else if (!useAbTest && spec.headerNeedsLocation && !headerLocation) {
@@ -973,12 +1016,59 @@ export default function NewCampaignPage() {
                         Template parameters — the same for every recipient
                       </p>
                       {spec.headerNeedsMedia && (
-                        <Input
-                          label={`${spec.headerFormat.charAt(0)}${spec.headerFormat.slice(1).toLowerCase()} header URL`}
-                          value={templateParams.headerMediaUrl ?? ''}
-                          onChange={(e) => setParam('headerMediaUrl', e.target.value)}
-                          placeholder="https://example.com/banner.jpg"
-                        />
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-medium text-[var(--text)]">
+                              Header {spec.headerFormat.toLowerCase()}
+                            </span>
+                            <div className="flex overflow-hidden rounded-md border border-[var(--border)] text-[11px]">
+                              {(['upload', 'url'] as const).map((m) => (
+                                <button
+                                  key={m}
+                                  type="button"
+                                  onClick={() => switchHeaderMode(m)}
+                                  className={cn(
+                                    'px-2 py-1 font-medium transition-colors',
+                                    headerMediaMode === m
+                                      ? 'bg-primary text-white'
+                                      : 'bg-white text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]',
+                                  )}
+                                >
+                                  {m === 'upload' ? 'Upload file' : 'Public URL'}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+
+                          {headerMediaMode === 'url' ? (
+                            <Input
+                              label={`${spec.headerFormat.charAt(0)}${spec.headerFormat.slice(1).toLowerCase()} header URL`}
+                              value={templateParams.headerMediaUrl ?? ''}
+                              onChange={(e) => setParam('headerMediaUrl', e.target.value)}
+                              placeholder="https://example.com/banner.jpg"
+                              helperText={`Meta re-downloads this link on every send. ${
+                                HEADER_ACCEPT_HINT[spec.headerFormat] ?? ''
+                              }`}
+                            />
+                          ) : (
+                            <div className="space-y-1">
+                              <input
+                                type="file"
+                                accept={HEADER_ACCEPT[spec.headerFormat]}
+                                disabled={headerUploading || !defaultChannel}
+                                onChange={(e) => void onHeaderFile(e.target.files?.[0])}
+                                className="block w-full text-xs file:mr-3 file:rounded-md file:border-0 file:bg-[var(--bg-secondary)] file:px-3 file:py-1.5 file:text-xs file:font-medium"
+                              />
+                              <p className="text-[11px] text-[var(--text-muted)]">
+                                {headerUploading
+                                  ? 'Uploading…'
+                                  : templateParams.headerMediaId
+                                    ? `Uploaded${headerFileName ? ` — ${headerFileName}` : ''}. WhatsApp keeps an uploaded file for about 30 days; use a URL for a campaign scheduled further out.`
+                                    : (HEADER_ACCEPT_HINT[spec.headerFormat] ?? '')}
+                              </p>
+                            </div>
+                          )}
+                        </div>
                       )}
                       {/* DOCUMENT headers carry the name the attachment shows on
                           the handset. Without it every recipient's PDF is named

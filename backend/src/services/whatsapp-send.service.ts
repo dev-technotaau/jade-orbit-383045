@@ -38,6 +38,14 @@ import {
   urlButtonValues,
 } from './whatsapp-template.service';
 import type { TemplateSendCarouselCard, TemplateProductSection } from './whatsapp-template.service';
+import {
+  HEADER_FORMAT_KIND,
+  HEADER_FORMAT_MIMES,
+  byteLabel,
+  headerFormatHint,
+  metaLimitFor,
+  type WaHeaderMediaFormat,
+} from '../utils/wa-media-limits';
 import { emitWa } from '../utils/whatsapp-realtime';
 import { emitWaEvent } from './whatsapp-events.service';
 import { waMessagesTotal, waSendFailuresTotal, waSendDuration } from '../utils/whatsapp-metrics';
@@ -803,6 +811,17 @@ export async function sendTemplateToConversation(
     );
   }
 
+  // A header URL is fetched by META, not by us, so a file it dislikes fails on
+  // the delivery webhook with an unattributable (#131053) rather than here. An
+  // uploaded file has already been type- and size-checked by the upload
+  // endpoint; a link had nothing checking it at all.
+  if (spec.headerNeedsMedia && !input.headerImageId && input.headerMediaUrl) {
+    await assertHeaderMediaUrlUsable(
+      input.headerMediaUrl,
+      spec.headerFormat as WaHeaderMediaFormat
+    );
+  }
+
   // A single-product template's header names the SKU *and* the catalog it lives
   // in. The catalog is a property of the number, never of the caller, so it is
   // resolved here — and a template that needs one on a number with none bound is
@@ -1198,6 +1217,92 @@ function isSafePublicMediaUrl(link: string): boolean {
     if (o[0] === 169 && o[1] === 254) return false; // 169.254.0.0/16 link-local / metadata
   }
   return true;
+}
+
+/** How long the header-URL pre-flight waits before giving up and letting Meta decide. */
+const HEADER_URL_PROBE_MS = 6_000;
+
+/**
+ * Check a header media URL before Meta is asked to fetch it.
+ *
+ * Meta downloads the link itself and, when it dislikes what it finds, answers
+ * `(#131053) Media upload error` — on the DELIVERY webhook, after the send was
+ * already accepted, naming none of "wrong type", "too large" or "unreachable".
+ * The upload path has always validated the bytes in hand, so the identical file
+ * was refused instantly with a clear reason as an upload and failed opaquely
+ * minutes later as a link. On a campaign that lands once per recipient across
+ * the whole audience.
+ *
+ * The case that motivated this: an IMAGE header pointed at a `.webp` logo. Meta
+ * accepts only jpeg and png for an image header — a WebP is a sticker to Meta —
+ * so every send failed with 131053 and nothing anywhere said "wrong format".
+ *
+ * DELIBERATELY not fail-closed. A definitive bad answer blocks the send with
+ * something the operator can act on; anything inconclusive — the host refuses
+ * HEAD, the probe times out, no content-type comes back — is allowed through
+ * for Meta to judge. A pre-flight that invents new reasons to refuse a URL that
+ * would have worked is worse than the opaque error it replaces.
+ */
+export async function assertHeaderMediaUrlUsable(
+  link: string,
+  format: WaHeaderMediaFormat
+): Promise<void> {
+  if (!isSafePublicMediaUrl(link)) {
+    throw new AppError(
+      'That media URL is not a public http(s) address Meta can fetch.',
+      400,
+      'WA_MEDIA_URL_UNSAFE'
+    );
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), HEADER_URL_PROBE_MS);
+  const res = await (async () => {
+    try {
+      // eslint-disable-next-line n/no-unsupported-features/node-builtins
+      return await fetch(link, { method: 'HEAD', redirect: 'follow', signal: controller.signal });
+    } catch {
+      // Unreachable from this host is not proof Meta cannot reach it.
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  })();
+  if (!res) return;
+
+  // 405/501 mean the host does not answer HEAD, not that the file is wrong.
+  if (res.status === 405 || res.status === 501) return;
+  if (res.status === 404 || res.status === 410) {
+    throw new AppError(
+      `That media URL returns ${res.status}. Meta fetches the file itself, so the link has to be publicly reachable.`,
+      400,
+      'WA_MEDIA_URL_UNREACHABLE'
+    );
+  }
+  // 401/403/5xx are inconclusive — a CDN may serve Meta and refuse us.
+  if (!res.ok) return;
+
+  const mime = (res.headers.get('content-type') ?? '').split(';')[0]?.trim().toLowerCase();
+  if (!mime) return;
+  if (!HEADER_FORMAT_MIMES[format].includes(mime)) {
+    const kind = format.toLowerCase();
+    throw new AppError(
+      `${kind === 'image' ? 'An' : 'A'} ${kind} header cannot use ${mime}. ` +
+        `Meta accepts ${headerFormatHint(format)}.`,
+      400,
+      'WA_MEDIA_URL_WRONG_TYPE'
+    );
+  }
+
+  const declared = Number(res.headers.get('content-length'));
+  const ceiling = metaLimitFor(HEADER_FORMAT_KIND[format]);
+  if (Number.isFinite(declared) && declared > ceiling) {
+    throw new AppError(
+      `That file is ${byteLabel(declared)}, over Meta's ${byteLabel(ceiling)} ceiling for a ${format.toLowerCase()} header.`,
+      400,
+      'WA_MEDIA_URL_TOO_LARGE'
+    );
+  }
 }
 
 /** Send a media message (image/video/audio/document/sticker) inside the open 24h window. */

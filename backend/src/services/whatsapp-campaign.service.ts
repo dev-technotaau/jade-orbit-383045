@@ -18,6 +18,7 @@ import type {
 import { getSegment } from './whatsapp-segment.service';
 import { forEachSuppressedPhonePage, getSuppressedPhonesIn } from './whatsapp-suppression.service';
 import { addCampaignBatchJob } from '../jobs/whatsapp-campaign.queue';
+import type { WaHeaderMediaFormat } from '../utils/wa-media-limits';
 import { emitWaEvent } from './whatsapp-events.service';
 import { emitWa } from '../utils/whatsapp-realtime';
 import { Prisma } from '@prisma/client';
@@ -60,6 +61,14 @@ import { isSkipErrorCode, isRetryableErrorCode } from './whatsapp-error-codes';
  */
 export interface CampaignTemplateParams {
   headerText?: string;
+  /**
+   * An uploaded Meta media id, the alternative to `headerMediaUrl`.
+   *
+   * Scoped to the phone number that uploaded it, so it is staged under the
+   * campaign's own channel, and Meta drops it after ~30 days — a URL is the
+   * safer choice for a campaign scheduled beyond that.
+   */
+  headerMediaId?: string;
   headerMediaUrl?: string;
   headerMediaType?: 'image' | 'video' | 'document';
   /**
@@ -1612,8 +1621,11 @@ export async function campaignPreflight(id: string): Promise<WaCampaignPreflight
  */
 function campaignParamGaps(spec: TemplateSendSpec, params: CampaignTemplateParams): string[] {
   const missing: string[] = [];
-  if (spec.headerNeedsMedia && !params.headerMediaUrl) {
-    missing.push(`a ${spec.headerFormat.toLowerCase()} header URL`);
+  // Either source satisfies the header. Requiring the URL specifically meant the
+  // campaign form could offer an upload and then refuse to launch what it had
+  // just accepted.
+  if (spec.headerNeedsMedia && !params.headerMediaUrl && !params.headerMediaId) {
+    missing.push(`a ${spec.headerFormat.toLowerCase()} header (an uploaded file or a public URL)`);
   }
   if (spec.headerHasTextVar && !params.headerText) missing.push('header text');
   // LOCATION header. The pin is supplied per SEND, never at authoring time, so a
@@ -1836,6 +1848,18 @@ export async function launchCampaign(id: string) {
       `This template needs ${missing.join(', ')}. Edit the campaign and provide it before launching.`,
       400,
       'WA_TEMPLATE_PARAMS_MISSING'
+    );
+  }
+  // The header link is fetched by META, per recipient. A file it refuses — the
+  // common one being a WebP against an IMAGE header, which Meta takes only as a
+  // sticker — comes back as (#131053) on each delivery webhook, so the campaign
+  // burns its whole audience before anyone learns the URL was unusable. Checked
+  // once here, at launch, where the operator can still change it.
+  if (spec.headerNeedsMedia && params.headerMediaUrl) {
+    const { assertHeaderMediaUrlUsable } = await import('./whatsapp-send.service');
+    await assertHeaderMediaUrlUsable(
+      params.headerMediaUrl,
+      spec.headerFormat as WaHeaderMediaFormat
     );
   }
   // An offer that has already expired renders as a finished countdown on every

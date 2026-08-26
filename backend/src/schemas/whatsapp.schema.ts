@@ -668,6 +668,12 @@ export const waCreateCampaignSchema = z.object({
     templateParams: z
       .object({
         headerText: z.string().max(900).optional(),
+        // A media header is satisfied by EITHER an uploaded Meta media id or a
+        // public URL, exactly like the inbox send path. The id is what the
+        // campaign form's Upload mode produces; it is scoped to the channel's
+        // phone number and Meta drops it after ~30 days, which is why a URL
+        // remains the better choice for a campaign scheduled far ahead.
+        headerMediaId: z.string().max(200).optional(),
         headerMediaUrl: z.string().url().optional(),
         headerMediaType: z.enum(['image', 'video', 'document']).optional(),
         // DOCUMENT header only: the filename the attachment shows on the handset.
@@ -751,6 +757,12 @@ export const waUpdateCampaignSchema = z.object({
     templateParams: z
       .object({
         headerText: z.string().max(900).optional(),
+        // A media header is satisfied by EITHER an uploaded Meta media id or a
+        // public URL, exactly like the inbox send path. The id is what the
+        // campaign form's Upload mode produces; it is scoped to the channel's
+        // phone number and Meta drops it after ~30 days, which is why a URL
+        // remains the better choice for a campaign scheduled far ahead.
+        headerMediaId: z.string().max(200).optional(),
         headerMediaUrl: z.string().url().optional(),
         headerMediaType: z.enum(['image', 'video', 'document']).optional(),
         headerMediaFilename: z.string().max(240).optional(),

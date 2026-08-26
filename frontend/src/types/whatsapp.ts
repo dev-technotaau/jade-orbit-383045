@@ -1180,6 +1180,15 @@ export interface WaCampaignClickStats {
  */
 export interface WaCampaignTemplateParams {
   headerText?: string;
+  /**
+   * An uploaded Meta media id — the alternative to `headerMediaUrl`, produced by
+   * the campaign form's Upload mode.
+   *
+   * Staged under the campaign's own channel, because a media id is scoped to the
+   * number that uploaded it, and dropped by Meta after ~30 days — so a URL is
+   * the better choice for a campaign scheduled further out than that.
+   */
+  headerMediaId?: string;
   headerMediaUrl?: string;
   headerMediaType?: 'image' | 'video' | 'document';
   /**

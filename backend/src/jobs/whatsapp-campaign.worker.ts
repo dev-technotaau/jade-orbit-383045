@@ -370,6 +370,7 @@ export async function processCampaignBatch(
       // campaign up front; this is the other half of that fix.
       const tp = (campaign.templateParams ?? {}) as {
         headerText?: string;
+        headerMediaId?: string;
         headerMediaUrl?: string;
         headerMediaType?: 'image' | 'video' | 'document';
         headerMediaFilename?: string;
@@ -394,6 +395,11 @@ export async function processCampaignBatch(
         templateId,
         bodyParams,
         headerText: tp.headerText,
+        // An uploaded media id, when the operator picked a file rather than a
+        // link. The send path prefers the id over the URL, so forwarding both is
+        // safe; forwarding neither is what made a media-header broadcast reach
+        // Meta with no header at all.
+        headerImageId: tp.headerMediaId,
         headerMediaUrl: tp.headerMediaUrl,
         headerMediaType: tp.headerMediaType,
         // The DOCUMENT header's filename. Without it every recipient's PDF is
