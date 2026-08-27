@@ -4,6 +4,7 @@ import { Server } from 'socket.io';
 import { env } from './config/env';
 import { verifySocketTicket } from './middleware/app-password';
 import logger from './config/logger';
+import { markViewing, clearViewing, listViewers } from './utils/whatsapp-presence';
 import { redis } from './config/redis';
 import { createAdapter } from '@socket.io/redis-adapter';
 
@@ -202,14 +203,44 @@ export const initSocket = (httpServer: HttpServer) => {
     // thread additionally joins a per-conversation room.
     void socket.join('wa:inbox');
 
+    /**
+     * Which thread this connection has open, so a disconnect can clean up.
+     *
+     * A closed laptop never sends `wa:close`, and without this the operator
+     * would be reported as viewing that thread until the presence TTL lapsed.
+     */
+    let viewing: string | null = null;
+
+    /** Tell everyone in the room who is looking at it now. */
+    const broadcastViewers = async (conversationId: string) => {
+      const viewers = await listViewers(conversationId);
+      io?.to(`wa:conv:${conversationId}`).emit('wa:viewers', { conversationId, viewers });
+    };
+
     socket.on('wa:open', (conversationId: string) => {
       if (typeof conversationId === 'string' && conversationId) {
         void socket.join(`wa:conv:${conversationId}`);
+        viewing = conversationId;
+        void markViewing(conversationId, userId).then(() => broadcastViewers(conversationId));
+      }
+    });
+    /**
+     * Refresh the presence entry without re-joining.
+     *
+     * The entry expires on its own so a dead session cannot be reported as a
+     * live colleague; a tab that is genuinely still open has to say so
+     * periodically, and this is the cheapest way to say it.
+     */
+    socket.on('wa:viewing', (conversationId: string) => {
+      if (typeof conversationId === 'string' && conversationId && conversationId === viewing) {
+        void markViewing(conversationId, userId).then(() => broadcastViewers(conversationId));
       }
     });
     socket.on('wa:close', (conversationId: string) => {
       if (typeof conversationId === 'string' && conversationId) {
         void socket.leave(`wa:conv:${conversationId}`);
+        if (viewing === conversationId) viewing = null;
+        void clearViewing(conversationId, userId).then(() => broadcastViewers(conversationId));
       }
     });
 
@@ -218,6 +249,13 @@ export const initSocket = (httpServer: HttpServer) => {
 
     socket.on('disconnect', () => {
       logger.info(`Client disconnected: ${socket.id}`);
+      // Announce the departure immediately rather than leaving colleagues to
+      // wait out the TTL staring at a warning about somebody who has gone.
+      if (viewing) {
+        const left = viewing;
+        viewing = null;
+        void clearViewing(left, userId).then(() => broadcastViewers(left));
+      }
     });
   });
 

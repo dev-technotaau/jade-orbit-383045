@@ -34,9 +34,11 @@ import {
   BellOff,
   CalendarClock,
   CornerUpRight,
+  Eye,
   FileText,
   Forward,
   ShoppingBag,
+  UserCircle2,
   MailQuestionMark,
   Pin,
   PinOff,
@@ -79,6 +81,7 @@ import RealtimeStatus from '@/components/whatsapp/RealtimeStatus';
 import { stripWhatsAppFormatting, hasWaFormatting } from '@/lib/wa-format';
 import { useClickOutside } from '@/hooks/use-click-outside';
 import { useSocket } from '@/hooks/use-socket';
+import { useThreadViewers } from '@/hooks/use-thread-viewers';
 import { whatsappService as svc } from '@/services/whatsapp.service';
 import type {
   WaConversation,
@@ -2329,6 +2332,8 @@ export default function SuperAdminWhatsappInboxPage() {
     return () => emit('wa:close', selectedId);
   }, [selectedId, emit, qc, maybeMarkRead]);
 
+  const otherViewers = useThreadViewers(socket, selectedId, operatorLabel, emit);
+
   // Keep a live reference to the merged messages so the scroll layout-effect can
   // read them without `messages` being a dependency (which would scroll on every
   // message change). Layout effect (not effect) so it runs BEFORE the scroll
@@ -3862,14 +3867,30 @@ export default function SuperAdminWhatsappInboxPage() {
                       )}
                     </button>
                   </Tooltip>
-                  <button
-                    type="button"
-                    onClick={() => workflowMut.mutate({ type: 'assign' })}
-                    disabled={!operatorLabel}
-                    className="hidden rounded-md border border-[var(--border)] px-2 py-1 text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] disabled:opacity-60 sm:block"
-                  >
-                    Assign to me
-                  </button>
+                  {/* Who owns this thread.
+                      The header offered "Assign to me" and never said whether it
+                      was already assigned — so an operator could take a thread a
+                      colleague was mid-way through, and the only place the owner
+                      appeared was a row chip in the list they were no longer
+                      looking at. */}
+                  {selected.assignedTo ? (
+                    <span
+                      className="hidden items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-[var(--text-secondary)] sm:inline-flex"
+                      title={`Assigned to ${selected.assignedTo}`}
+                    >
+                      <UserCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+                      {selected.assignedTo === operatorLabel ? 'You' : selected.assignedTo}
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => workflowMut.mutate({ type: 'assign' })}
+                      disabled={!operatorLabel}
+                      className="hidden rounded-md border border-[var(--border)] px-2 py-1 text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] disabled:opacity-60 sm:block"
+                    >
+                      Assign to me
+                    </button>
+                  )}
                   {/* All three states, not a Resolve/Reopen pair. PENDING
                       ("waiting on the customer") was reachable only from the
                       bulk bar even though the list filters by it, so the one
@@ -3985,6 +4006,23 @@ export default function SuperAdminWhatsappInboxPage() {
                     >
                       Jump to latest
                     </button>
+                  </div>
+                )}
+                {/* A colleague is in here too.
+                    Two agents each typing a reply with no sign of the other is
+                    how a customer gets the same answer twice in different words,
+                    or two different answers. Placed above the thread, not in the
+                    header, so it is between the operator and the composer. */}
+                {otherViewers.length > 0 && (
+                  <div
+                    className="flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] text-amber-900"
+                    role="status"
+                  >
+                    <Eye className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    <span>
+                      <span className="font-medium">{otherViewers.join(', ')}</span>{' '}
+                      {otherViewers.length === 1 ? 'is' : 'are'} also viewing this conversation.
+                    </span>
                   </div>
                 )}
                 {/* In-thread search results.

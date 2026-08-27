@@ -82,6 +82,15 @@ const createMockRedis = (): Redis => {
     smembers: () => Promise.resolve([]),
     sismember: () => Promise.resolve(0),
     exists: () => Promise.resolve(0),
+    // Hash operations (per-thread viewer presence)
+    //
+    // The mock is a WHITELIST, so a command missing here is not a degraded
+    // no-op — it is `redis.hset is not a function` thrown on every call, on
+    // every dev box and CI run with REDIS_ENABLED=false.
+    hset: () => Promise.resolve(0),
+    hdel: () => Promise.resolve(0),
+    hgetall: () => Promise.resolve({}),
+    pexpire: () => Promise.resolve(0),
     // Sorted set operations (popular searches, search history, trending)
     zadd: () => Promise.resolve(0),
     zincrby: () => Promise.resolve('0'),
