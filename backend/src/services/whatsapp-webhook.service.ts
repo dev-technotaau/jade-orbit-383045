@@ -282,8 +282,15 @@ export interface WebhookHealth {
   ageMinutes: number | null;
   staleAfterMinutes: number;
   stale: boolean;
-  /** Persisted but never processed, and older than 5 minutes. */
+  /** Persisted but never processed, and older than 5 minutes. Excludes abandoned. */
   unprocessed: number;
+  /** Given up on after exhausting the replay budget — terminal, never retried. */
+  abandoned: number;
+  /**
+   * Of those, the ones carrying INBOUND MESSAGES. Any number above zero means a
+   * customer wrote to us and the message was never stored.
+   */
+  abandonedMessages: number;
   signatureFailures24h: number;
   lastSignatureFailureAt: string | null;
   /**
@@ -336,10 +343,24 @@ export async function getWebhookHealth(
   opts: { checkSubscription?: boolean } = {}
 ): Promise<WebhookHealth> {
   const staleAfterMinutes = webhookStaleMinutes();
-  const [agg, unprocessed, sigFail, subscribed] = await Promise.all([
+  const [agg, unprocessed, abandoned, abandonedMessages, sigFail, subscribed] = await Promise.all([
     prisma.waWebhookEvent.aggregate({ _max: { createdAt: true } }),
     prisma.waWebhookEvent.count({
-      where: { processedAt: null, createdAt: { lt: new Date(Date.now() - 5 * 60 * 1000) } },
+      where: {
+        processedAt: null,
+        // Abandoned events are terminal, not "still waiting" — leaving them in
+        // this number would make the gauge climb forever with nothing an
+        // operator could do about it.
+        abandonedAt: null,
+        createdAt: { lt: new Date(Date.now() - 5 * 60 * 1000) },
+      },
+    }),
+    prisma.waWebhookEvent.count({ where: { abandonedAt: { not: null } } }),
+    // Counted apart because the severities are not comparable: an abandoned
+    // STATUS is usually benign (a WAMID this system never held), an abandoned
+    // MESSAGE means a customer wrote to us and it was never stored.
+    prisma.waWebhookEvent.count({
+      where: { abandonedAt: { not: null }, eventType: 'message' },
     }),
     getSignatureFailures(),
     opts.checkSubscription ? checkWebhookSubscription() : Promise.resolve(null),
@@ -354,6 +375,8 @@ export async function getWebhookHealth(
     // a misconfigured deployment sits in from day one.
     stale: ageMinutes === null || ageMinutes >= staleAfterMinutes,
     unprocessed,
+    abandoned,
+    abandonedMessages,
     signatureFailures24h: sigFail.count,
     lastSignatureFailureAt: sigFail.lastAt,
     subscribed,
@@ -384,9 +407,15 @@ export async function listWebhookEvents(filters: WebhookEventFilters) {
   const limit = Math.min(100, Math.max(1, filters.limit ?? 50));
   const where: Prisma.WaWebhookEventWhereInput = {
     ...(filters.eventType ? { eventType: filters.eventType } : {}),
-    ...(filters.state === 'processed' ? { processedAt: { not: null } } : {}),
-    ...(filters.state === 'unprocessed' ? { processedAt: null } : {}),
-    ...(filters.state === 'deferred' ? { processedAt: null, deferAttempts: { gt: 0 } } : {}),
+    // `processed` and `unprocessed` both exclude abandoned rows: an event that was
+    // given up on is neither, and it used to masquerade as processed because the
+    // retirement path stamped the success field.
+    ...(filters.state === 'processed' ? { processedAt: { not: null }, abandonedAt: null } : {}),
+    ...(filters.state === 'unprocessed' ? { processedAt: null, abandonedAt: null } : {}),
+    ...(filters.state === 'deferred'
+      ? { processedAt: null, abandonedAt: null, deferAttempts: { gt: 0 } }
+      : {}),
+    ...(filters.state === 'abandoned' ? { abandonedAt: { not: null } } : {}),
     ...(filters.from || filters.to
       ? {
           createdAt: {
@@ -408,6 +437,11 @@ export async function listWebhookEvents(filters: WebhookEventFilters) {
         wamid: true,
         signatureOk: true,
         processedAt: true,
+        // Without these the panel cannot tell an abandoned event from a processed
+        // one — which is the whole bug: it rendered a green "Processed" chip for
+        // a message that was never stored.
+        abandonedAt: true,
+        abandonReason: true,
         deferAttempts: true,
         lastAttemptAt: true,
         createdAt: true,

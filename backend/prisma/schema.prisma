@@ -889,6 +889,21 @@ model WaWebhookEvent {
   /// recoverable ones out of the window entirely.
   deferAttempts Int       @default(0)
   lastAttemptAt DateTime?
+  /// Permanently given up on, after exhausting the replay budget.
+  ///
+  /// This used to be recorded by stamping `processedAt` — the same field a
+  /// SUCCESS sets. So a webhook that was never handled reported success on every
+  /// operator-facing surface at once: a green "Processed" chip, no filter that
+  /// could find it, the unprocessed gauge back at zero, and the one recovery
+  /// control (resetWebhookEventForReprocess) unaimable at it. The payload is then
+  /// pruned at 14 days and the event is gone.
+  ///
+  /// The retirement path was written for a benign case — statuses referencing
+  /// WAMIDs this system will never hold — but a MESSAGES batch reaching it means
+  /// a customer's message was destroyed, and that has to be visible.
+  abandonedAt   DateTime?
+  /// Why it was abandoned, so the benign case is distinguishable at a glance.
+  abandonReason String?
 
   /// No @@index([wamid]) either. Dedup is keyed off `WaMessage.wamid`, which is
   /// `@unique`; the copy held here is denormalised for the event browser's list

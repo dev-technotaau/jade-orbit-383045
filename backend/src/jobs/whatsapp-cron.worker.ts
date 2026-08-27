@@ -837,21 +837,51 @@ export async function handleWaEventRecovery(): Promise<void> {
   });
 
   // Retire anything that has exhausted its attempts, so it stops competing for the
-  // window. Marked processed rather than deleted: the payload is the only record
-  // that the event arrived at all.
-  const exhausted = await prisma.waWebhookEvent.updateMany({
-    where: {
-      processedAt: null,
-      signatureOk: true,
-      deferAttempts: { gte: MAX_DEFER_ATTEMPTS },
-    },
-    data: { processedAt: new Date() },
+  // window. Kept, never deleted: the payload is the only record that the event
+  // arrived at all.
+  //
+  // Stamped `abandonedAt`, NOT `processedAt`. Using the success field meant an
+  // event that was never handled reported success everywhere an operator could
+  // look — green chip, no filter that finds it, unprocessed gauge back to zero —
+  // and then had its payload pruned at 14 days. The retirement path was written
+  // for a benign case (statuses for WAMIDs this system will never hold), but a
+  // MESSAGES batch reaching it means a customer message was destroyed, so the
+  // two are recorded separately.
+  const exhaustedWhere = {
+    processedAt: null,
+    abandonedAt: null,
+    signatureOk: true,
+    deferAttempts: { gte: MAX_DEFER_ATTEMPTS },
+  };
+  const doomed = await prisma.waWebhookEvent.findMany({
+    where: exhaustedWhere,
+    select: { id: true, eventType: true },
   });
-  if (exhausted.count > 0) {
-    logger.warn(
-      `WhatsApp event recovery: gave up on ${exhausted.count} event(s) after ` +
-        `${MAX_DEFER_ATTEMPTS} replays — they reference WAMIDs this system does not hold`
-    );
+  if (doomed.length > 0) {
+    const messageEvents = doomed.filter((e) => e.eventType === 'message');
+    await prisma.waWebhookEvent.updateMany({
+      where: exhaustedWhere,
+      data: {
+        abandonedAt: new Date(),
+        abandonReason: `exhausted ${MAX_DEFER_ATTEMPTS} replays`,
+      },
+    });
+    // A message batch that dies here is a lost customer message, which is a
+    // different severity from an unmatched status and is logged as one.
+    if (messageEvents.length > 0) {
+      logger.error(
+        `WhatsApp event recovery: ABANDONED ${messageEvents.length} inbound MESSAGE event(s) ` +
+          `after ${MAX_DEFER_ATTEMPTS} replays — customer messages were not stored. ` +
+          `Event ids: ${messageEvents.map((e) => e.id).join(', ')}`
+      );
+    }
+    const benign = doomed.length - messageEvents.length;
+    if (benign > 0) {
+      logger.warn(
+        `WhatsApp event recovery: gave up on ${benign} non-message event(s) after ` +
+          `${MAX_DEFER_ATTEMPTS} replays — they reference WAMIDs this system does not hold`
+      );
+    }
   }
 
   if (stuck.length === 0) return;

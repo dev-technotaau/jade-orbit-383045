@@ -1711,6 +1711,13 @@ export interface WaInboundWebhookEvent {
   wamid: string | null;
   signatureOk: boolean;
   processedAt: string | null;
+  /**
+   * Given up on after exhausting the replay budget — terminal, never retried.
+   * Distinct from `processedAt`, which the retirement path used to stamp, making
+   * a permanently-failed event indistinguishable from a successful one.
+   */
+  abandonedAt?: string | null;
+  abandonReason?: string | null;
   deferAttempts: number;
   lastAttemptAt: string | null;
   createdAt: string;

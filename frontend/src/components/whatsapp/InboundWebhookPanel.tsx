@@ -27,8 +27,14 @@ function formatWhen(iso: string | null): string {
   return new Date(iso).toLocaleString();
 }
 
-/** Processed / unprocessed / deferred, as a single readable state chip. */
+/** Abandoned / processed / deferred / pending, as a single readable state chip. */
 function eventState(e: WaInboundWebhookEvent): { label: string; className: string } {
+  // Checked FIRST, and deliberately so. Giving up on an event used to be recorded
+  // by stamping `processedAt` — the success field — so a webhook that was never
+  // handled showed a green "Processed" chip here, no filter could find it, and
+  // its payload was pruned at 14 days. An abandoned MESSAGE event means a
+  // customer wrote to us and it was never stored; that has to be red.
+  if (e.abandonedAt) return { label: 'Abandoned', className: 'bg-red-100 text-red-700' };
   if (e.processedAt) return { label: 'Processed', className: 'bg-emerald-100 text-emerald-700' };
   if (e.deferAttempts > 0) return { label: 'Deferred', className: 'bg-amber-100 text-amber-800' };
   return { label: 'Pending', className: 'bg-gray-100 text-gray-600' };
@@ -303,6 +309,7 @@ export default function InboundWebhookPanel() {
                   { value: 'processed', label: 'Processed' },
                   { value: 'unprocessed', label: 'Unprocessed' },
                   { value: 'deferred', label: 'Deferred (retrying)' },
+                  { value: 'abandoned', label: 'Abandoned (given up)' },
                 ]}
                 value={state}
                 onChange={(v) => setState(v)}
