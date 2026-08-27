@@ -2171,11 +2171,14 @@ export default function SuperAdminWhatsappInboxPage() {
       conversationId: string;
       wamid?: string;
       status?: WaMessageStatus;
+      /** Why it failed, when it did. Null on every non-FAILED transition. */
+      errorTitle?: string | null;
+      errorDetails?: string | null;
     }) => {
       if (data.conversationId !== selectedId || !data.wamid || !data.status) return;
       // Patch the matching bubble's status in place (grey → ✓ → ✓✓ → blue) —
       // the payload carries {wamid,status}, so no thread refetch is needed.
-      const { wamid, status } = data;
+      const { wamid, status, errorTitle, errorDetails } = data;
       let matched = false;
       qc.setQueriesData(
         { queryKey: ['wa-messages', selectedId] },
@@ -2190,11 +2193,29 @@ export default function SuperAdminWhatsappInboxPage() {
             // merely sent.
             if (STATUS_RANK[status] <= STATUS_RANK[m.status]) return m;
             changed = true;
-            return { ...m, status };
+            // The reason travels with the status. Without it the bubble turned
+            // red and said nothing — its error line has a truthiness guard, so
+            // a null reason renders as an unexplained failure that only a
+            // reload could account for.
+            return {
+              ...m,
+              status,
+              ...(errorTitle !== undefined ? { errorTitle: errorTitle ?? null } : {}),
+              ...(errorDetails !== undefined ? { errorDetails: errorDetails ?? null } : {}),
+            };
           });
           return changed ? { ...old, data: { ...old.data, items } } : old;
         },
       );
+      // A send that failed while the operator was watching. The bubble turns
+      // red, which a sighted user sees and a screen-reader user does not —
+      // and a permanently rejected message is precisely the transition that
+      // needs acting on.
+      if (matched && status === 'FAILED' && liveRegionRef.current) {
+        liveRegionRef.current.textContent = `Message failed to send${
+          errorTitle ? `: ${errorTitle}` : ''
+        }`;
+      }
       // Nothing to patch yet — hold it for the row that is still in flight.
       if (!matched) {
         const orphans = orphanStatusRef.current;
@@ -4071,6 +4092,13 @@ export default function SuperAdminWhatsappInboxPage() {
                   // article, which these bubbles are not. The live announcements
                   // ride on the separate region below, not on this container.
                   role="log"
+                  // `log` carries an IMPLICIT polite live value, so declaring
+                  // nothing here made the whole container live: the entire first
+                  // page on open, and a slab of history on every "Load older
+                  // messages", read aloud as if newly arrived. The announcements
+                  // ride on the dedicated region below instead, one sentence per
+                  // event that actually happened.
+                  aria-live="off"
                   aria-label={`Conversation with ${displayName(selected.contact)}`}
                   className="relative min-h-0 flex-1 space-y-2 overflow-y-auto p-4"
                 >

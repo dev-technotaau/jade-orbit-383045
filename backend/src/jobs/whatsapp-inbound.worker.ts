@@ -1530,7 +1530,21 @@ async function processStatuses(value: any): Promise<boolean> {
   for (const e of emits) {
     emitWa(
       'wa:status',
-      { wamid: e.wamid, status: e.status, conversationId: e.conversationId },
+      {
+        wamid: e.wamid,
+        status: e.status,
+        conversationId: e.conversationId,
+        // The reason travels WITH the status.
+        //
+        // Both were already built for the external webhook below and withheld
+        // from the socket, so a Meta-side FAILED patched the open thread's
+        // bubble to FAILED with a null reason — the bubble's error line has a
+        // truthiness guard, so it rendered nothing at all, and the operator
+        // watching that thread saw a message go red and say nothing. Only a
+        // reload (which re-reads the row) explained it.
+        errorTitle: e.errorTitle,
+        errorDetails: e.errorDetails,
+      },
       e.conversationId
     );
     // The same transition, fanned out to external subscribers. Delivery state
