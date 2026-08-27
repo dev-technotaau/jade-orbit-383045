@@ -381,6 +381,14 @@ model WaConversation {
   /// thing". None of them says "this is the thread I am working today", which is
   /// what an operator reaches for a pin to mean.
   pinnedAt       DateTime?
+  /// Silence this thread's desktop notification and beep until this time.
+  ///
+  /// NOT a snooze. A snooze removes the thread from the active queue and stops
+  /// it counting; a mute changes nothing about placement, unread count or
+  /// triage state — it only stops the alert. The two were conflated because
+  /// only one existed, so an operator who wanted quiet from one noisy thread had
+  /// to hide it, and then missed the message that mattered.
+  mutedUntil     DateTime?
   snoozedUntil       DateTime? // hidden from the active queue until this time
   labels             String[]             @default([]) // triage labels
   archivedAt         DateTime? // soft-archive (hidden from default views)
@@ -548,6 +556,13 @@ model WaMessage {
   /// category the message ACTUALLY went out under cannot change after the fact.
   templateCategory   WaTemplateCategory?
   contextWamid       String? // reply-to (threading)
+  /// Flagged by an operator for later reference.
+  ///
+  /// Independent of the conversation-level pin: a pin says "this thread is what
+  /// I am working on", a star says "THIS message is the one that matters" — the
+  /// address, the order number, the promise someone made. Finding it again meant
+  /// scrolling a thread that can run to thousands of messages.
+  starredAt          DateTime?
   /// Everything else Meta put in the inbound `context` object.
   ///
   /// Only `context.id` was kept, and the rest of that object is the part that
@@ -633,6 +648,9 @@ model WaMessage {
   /// campaign batch, drip tick, Chatwoot bridge), so it must not fall back to
   /// the contactId-only index and filter the contact's whole history in memory.
   @@index([contactId, templateCategory, createdAt])
+  /// Serves the starred-messages view for one thread. Sparse, so ASC (NULLS
+  /// LAST in Postgres) keeps the unstarred majority out of the way.
+  @@index([conversationId, starredAt])
 }
 
 /// Mirror of a Meta message template + lifecycle/quality/analytics.

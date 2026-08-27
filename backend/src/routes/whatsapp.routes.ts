@@ -753,6 +753,16 @@ router.post(
   ctrl.sendReaction
 );
 router.post(
+  '/conversations/:id/mute',
+  audit('WA_MUTE_CONVERSATION', 'WaConversation'),
+  ctrl.muteConversation
+);
+router.post(
+  '/conversations/:id/messages/:messageId/star',
+  audit('WA_STAR_MESSAGE', 'WaMessage'),
+  ctrl.starMessage
+);
+router.post(
   '/conversations/:id/pin',
   audit('WA_PIN_CONVERSATION', 'WaConversation'),
   ctrl.pinConversation

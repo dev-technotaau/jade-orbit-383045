@@ -29,7 +29,8 @@ type BulkConvAction =
   | 'snooze'
   | 'unsnooze'
   | 'assign'
-  | 'addLabel';
+  | 'addLabel'
+  | 'removeLabel';
 
 interface BulkActionBarProps {
   /** Page-selected conversation ids. */
@@ -300,6 +301,25 @@ export default function BulkActionBar({
           className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1 text-[11px] font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] disabled:opacity-60"
         >
           <Tag className="h-3.5 w-3.5" /> Label
+        </button>
+        {/* The inverse the bar never had. A label applied to the wrong selection
+            could only be taken off one thread at a time, in the single-thread
+            editor — for a bulk action that can touch thousands. */}
+        <button
+          type="button"
+          onClick={async () => {
+            const label = (
+              await promptDialog({
+                title: 'Remove label',
+                label: 'Label to remove from the selected conversations',
+              })
+            )?.trim();
+            if (label) run('removeLabel', { label });
+          }}
+          disabled={busy}
+          className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1 text-[11px] font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] disabled:opacity-60"
+        >
+          <Tag className="h-3.5 w-3.5 opacity-50" /> Unlabel
         </button>
         <button
           type="button"

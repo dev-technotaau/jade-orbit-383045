@@ -618,7 +618,8 @@ export type BulkConversationAction =
   | 'snooze'
   | 'unsnooze'
   | 'assign'
-  | 'addLabel';
+  | 'addLabel'
+  | 'removeLabel';
 
 /**
  * Apply one action to many conversations atomically. Selection is EITHER an
@@ -626,6 +627,43 @@ export type BulkConversationAction =
  * same filters the inbox list uses — "select all N matching"). All actions are a
  * single updateMany (no per-row loop), so large selections are fast + atomic.
  */
+/**
+ * Rows per statement for a bulk action that inlines ids.
+ *
+ * Postgres caps a statement at 65535 bind parameters and `Prisma.join` emits one
+ * per id, so an unchunked "select all matching" fails hard on a large inbox —
+ * at the point where the operator has already confirmed the action.
+ */
+const CONV_BULK_CHUNK = 5000;
+
+/**
+ * Page a conversation query by id and hand each chunk to `fn`.
+ *
+ * Explicit `id > cursor`, not Prisma's cursor/skip:1: Prisma resolves that
+ * cursor by id alone, ignoring `where`, then applies OFFSET 1 — which is only
+ * correct while the cursor row still matches the predicate. Callers here MUTATE
+ * the rows they just processed, so after the first chunk it no longer does, and
+ * the offset silently eats the first unprocessed row of every following page.
+ */
+async function forEachConversationIdChunk(
+  where: Prisma.WaConversationWhereInput,
+  fn: (ids: string[]) => Promise<void>
+): Promise<void> {
+  let cursor: string | undefined;
+  for (;;) {
+    const page: Array<{ id: string }> = await prisma.waConversation.findMany({
+      where: cursor ? { AND: [where, { id: { gt: cursor } }] } : where,
+      select: { id: true },
+      orderBy: { id: 'asc' },
+      take: CONV_BULK_CHUNK,
+    });
+    if (page.length === 0) return;
+    cursor = page[page.length - 1].id;
+    await fn(page.map((r) => r.id));
+    if (page.length < CONV_BULK_CHUNK) return;
+  }
+}
+
 export async function bulkUpdate(opts: {
   action: BulkConversationAction;
   ids?: string[];
@@ -676,6 +714,26 @@ export async function bulkUpdate(opts: {
         where: { AND: [where, { NOT: { labels: { has: opts.label } } }] },
         data: { labels: { push: opts.label } },
       });
+    case 'removeLabel': {
+      if (!opts.label) return { count: 0 };
+      // The inverse `addLabel` never had. A bulk label applied to the wrong
+      // selection could only be undone one thread at a time, through the
+      // single-thread label editor.
+      //
+      // Chunked and raw for the same two reasons the contacts-side `untag` is:
+      // Prisma has no scalar-list "pull", and `Prisma.join` emits one bind
+      // parameter per id against Postgres's 65535 cap — so "select all matching"
+      // over a large inbox would fail outright, after the operator confirmed.
+      let count = 0;
+      await forEachConversationIdChunk(
+        { AND: [where, { labels: { has: opts.label } }] },
+        async (ids) => {
+          await prisma.$executeRaw`UPDATE "WaConversation" SET labels = array_remove(labels, ${opts.label}), "updatedAt" = NOW() WHERE id IN (${Prisma.join(ids)})`;
+          count += ids.length;
+        }
+      );
+      return { count };
+    }
     default:
       return { count: 0 };
   }
@@ -1325,6 +1383,45 @@ export async function setPin(conversationId: string, pinned: boolean) {
   });
   emitWa('wa:conversation', { conversationId, conversation: conv }, conversationId);
   return conv;
+}
+
+/**
+ * Silence one thread's notifications until a time.
+ *
+ * NOT a snooze, and the difference is the whole point: a snooze removes the
+ * thread from the active queue and stops it counting, so an operator who wanted
+ * quiet from one chatty customer had to HIDE the thread — and then missed the
+ * message that mattered. A mute touches neither placement, nor `unreadCount`,
+ * nor status. It stops the beep and the desktop notification, nothing else.
+ */
+export async function setMute(conversationId: string, mutedUntil: Date | null) {
+  const conv = await prisma.waConversation.update({
+    where: { id: conversationId },
+    data: { mutedUntil },
+  });
+  emitWa('wa:conversation', { conversationId, conversation: conv }, conversationId);
+  return conv;
+}
+
+/**
+ * Star or unstar one message.
+ *
+ * Independent of the conversation pin: a pin says "this thread is what I am
+ * working on", a star says "THIS message is the one that matters" — the
+ * address, the order number, the promise somebody made. Finding it again meant
+ * scrolling a thread that can run to thousands of messages, which is why
+ * operators were copying such things into a note instead.
+ *
+ * Emits `wa:message` so other open tabs reflect it, matching how every other
+ * per-message change is announced.
+ */
+export async function setMessageStar(messageId: string, starred: boolean) {
+  const msg = await prisma.waMessage.update({
+    where: { id: messageId },
+    data: { starredAt: starred ? new Date() : null },
+  });
+  emitWa('wa:message', { conversationId: msg.conversationId, message: msg }, msg.conversationId);
+  return msg;
 }
 
 export async function setSnooze(conversationId: string, snoozedUntil: Date | null) {

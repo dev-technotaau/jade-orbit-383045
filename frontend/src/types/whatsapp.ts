@@ -61,6 +61,13 @@ export interface WaConversation {
   resolvedAt: string | null;
   /** Pinned to the top of the inbox; null when not pinned. */
   pinnedAt?: string | null;
+  /**
+   * Notifications silenced until this instant; null when not muted.
+   *
+   * Distinct from a snooze: a mute changes nothing about placement, unread count
+   * or status — it only stops the alert.
+   */
+  mutedUntil?: string | null;
   snoozedUntil: string | null;
   /** Automated replies are suppressed on this thread until this time. */
   botPausedUntil?: string | null;
@@ -144,6 +151,8 @@ export interface WaMessage {
   mediaArchiveStatus?: string | null;
   templateName: string | null;
   contextWamid: string | null;
+  /** Flagged by an operator for later reference; null when not starred. */
+  starredAt?: string | null;
   /**
    * The rest of Meta's inbound `context` object (`id` lives in `contextWamid`).
    *

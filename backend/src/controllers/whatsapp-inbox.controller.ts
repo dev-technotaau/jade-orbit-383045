@@ -758,6 +758,48 @@ export const setBotPause = async (
   }
 };
 
+/**
+ * Mute/unmute a conversation's notifications until a time.
+ *
+ * `mutedUntil: null` unmutes. Deliberately a time rather than a boolean: a mute
+ * that never expires is one an operator sets in a busy hour and then forgets,
+ * and the thread goes quiet for good.
+ */
+export const muteConversation = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const raw = req.body.mutedUntil;
+    const until = raw ? new Date(String(raw)) : null;
+    if (until && Number.isNaN(until.getTime())) {
+      throw new AppError('Invalid mute expiry', 400, 'WA_INVALID_MUTE');
+    }
+    const conv = await conversationService.setMute(String(req.params.id), until);
+    res.json({ success: true, data: conv });
+  } catch (e) {
+    next(e);
+  }
+};
+
+/** Star/unstar a single message for later reference. */
+export const starMessage = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const msg = await conversationService.setMessageStar(
+      String(req.params.messageId),
+      req.body.starred !== false
+    );
+    res.json({ success: true, data: msg });
+  } catch (e) {
+    next(e);
+  }
+};
+
 /** Pin/unpin a conversation to the top of the inbox. */
 export const pinConversation = async (
   req: Request,
@@ -1730,6 +1772,9 @@ export const startConversation = async (
     const result = await startConversationWithTemplate({
       phone: String(req.body.phone),
       actorUserId: req.user!.id,
+      // Which of our connected numbers to open the thread from. Absent, the
+      // default is used, which is what a single-number install always wants.
+      channelId: req.body.channelId ? String(req.body.channelId) : undefined,
       templateId: String(req.body.templateId),
       bodyParams: req.body.bodyParams,
       bodyNamedParams: req.body.bodyNamedParams,

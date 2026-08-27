@@ -920,7 +920,19 @@ async function processMessages(value: any): Promise<MessagesOutcome> {
     // been launched (RUNNING/COMPLETED), mark the reply and bump the counter.
     await recordCampaignReply(contact.id, createdAt).catch(() => {});
 
-    emitWa('wa:message', { conversationId: conversation.id, message }, conversation.id);
+    // `mutedUntil` rides along so the notification provider can stay quiet
+    // without a round-trip. It has only the message and a conversation id, so
+    // without this it would have to fetch the thread to find out whether the
+    // operator asked for silence — on every inbound, on every open tab.
+    emitWa(
+      'wa:message',
+      {
+        conversationId: conversation.id,
+        message,
+        mutedUntil: touchedConversation?.mutedUntil ?? null,
+      },
+      conversation.id
+    );
 
     // ── Identity reconciliation (system notices + identity changes) ─────────
     // Runs AFTER the row is written and announced, so the notice is visible in

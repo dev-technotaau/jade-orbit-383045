@@ -64,9 +64,19 @@ export default function WaNotificationsProvider() {
 
   useEffect(() => {
     if (!socket) return;
-    const onMessage = (data: { conversationId: string; message?: WaMessage }) => {
+    const onMessage = (data: {
+      conversationId: string;
+      message?: WaMessage;
+      /** ISO instant this thread is muted until, or null. Rides on the event. */
+      mutedUntil?: string | null;
+    }) => {
       const message = data.message;
       if (!message || message.direction !== 'INBOUND') return;
+      // Muted. Nothing else changes — the thread keeps its place, its unread
+      // count and its badge; the operator asked for quiet, not for it to be
+      // hidden. That distinction is the whole reason mute exists separately
+      // from snooze.
+      if (data.mutedUntil && new Date(data.mutedUntil).getTime() > Date.now()) return;
       // Stay quiet only when the operator is demonstrably reading this exact
       // thread: on the inbox, with it open, in a visible tab. `?c=` is read from
       // the URL on every event rather than subscribed to, so switching threads

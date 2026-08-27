@@ -1655,8 +1655,23 @@ export async function startConversationWithTemplate(input: {
   carouselCards?: TemplateSendCarouselCard[];
   /** Tag the contact this creates as a test recipient (campaign test-send). */
   testSend?: boolean;
+  /**
+   * Which connected number to start the thread FROM.
+   *
+   * A WABA can carry several and this always used the default one, so on a
+   * multi-number install a new conversation could not be opened from the
+   * marketing number at all — the whole point of connecting it.
+   *
+   * Narrower than it looks: `getConversationForOutbound` reuses the contact's
+   * most recently active thread whatever number it is on, so this only decides
+   * where a contact with NO thread starts. Meta cannot move history between
+   * numbers and neither can we.
+   */
+  channelId?: string;
 }) {
-  const channel = await getDefaultChannel();
+  const channel = input.channelId
+    ? await prisma.waChannel.findUnique({ where: { id: input.channelId } })
+    : await getDefaultChannel();
   if (!channel) throw new AppError('WhatsApp is not configured', 400, 'WA_NOT_CONFIGURED');
   const contact = await upsertContactByPhone(input.phone, {});
   if (input.testSend && !contact.tags.includes(WA_TEST_CONTACT_TAG)) {

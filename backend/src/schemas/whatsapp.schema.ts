@@ -228,6 +228,13 @@ export const waSendTemplateSchema = z.object({
 export const waStartConversationSchema = z.object({
   body: z.object({
     phone: z.string().min(8).max(20),
+    /**
+     * Which connected number to start FROM. Omitted, the default is used.
+     *
+     * Declared here or zod strips it — the object is strip-by-default, so the
+     * choice would be dropped before the controller ever saw it.
+     */
+    channelId: z.string().uuid().optional(),
     ...templateSendBody,
   }),
 });
@@ -932,6 +939,9 @@ export const waBulkConversationsSchema = z.object({
       'unsnooze',
       'assign',
       'addLabel',
+      // The inverse `addLabel` never had — a mis-applied bulk label could only
+      // be undone one thread at a time.
+      'removeLabel',
     ]),
     ...bulkSelection,
     // These have to mirror the inbox list's filters exactly. A filter the list

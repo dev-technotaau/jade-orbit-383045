@@ -30,6 +30,8 @@ import {
   Clock,
   Reply,
   X,
+  Bell,
+  BellOff,
   CalendarClock,
   CornerUpRight,
   FileText,
@@ -535,6 +537,7 @@ function MessageBubble({
   onRetry,
   retrying,
   onReply,
+  onToggleStar,
   quotedText,
   selectionMode,
   selected,
@@ -571,6 +574,8 @@ function MessageBubble({
   /** Drop a queued-offline reply without sending it. */
   onDiscardQueued?: () => void;
   onReply?: (message: WaMessage) => void;
+  /** Toggle this message's star. Absent for rows that have no server id yet. */
+  onToggleStar?: (message: WaMessage) => void;
   /** Resolved text/label of the message this one replies to (contextWamid). */
   quotedText?: string;
   /** Multi-select (delete) mode: bubbles become selectable checkboxes. */
@@ -647,6 +652,8 @@ function MessageBubble({
                     onCopy={() => onCopy(message.text)}
                     onDelete={() => onDelete(message.id)}
                     onSelect={() => onStartSelect(message.id)}
+                    starred={!!message.starredAt}
+                    onToggleStar={onToggleStar ? () => onToggleStar(message) : undefined}
                     align="end"
                   />
                 </div>
@@ -806,6 +813,18 @@ function MessageBubble({
                   outbound ? 'text-white/70' : 'text-[var(--text-muted)]',
                 )}
               >
+                {/* Visible without hovering, or a starred message is
+                    indistinguishable from any other and the star is only
+                    findable by the operator who set it. */}
+                {message.starredAt && (
+                  <Star
+                    className={cn(
+                      'h-3 w-3 fill-current',
+                      outbound ? 'text-amber-200' : 'text-amber-500',
+                    )}
+                    aria-label="Starred"
+                  />
+                )}
                 {fmtTime(message.createdAt)}
                 {offlineQueued ? (
                   <span className="inline-flex items-center gap-1" title="Waiting for connection">
@@ -854,6 +873,8 @@ function MessageBubble({
                     onCopy={() => onCopy(message.text)}
                     onDelete={() => onDelete(message.id)}
                     onSelect={() => onStartSelect(message.id)}
+                    starred={!!message.starredAt}
+                    onToggleStar={onToggleStar ? () => onToggleStar(message) : undefined}
                     align="start"
                   />
                 </div>
@@ -2829,6 +2850,40 @@ export default function SuperAdminWhatsappInboxPage() {
     onError: (e) => showToast.error(errorMessage(e, 'Could not pin this conversation')),
   });
 
+  /**
+   * Mute for a fixed span, or unmute.
+   *
+   * Offered as durations rather than a picker: the operator muting a thread is
+   * mid-triage and wants it to stop, not to reason about a datetime.
+   */
+  const muteMut = useMutation({
+    mutationFn: (hours: number | null) =>
+      svc.muteConversation(
+        selectedId as string,
+        hours === null ? null : new Date(Date.now() + hours * 3600_000).toISOString(),
+      ),
+    onSuccess: (_r, hours) => {
+      qc.invalidateQueries({ queryKey: ['wa-conversations'] });
+      qc.invalidateQueries({ queryKey: ['wa-conversation', selectedId] });
+      showToast.success(
+        hours === null
+          ? 'Notifications back on'
+          : `Muted for ${hours < 24 ? `${hours}h` : `${hours / 24}d`} — the thread stays in the queue`,
+      );
+    },
+    onError: (e) => showToast.error(errorMessage(e, 'Could not mute this conversation')),
+  });
+  const muteMenuRef = useRef<HTMLDivElement>(null);
+  const [muteOpen, setMuteOpen] = useState(false);
+  useClickOutside(muteMenuRef, () => setMuteOpen(false), muteOpen);
+
+  const starMut = useMutation({
+    mutationFn: (v: { messageId: string; starred: boolean }) =>
+      svc.starMessage(selectedId as string, v.messageId, v.starred),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['wa-messages', selectedId] }),
+    onError: (e) => showToast.error(errorMessage(e, 'Could not star that message')),
+  });
+
   const archiveMut = useMutation({
     mutationFn: (archived: boolean) => svc.archiveConversation(selectedId as string, archived),
     onSuccess: (_res, archived) => {
@@ -2981,6 +3036,11 @@ export default function SuperAdminWhatsappInboxPage() {
   }, []);
   const selectedSnoozed =
     !!selected?.snoozedUntil && new Date(selected.snoozedUntil).getTime() > nowTs;
+  // Same 60s tick, so a mute that lapses turns the bell back on by itself rather
+  // than waiting for the next navigation. `nowTs` starts at 0, which reads as
+  // "not muted" for one frame — the honest direction to be wrong in, since the
+  // alternative would silence a thread that is not muted.
+  const selectedMuted = !!selected?.mutedUntil && new Date(selected.mutedUntil).getTime() > nowTs;
   // Time left on the 24h free-form window, recomputed on the same 60s tick so the
   // header chip counts down live. `nowTs` starts unset so the first paint matches
   // the server; measuring against 0 would flash a ~500,000h countdown, so the chip
@@ -3551,6 +3611,74 @@ export default function SuperAdminWhatsappInboxPage() {
                       </div>
                     )}
                   </div>
+                  <div className="relative" ref={muteMenuRef}>
+                    <Tooltip
+                      content={
+                        selectedMuted
+                          ? `Muted until ${new Date(selected.mutedUntil as string).toLocaleString()}`
+                          : 'Mute notifications'
+                      }
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setMuteOpen((v) => !v)}
+                        disabled={muteMut.isPending}
+                        aria-label="Mute notifications"
+                        aria-haspopup="menu"
+                        aria-expanded={muteOpen}
+                        className={cn(
+                          'rounded-md border border-[var(--border)] px-2 py-1 text-xs hover:bg-[var(--bg-secondary)] disabled:opacity-60',
+                          selectedMuted ? 'text-amber-600' : 'text-[var(--text-secondary)]',
+                        )}
+                      >
+                        {selectedMuted ? (
+                          <BellOff className="h-4 w-4" />
+                        ) : (
+                          <Bell className="h-4 w-4" />
+                        )}
+                      </button>
+                    </Tooltip>
+                    {muteOpen && (
+                      <div
+                        role="menu"
+                        aria-label="Mute for"
+                        className="absolute top-9 right-0 z-30 w-44 rounded-lg border border-[var(--border)] bg-white p-1 shadow-lg"
+                      >
+                        {[
+                          { label: 'Mute for 1 hour', hours: 1 },
+                          { label: 'Mute for 8 hours', hours: 8 },
+                          { label: 'Mute for 24 hours', hours: 24 },
+                          { label: 'Mute for a week', hours: 24 * 7 },
+                        ].map((opt) => (
+                          <button
+                            key={opt.hours}
+                            type="button"
+                            role="menuitem"
+                            onClick={() => {
+                              muteMut.mutate(opt.hours);
+                              setMuteOpen(false);
+                            }}
+                            className="block w-full rounded px-2 py-1.5 text-left text-xs text-[var(--text)] hover:bg-[var(--bg-secondary)]"
+                          >
+                            {opt.label}
+                          </button>
+                        ))}
+                        {selected.mutedUntil && (
+                          <button
+                            type="button"
+                            role="menuitem"
+                            onClick={() => {
+                              muteMut.mutate(null);
+                              setMuteOpen(false);
+                            }}
+                            className="mt-0.5 block w-full rounded border-t border-[var(--border)] px-2 py-1.5 text-left text-xs font-medium text-emerald-700 hover:bg-[var(--bg-secondary)]"
+                          >
+                            Unmute
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
                   <Tooltip content={selected.pinnedAt ? 'Unpin' : 'Pin to top'}>
                     <button
                       type="button"
@@ -3839,6 +3967,17 @@ export default function SuperAdminWhatsappInboxPage() {
                             )
                           }
                           onReply={(msg) => setReplyTo(msg)}
+                          // Optimistic rows have no server id yet, so the menu
+                          // item is hidden rather than offered and then failing.
+                          onToggleStar={
+                            m.id.startsWith(OPTIMISTIC_PREFIX)
+                              ? undefined
+                              : (msg) =>
+                                  starMut.mutate({
+                                    messageId: msg.id,
+                                    starred: !msg.starredAt,
+                                  })
+                          }
                           quotedText={m.contextWamid ? wamidToText.get(m.contextWamid) : undefined}
                           selectionMode={selectionMode}
                           selected={selectedMessageIds.has(m.id)}

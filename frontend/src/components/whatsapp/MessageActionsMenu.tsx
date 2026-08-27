@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { MoreVertical, Copy, Trash2, CheckSquare } from 'lucide-react';
+import { MoreVertical, Copy, Trash2, CheckSquare, Star } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import Tooltip from '@/components/ui/Tooltip';
 
@@ -15,12 +15,17 @@ export default function MessageActionsMenu({
   onCopy,
   onDelete,
   onSelect,
+  starred,
+  onToggleStar,
   align = 'start',
 }: {
   canCopy: boolean;
   onCopy: () => void;
   onDelete: () => void;
   onSelect: () => void;
+  /** Current star state; undefined hides the item (e.g. an unsent optimistic row). */
+  starred?: boolean;
+  onToggleStar?: () => void;
   align?: 'start' | 'end';
 }) {
   const [open, setOpen] = useState(false);
@@ -66,6 +71,20 @@ export default function MessageActionsMenu({
                 className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-[var(--text)] hover:bg-[var(--bg-secondary)]"
               >
                 <Copy className="h-3.5 w-3.5" /> Copy
+              </button>
+            )}
+            {onToggleStar && (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setOpen(false);
+                  onToggleStar();
+                }}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-[var(--text)] hover:bg-[var(--bg-secondary)]"
+              >
+                <Star className={cn('h-3.5 w-3.5', starred && 'fill-amber-500 text-amber-500')} />
+                {starred ? 'Unstar' : 'Star'}
               </button>
             )}
             <button

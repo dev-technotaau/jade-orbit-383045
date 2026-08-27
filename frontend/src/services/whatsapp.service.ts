@@ -380,7 +380,8 @@ export const whatsappService = {
       | 'snooze'
       | 'unsnooze'
       | 'assign'
-      | 'addLabel';
+      | 'addLabel'
+      | 'removeLabel';
     ids?: string[];
     allMatching?: boolean;
     filters?: Record<string, unknown>;
@@ -786,8 +787,14 @@ export const whatsappService = {
   },
 
   // ── Template-based sends ──
+  /**
+   * @param body.channelId Which connected number to open the thread FROM.
+   *   Omitted, the default is used. Narrower than it looks: a contact who
+   *   already has a thread keeps it whatever number it is on, because Meta
+   *   cannot move history between numbers.
+   */
   async startConversation(
-    body: { phone: string } & TemplateSendPayload,
+    body: { phone: string; channelId?: string } & TemplateSendPayload,
   ): Promise<ApiResponse<{ conversationId: string; message: WaMessage }>> {
     const res = await api.post(API.SUPER_ADMIN.WA_START_CONVERSATION, body);
     return res.data;
@@ -1743,6 +1750,28 @@ export const whatsappService = {
    */
   async pinConversation(id: string, pinned: boolean): Promise<ApiResponse<WaConversation>> {
     const res = await api.post(API.SUPER_ADMIN.WA_CONV_PIN(id), { pinned });
+    return res.data;
+  },
+  /**
+   * Silence a thread's notifications until `mutedUntil` (null unmutes).
+   *
+   * A time rather than a boolean on purpose: a mute with no expiry is one an
+   * operator sets in a busy hour and forgets, and the thread goes quiet for good.
+   */
+  async muteConversation(
+    id: string,
+    mutedUntil: string | null,
+  ): Promise<ApiResponse<WaConversation>> {
+    const res = await api.post(API.SUPER_ADMIN.WA_CONV_MUTE(id), { mutedUntil });
+    return res.data;
+  },
+  /** Star/unstar one message for later reference. */
+  async starMessage(
+    conversationId: string,
+    messageId: string,
+    starred: boolean,
+  ): Promise<ApiResponse<WaMessage>> {
+    const res = await api.post(API.SUPER_ADMIN.WA_MSG_STAR(conversationId, messageId), { starred });
     return res.data;
   },
   async archiveConversation(id: string, archived: boolean): Promise<ApiResponse<WaConversation>> {

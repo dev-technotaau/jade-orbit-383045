@@ -1,11 +1,12 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { X, AlertTriangle, Loader2, Trash2, Upload } from 'lucide-react';
 import DialogShell from '@/components/ui/DialogShell';
 import Input from '@/components/ui/Input';
 import PhoneInput from '@/components/ui/PhoneInput';
+import Select from '@/components/ui/Select';
 import Button from '@/components/ui/Button';
 import { showToast } from '@/components/ui/Toast';
 import TemplatePreviewBubble from '@/components/whatsapp/TemplatePreviewBubble';
@@ -101,6 +102,22 @@ export default function TemplateComposeModal({
 }) {
   const qc = useQueryClient();
   const [phone, setPhone] = useState(initialPhone ?? '');
+  /**
+   * Which connected number a NEW thread starts from. '' = the default.
+   *
+   * A WABA can carry several numbers, and this modal always used the default —
+   * so on a multi-number install a conversation could not be opened from the
+   * marketing number at all, which is the entire reason it was connected.
+   */
+  const [fromChannelId, setFromChannelId] = useState('');
+  // Only to decide whether the picker is worth showing. A one-number install
+  // should not be asked a question with one answer.
+  const channelsQuery = useQuery({
+    queryKey: ['wa-channels'],
+    queryFn: () => svc.listChannels(),
+    enabled: mode === 'new',
+  });
+  const channels = channelsQuery.data?.data ?? [];
   // The picked template itself, not just its id: the catalogue is searched
   // server-side now, so there is no local list to look the id up in.
   const [selected, setSelected] = useState<WaTemplate | null>(null);
@@ -499,7 +516,11 @@ export default function TemplateComposeModal({
     mutationFn: async (): Promise<{ conversationId?: string }> => {
       const payload = buildPayload();
       if (mode === 'new') {
-        const res = await svc.startConversation({ phone, ...payload });
+        const res = await svc.startConversation({
+          phone,
+          ...(fromChannelId ? { channelId: fromChannelId } : {}),
+          ...payload,
+        });
         return { conversationId: res.data?.conversationId };
       }
       await svc.sendTemplate(conversationId as string, payload);
@@ -551,6 +572,29 @@ export default function TemplateComposeModal({
               value={phone}
               onChange={(e) => onPhoneChange(e.target.value)}
             />
+          )}
+          {/* Only when there is a choice to make. A single-number install should
+              not be asked a question with one answer. */}
+          {mode === 'new' && channels.length > 1 && (
+            <Select
+              id="wa-from-channel"
+              label="Send from"
+              value={fromChannelId}
+              onChange={(v) => setFromChannelId(v ?? '')}
+              options={[
+                { value: '', label: 'Default number' },
+                ...channels.map((c) => ({
+                  value: c.id,
+                  label: c.displayName ? `${c.displayName} · ${c.displayPhone}` : c.displayPhone,
+                })),
+              ]}
+            />
+          )}
+          {mode === 'new' && channels.length > 1 && (
+            <p className="-mt-2 text-[11px] text-[var(--text-muted)]">
+              Only applies to a brand-new thread. A contact who already has one keeps it, on
+              whichever number it started on — Meta cannot move history between numbers.
+            </p>
           )}
           <TemplatePicker
             label="Template"
