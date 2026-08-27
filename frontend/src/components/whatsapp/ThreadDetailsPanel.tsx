@@ -296,15 +296,27 @@ function ContactCard({
             <span
               className={cn(
                 'min-w-0 flex-1 truncate text-sm font-semibold',
-                contact.name ? 'text-[var(--text)]' : 'text-[var(--text-muted)] italic',
+                contact.name || contact.profileName
+                  ? 'text-[var(--text)]'
+                  : 'text-[var(--text-muted)] italic',
               )}
             >
-              {contact.name || 'No name'}
+              {contact.name || contact.profileName || 'No name'}
             </span>
             <IconButton onClick={startNameEdit} label="Edit contact name">
               <Pencil className="h-3.5 w-3.5" />
             </IconButton>
           </div>
+        )}
+        {/* The customer's OWN WhatsApp name, shown only when it differs from the
+            label above. These were one column until now, and an inbound silently
+            overwrote whatever an operator had typed — so seeing both is what
+            tells an agent that "DO NOT CALL - legal" is our label and the person
+            calls themselves something else. */}
+        {contact.profileName && contact.name && contact.profileName !== contact.name && (
+          <p className="truncate text-[11px] text-[var(--text-muted)]">
+            WhatsApp name: {contact.profileName}
+          </p>
         )}
 
         <div className="flex items-center gap-1">

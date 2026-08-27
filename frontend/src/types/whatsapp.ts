@@ -23,7 +23,10 @@ export type WaOptInStatus = 'UNKNOWN' | 'OPTED_IN' | 'OPTED_OUT';
 export interface WaContactLite {
   id: string;
   phone: string;
+  /** Operator-given name. Written only by updateContact — never by an inbound. */
   name: string | null;
+  /** The customer's own WhatsApp display name, refreshed on every inbound. */
+  profileName?: string | null;
   optInStatus: WaOptInStatus;
   isBlocked: boolean;
   /** Null = this contact has never messaged us. */

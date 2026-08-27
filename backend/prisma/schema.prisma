@@ -229,7 +229,20 @@ model WaContact {
   /// @@unique([channelId, contactId])), which is what actually has to differ.
   phone                String        @unique
   waId                 String? // Meta wa_id
-  name                 String? // profile name from inbound, or admin-set
+  /// The name an OPERATOR gave this contact. Owned by updateContact and by
+  /// nothing else.
+  ///
+  /// This column used to hold both this and the WhatsApp profile name, and the
+  /// inbound upsert overwrote it on every message — so "Acme Corp - Ravi (AP)"
+  /// or "DO NOT CALL - legal" silently reverted to whatever the customer had set
+  /// as their display name, which is an attacker-controlled string. Everything
+  /// downstream reverted with it: the inbox label, conversation search, exports,
+  /// and {{name}} in campaign personalisation.
+  name                 String?
+  /// The customer's own WhatsApp display name, refreshed from every inbound.
+  /// Shown as secondary context and used as the fallback label when no operator
+  /// name exists; never overwrites `name`.
+  profileName          String?
   /// Defaults to OPTED_IN by product decision, so a newly added contact is
   /// immediately reachable by MARKETING templates (the campaign path requires
   /// OPTED_IN, and UNKNOWN silently excluded every new contact from it).

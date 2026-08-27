@@ -169,6 +169,10 @@ function buildConversationListWhere(
           OR: [
             { phone: { contains: params.q } },
             { name: { contains: params.q, mode: 'insensitive' } },
+            // Both names. An operator who renames a contact must still be able
+            // to find them by the WhatsApp display name they know, and a contact
+            // nobody has renamed only HAS a profile name.
+            { profileName: { contains: params.q, mode: 'insensitive' } },
           ],
         }
       : {}),
@@ -268,6 +272,10 @@ export async function list(params: ConversationListFilters & { page?: number; li
             id: true,
             phone: true,
             name: true,
+            // The customer's own WhatsApp display name. `name` is operator-owned
+            // now, so a contact nobody has renamed has only this one — without it
+            // the whole inbox would relabel itself to phone numbers.
+            profileName: true,
             optInStatus: true,
             isBlocked: true,
             // Whether a marketing template is likely to be DELIVERED, which is a
@@ -442,12 +450,34 @@ export async function bulkUpdate(opts: {
  * fast + real-time, rather than fetching every unread conversation to sum
  * client-side.
  */
-export async function getUnreadTotal(): Promise<{ total: number }> {
-  const agg = await prisma.waConversation.aggregate({
-    _sum: { unreadCount: true },
-    where: { archivedAt: null },
-  });
-  return { total: agg._sum.unreadCount ?? 0 };
+/**
+ * Unread total for the sidebar badge.
+ *
+ * Built from the SAME predicate the default inbox view uses, rather than a
+ * hand-written `archivedAt: null`. The two had drifted: the list excludes
+ * snoozed threads and the badge counted them, so an operator could see "3
+ * unread" above a list showing none of them and have no way to reach the
+ * messages. A badge that points at nothing is worse than no badge.
+ *
+ * `snoozedTotal` is returned alongside so the UI can say "3 unread, 1 snoozed"
+ * instead of silently under-reporting — the count is cheap and it is the honest
+ * version of the same answer.
+ */
+export async function getUnreadTotal(): Promise<{ total: number; snoozedTotal: number }> {
+  const [active, snoozed] = await Promise.all([
+    prisma.waConversation.aggregate({
+      _sum: { unreadCount: true },
+      where: buildConversationListWhere({}),
+    }),
+    prisma.waConversation.aggregate({
+      _sum: { unreadCount: true },
+      where: { archivedAt: null, snoozedUntil: { gt: new Date() } },
+    }),
+  ]);
+  return {
+    total: active._sum.unreadCount ?? 0,
+    snoozedTotal: snoozed._sum.unreadCount ?? 0,
+  };
 }
 
 export async function getById(id: string) {
@@ -869,7 +899,7 @@ export async function getTranscriptHeader(conversationId: string) {
   return prisma.waConversation.findUnique({
     where: { id: conversationId },
     include: {
-      contact: { select: { id: true, phone: true, name: true } },
+      contact: { select: { id: true, phone: true, name: true, profileName: true } },
       channel: { select: { id: true, displayPhone: true } },
     },
   });
@@ -912,10 +942,7 @@ export async function* streamTranscriptMessages(
         ...(opts.includeDeleted ? {} : { deletedAt: null }),
         ...(after
           ? {
-              OR: [
-                { createdAt: { gt: after.at } },
-                { createdAt: after.at, id: { gt: after.id } },
-              ],
+              OR: [{ createdAt: { gt: after.at } }, { createdAt: after.at, id: { gt: after.id } }],
             }
           : {}),
       },
@@ -1100,6 +1127,20 @@ export async function applyMessageTouch(
                 AND m."deletedAt" IS NULL
                 AND (c."lastReadAt" IS NULL OR m."createdAt" > c."lastReadAt")
            ),
+           -- A reply ENDS the snooze. Nothing anywhere cleared this, so a thread
+           -- snoozed for 24h that the customer answered five minutes later stayed
+           -- out of the active queue while the sidebar badge counted the unread
+           -- message the list refused to show — and the 24h free-form window
+           -- could close on a reply nobody saw. Same row Postgres is already
+           -- locking for the counters above, so this costs nothing and cannot
+           -- race with them.
+           "snoozedUntil" = NULL,
+           -- A reply also REOPENS a closed thread. Left RESOLVED, the customer's
+           -- follow-up is invisible to a resolved-excluding view and the
+           -- first-response SLA is measured against the wrong episode.
+           "status" = CASE WHEN c."status" = 'RESOLVED' THEN 'OPEN' ELSE c."status" END,
+           "reopenedAt" = CASE WHEN c."status" = 'RESOLVED' THEN ${at}::timestamp ELSE c."reopenedAt" END,
+           "resolvedAt" = CASE WHEN c."status" = 'RESOLVED' THEN NULL ELSE c."resolvedAt" END,
            -- @updatedAt is applied by the Prisma client, so a raw UPDATE has to
            -- stamp it itself.
            "updatedAt" = NOW() AT TIME ZONE 'UTC'

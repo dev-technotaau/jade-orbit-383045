@@ -210,7 +210,13 @@ export const whatsappService = {
   },
 
   /** Total unread messages across the inbox (single aggregate) — sidebar badge. */
-  async getUnreadTotal(): Promise<ApiResponse<{ total: number }>> {
+  /**
+   * `total` counts only what the DEFAULT inbox view shows; `snoozedTotal` is the
+   * unread sitting in snoozed threads. They were one number built from a
+   * different predicate than the list, so the badge could point at messages the
+   * list refused to display.
+   */
+  async getUnreadTotal(): Promise<ApiResponse<{ total: number; snoozedTotal: number }>> {
     const res = await api.get(API.SUPER_ADMIN.WA_UNREAD_TOTAL);
     return res.data;
   },

@@ -168,13 +168,29 @@ function fmtRemaining(ms: number): string {
 function fmtTime(s: string | null): string {
   return s ? new Date(s).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
 }
-function displayName(c: { name: string | null; phone: string }): string {
-  return c.name?.trim() || c.phone;
+/**
+ * What to call this contact.
+ *
+ * `name` is operator-owned and `profileName` is the customer's own WhatsApp
+ * display name — they were one column, and the inbound upsert overwrote the
+ * operator's label on every message. Preferring `name` keeps a deliberate label
+ * ("Acme Corp - Ravi") stable; falling back to `profileName` means a contact
+ * nobody has renamed still reads as a person rather than a phone number.
+ */
+function displayName(c: {
+  name: string | null;
+  profileName?: string | null;
+  phone: string;
+}): string {
+  return c.name?.trim() || c.profileName?.trim() || c.phone;
 }
 
 /** Split a contact's name into first/last words for avatar initials. */
-function avatarNames(c: { name: string | null }): { first: string; last: string } {
-  const nm = (c.name || '').trim();
+function avatarNames(c: { name: string | null; profileName?: string | null }): {
+  first: string;
+  last: string;
+} {
+  const nm = (c.name || c.profileName || '').trim();
   if (!nm) return { first: '', last: '' };
   const parts = nm.split(/\s+/);
   return { first: parts[0] ?? '', last: parts.slice(1).join(' ') };

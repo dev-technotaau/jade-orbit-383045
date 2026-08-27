@@ -286,19 +286,25 @@ export async function upsertContactByPhone(
   // all (a supplied DNC file, a complaint). Inheriting the flag on create is
   // what stops the contacts list showing that person as reachable the moment
   // they first message in.
-  const suppressedAt = (await suppressedPhonesIn([normalized])).has(normalized)
-    ? new Date()
-    : null;
+  const suppressedAt = (await suppressedPhonesIn([normalized])).has(normalized) ? new Date() : null;
 
   const result = await prisma.waContact.upsert({
     where: { phone: normalized },
     update: {
-      ...(data.name ? { name: data.name } : {}),
+      // ONLY `profileName`. `data.name` here is the customer's WhatsApp display
+      // name, read off every inbound webhook, and writing it to `name` meant an
+      // operator's own label — "Acme Corp - Ravi (AP)", "DO NOT CALL - legal" —
+      // was silently reverted by the customer's next message to a string the
+      // customer controls. `name` is operator-owned and written only by
+      // `updateContact`; the label shown is `name ?? profileName`.
+      ...(data.name ? { profileName: data.name } : {}),
       ...(data.waId ? { waId: data.waId } : {}),
     },
     create: {
       phone: normalized,
+      // On CREATE both, so a contact nobody has renamed still shows something.
       name: data.name ?? null,
+      profileName: data.name ?? null,
       waId: data.waId ?? null,
       suppressedAt,
     },
@@ -762,6 +768,10 @@ function buildContactListWhere(filters: ContactListFilters): Prisma.WaContactWhe
           OR: [
             { phone: { contains: filters.q } },
             { name: { contains: filters.q, mode: 'insensitive' } },
+            // See the note in the conversation list: `name` is operator-owned,
+            // `profileName` is the customer's own, and either may be the only
+            // one set.
+            { profileName: { contains: filters.q, mode: 'insensitive' } },
           ],
         }
       : {}),
@@ -913,10 +923,7 @@ export async function listContacts(
  * the two cannot drift; `listContacts` re-checks the authoritative table per page
  * and repairs anything that slipped past.
  */
-export async function markContactsSuppressed(
-  phones: string[],
-  suppressed: boolean
-): Promise<void> {
+export async function markContactsSuppressed(phones: string[], suppressed: boolean): Promise<void> {
   if (phones.length === 0) return;
   await prisma.waContact
     .updateMany({
