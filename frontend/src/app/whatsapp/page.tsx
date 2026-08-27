@@ -54,6 +54,7 @@ import { showToast } from '@/components/ui/Toast';
 import api from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { loadDrafts, persistDrafts } from '@/lib/wa-drafts';
+import RealtimeStatus from '@/components/whatsapp/RealtimeStatus';
 import { stripWhatsAppFormatting, hasWaFormatting } from '@/lib/wa-format';
 import { useClickOutside } from '@/hooks/use-click-outside';
 import { useSocket } from '@/hooks/use-socket';
@@ -2507,6 +2508,16 @@ export default function SuperAdminWhatsappInboxPage() {
               <h1 className="flex items-center gap-2 text-sm font-bold text-[var(--text)]">
                 <MessageCircle className="h-4 w-4 text-emerald-600" /> WhatsApp Inbox
               </h1>
+              {/* Silent while the socket is healthy. The list polls and the badge
+                  refetches on focus, so a dead socket presents as a queue that
+                  advances above a thread that never does — this is the only thing
+                  that says so. Retry refetches both queries rather than reloading. */}
+              <RealtimeStatus
+                onRetry={() => {
+                  void convQuery.refetch();
+                  void msgQuery.refetch();
+                }}
+              />
               <button
                 type="button"
                 onClick={() => setCompose({ mode: 'new' })}

@@ -6,7 +6,8 @@ import { useAuthStore } from '@/store/auth.store';
 import { APP_CONFIG } from '@/constants/config';
 
 let globalSocket: Socket | null = null;
-let socketState: 'disconnected' | 'connecting' | 'connected' = 'disconnected';
+export type SocketStatus = 'disconnected' | 'connecting' | 'connected';
+let socketState: SocketStatus = 'disconnected';
 const listeners = new Set<() => void>();
 
 function subscribe(cb: () => void) {
@@ -20,6 +21,22 @@ function getSnapshot() {
   return globalSocket;
 }
 
+/**
+ * Connection status, as an observable snapshot.
+ *
+ * `socketState` was module-private and the transition handlers mutated it
+ * without notifying, so nothing could render it — during an outage the operator
+ * could not tell a quiet morning from twenty minutes of dead push while the
+ * conversation list kept polling underneath.
+ */
+function getStatusSnapshot(): SocketStatus {
+  return socketState;
+}
+
+function getServerStatusSnapshot(): SocketStatus {
+  return 'disconnected';
+}
+
 function getServerSnapshot() {
   return null;
 }
@@ -29,19 +46,39 @@ function notifyListeners() {
 }
 
 /** Fetch socket token from BFF (reads httpOnly cookie server-side) */
-async function fetchSocketToken(): Promise<string | null> {
+/**
+ * The ticket, or WHY there isn't one.
+ *
+ * This used to collapse every failure to `null`, and the `connect_error` handler
+ * read that as "session is gone" and tore the socket down for good. But the BFF
+ * answers 401 only when the unlock cookie is actually missing; a backend restart
+ * or a network blip comes back 502 — transient, and precisely when the socket
+ * should be retrying rather than being destroyed.
+ */
+type TokenResult = { token: string; status: 200 } | { token: null; status: number };
+
+async function fetchSocketToken(): Promise<TokenResult> {
   try {
     const res = await fetch('/api/auth/socket-token', { credentials: 'include' });
-    if (!res.ok) return null;
+    if (!res.ok) return { token: null, status: res.status };
     const data = await res.json();
-    return data.socketToken || null;
+    return data.socketToken
+      ? { token: data.socketToken as string, status: 200 }
+      : { token: null, status: 502 };
   } catch {
-    return null;
+    // Could not reach even our own origin: offline, not logged out.
+    return { token: null, status: 0 };
   }
+}
+
+/** Only these mean the session is genuinely over. Everything else is transient. */
+function isSessionDead(status: number): boolean {
+  return status === 401 || status === 403;
 }
 
 export function useSocket() {
   const socket = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+  const status = useSyncExternalStore(subscribe, getStatusSnapshot, getServerStatusSnapshot);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const tokenRef = useRef<string | null>(null);
 
@@ -76,10 +113,12 @@ export function useSocket() {
     let cancelled = false;
 
     (async () => {
-      const token = await fetchSocketToken();
+      const result = await fetchSocketToken();
+      const token = result.token;
       if (cancelled || !token) {
         // Release the lock so a re-mount can try again.
         if (!globalSocket) socketState = 'disconnected';
+        notifyListeners();
         return;
       }
       // Defence-in-depth: another effect could have completed during
@@ -104,26 +143,40 @@ export function useSocket() {
 
       newSocket.on('connect', () => {
         socketState = 'connected';
+        notifyListeners();
       });
 
       newSocket.on('disconnect', () => {
         socketState = 'disconnected';
+        notifyListeners();
       });
 
       newSocket.on('connect_error', async () => {
         socketState = 'disconnected';
-        // Token may have expired — refetch on reconnect attempt
-        const freshToken = await fetchSocketToken();
-        if (freshToken && newSocket) {
-          tokenRef.current = freshToken;
-          newSocket.auth = { token: freshToken };
-        } else if (!freshToken && newSocket) {
-          // Token fetch failed (logged out or session expired) — kill zombie socket
+        notifyListeners();
+        // The ticket is short-lived, so a reconnect needs a fresh one.
+        const result = await fetchSocketToken();
+        if (result.token && newSocket) {
+          tokenRef.current = result.token;
+          newSocket.auth = { token: result.token };
+          return;
+        }
+        // No ticket. WHY decides what happens next, and collapsing the two was
+        // the bug: any failure used to destroy the socket, so a single backend
+        // restart left the operator with a polling conversation list above a
+        // thread pane that never updated again for the rest of the session —
+        // unrecoverable on-page, because the effect only re-runs when
+        // `isAuthenticated` flips and a 502 never flips it.
+        if (newSocket && isSessionDead(result.status)) {
           newSocket.disconnect();
           globalSocket = null;
           tokenRef.current = null;
           notifyListeners();
+          return;
         }
+        // Transient (502 / offline / 0): leave the socket alone. Socket.IO is
+        // already retrying forever on capped, jittered backoff, and the next
+        // attempt refetches the ticket through this same handler.
       });
 
       // The host platform also listened for `notification` and
@@ -152,5 +205,5 @@ export function useSocket() {
     globalSocket?.emit(event, data);
   }, []);
 
-  return { socket, emit };
+  return { socket, emit, status };
 }
