@@ -2796,9 +2796,16 @@ export default function SuperAdminWhatsappInboxPage() {
 
   // Export the current conversation transcript as CSV.
   const transcriptMut = useMutation({
-    mutationFn: () => svc.exportTranscript(selectedId as string),
+    mutationFn: (opts: { notes?: boolean; includeDeleted?: boolean } = {}) =>
+      svc.exportTranscript(selectedId as string, opts),
     onError: (e) => showToast.error(errorMessage(e, 'Failed to export')),
   });
+  /** Which extras the export menu will include; per-session, not persisted. */
+  const [exportNotes, setExportNotes] = useState(false);
+  const [exportDeleted, setExportDeleted] = useState(false);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
+  const [exportOpen, setExportOpen] = useState(false);
+  useClickOutside(exportMenuRef, () => setExportOpen(false), exportOpen);
 
   // ── Bulk selection (page id list OR "all matching the filter") ──
   const pageConvIds = conversations.map((c) => c.id);
@@ -3333,21 +3340,78 @@ export default function SuperAdminWhatsappInboxPage() {
                       </button>
                     </Tooltip>
                   )}
-                  <Tooltip content="Export transcript (CSV)">
-                    <button
-                      type="button"
-                      onClick={() => transcriptMut.mutate()}
-                      disabled={transcriptMut.isPending}
-                      aria-label="Export transcript"
-                      className="rounded-md border border-[var(--border)] px-2 py-1 text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] disabled:opacity-60"
-                    >
-                      {transcriptMut.isPending ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Download className="h-4 w-4" />
-                      )}
-                    </button>
-                  </Tooltip>
+                  {/* Export, with the two extras the endpoint has always
+                      accepted and the client never sent. A menu rather than more
+                      header buttons: the plain CSV is the common case and stays
+                      one click away. */}
+                  <div className="relative" ref={exportMenuRef}>
+                    <Tooltip content="Export transcript (CSV)">
+                      <button
+                        type="button"
+                        onClick={() => setExportOpen((v) => !v)}
+                        disabled={transcriptMut.isPending}
+                        aria-label="Export transcript"
+                        aria-haspopup="menu"
+                        aria-expanded={exportOpen}
+                        className="rounded-md border border-[var(--border)] px-2 py-1 text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] disabled:opacity-60"
+                      >
+                        {transcriptMut.isPending ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Download className="h-4 w-4" />
+                        )}
+                      </button>
+                    </Tooltip>
+                    {exportOpen && (
+                      <div
+                        role="menu"
+                        aria-label="Export options"
+                        className="absolute top-9 right-0 z-30 w-60 rounded-lg border border-[var(--border)] bg-white p-2 shadow-lg"
+                      >
+                        <label className="flex items-start gap-2 rounded px-2 py-1.5 text-xs text-[var(--text)] hover:bg-[var(--bg-secondary)]">
+                          <input
+                            type="checkbox"
+                            checked={exportNotes}
+                            onChange={(e) => setExportNotes(e.target.checked)}
+                            className="mt-0.5"
+                          />
+                          <span>
+                            Include internal notes
+                            <span className="block text-[10px] text-[var(--text-muted)]">
+                              Never shown to the customer
+                            </span>
+                          </span>
+                        </label>
+                        <label className="flex items-start gap-2 rounded px-2 py-1.5 text-xs text-[var(--text)] hover:bg-[var(--bg-secondary)]">
+                          <input
+                            type="checkbox"
+                            checked={exportDeleted}
+                            onChange={(e) => setExportDeleted(e.target.checked)}
+                            className="mt-0.5"
+                          />
+                          <span>
+                            Include deleted messages
+                            <span className="block text-[10px] text-[var(--text-muted)]">
+                              Deleted on our side; the customer kept their copy
+                            </span>
+                          </span>
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            transcriptMut.mutate({
+                              notes: exportNotes,
+                              includeDeleted: exportDeleted,
+                            });
+                            setExportOpen(false);
+                          }}
+                          className="mt-1 w-full rounded-md bg-emerald-600 px-2 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
+                        >
+                          Download CSV
+                        </button>
+                      </div>
+                    )}
+                  </div>
                   <Tooltip content="Mark unread">
                     <button
                       type="button"

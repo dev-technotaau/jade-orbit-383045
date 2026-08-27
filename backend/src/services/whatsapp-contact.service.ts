@@ -7,7 +7,7 @@ import type { WaContact, WaConsentEventType, WaOptInStatus } from '@prisma/clien
 import { AppError } from '../middleware/error';
 import { deleteFileFromR2 } from './storage.service';
 import { setUsersBlocked } from './whatsapp.service';
-import { encryptJson, decryptJson } from '../utils/encryption';
+import { encryptJson, decryptJson, decryptField } from '../utils/encryption';
 
 // consentEvidence (opt-in provenance incl. IP/referral) is encrypted at rest and
 // transparently decrypted on every read path below, so callers see the original
@@ -1748,15 +1748,27 @@ export async function exportContactData(contactId: string) {
     },
     {
       key: 'notes',
-      pages: pageByCreatedAt((keyset, take) =>
-        convIds.length
-          ? prisma.waConversationNote.findMany({
-              where: { conversationId: { in: convIds }, ...keyset },
-              orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-              take,
-            })
-          : Promise.resolve([])
-      ),
+      pages: (async function* () {
+        for await (const page of pageByCreatedAt((keyset, take) =>
+          convIds.length
+            ? prisma.waConversationNote.findMany({
+                where: { conversationId: { in: convIds }, ...keyset },
+                orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+                take,
+              })
+            : Promise.resolve([])
+        )) {
+          // Note bodies are AES-encrypted at rest, exactly like consentEvidence
+          // above. Shipped raw, the portability bundle handed the data subject
+          // an `iv:tag:ciphertext` blob where the operator's commentary about
+          // them should have been — which satisfies neither the request nor the
+          // regulation it exists to answer.
+          //
+          // `decryptField` passes legacy plaintext rows through unchanged, the
+          // same guarantee the notes service relies on when reading them.
+          yield page.map((n) => ({ ...n, body: decryptField(n.body) }));
+        }
+      })(),
     },
     {
       key: 'scheduledMessages',

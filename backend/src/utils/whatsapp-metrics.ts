@@ -303,6 +303,22 @@ export const waAccountAlertsTotal = new client.Counter({
  * silence indistinguishable from "nothing is being sent", and the way anyone
  * found out was a feature quietly not working.
  */
+/**
+ * `wa_inbound_side_effect_failures_total` — an enqueue that happens AFTER the
+ * inbound row is committed.
+ *
+ * These are unrecoverable in a way the rest of the handler is not: the WAMID
+ * dedup at the top of the loop skips a message already stored, so a throw here
+ * abandons the whole batch and the BullMQ retry finds nothing left to do. The
+ * customer's message is safe; the welcome reply or the media archive it was
+ * supposed to trigger is simply gone, silently.
+ */
+export const waInboundSideEffectFailuresTotal = new client.Counter({
+  name: 'wa_inbound_side_effect_failures_total',
+  help: 'Post-commit inbound side effects that could not be enqueued, by kind',
+  labelNames: ['kind'] as const,
+});
+
 export const waWebhookUnhandledTotal = new client.Counter({
   name: 'wa_webhook_unhandled_total',
   help: 'WhatsApp webhook change fields with no handler in this build',

@@ -79,6 +79,14 @@ jest.mock('../../utils/whatsapp-metrics', () => {
   const counter = () => ({ inc: jest.fn() });
   return {
     waMessagesTotal: counter(),
+    // Every counter the worker touches has to be listed. This factory is a
+    // WHITELIST, so a counter added to the worker and forgotten here is
+    // `undefined` at the call site and throws — turning a metric increment on a
+    // failure path into a second, louder failure.
+    waInboundUnsupportedTotal: counter(),
+    waInboundSideEffectFailuresTotal: counter(),
+    waWebhookUnhandledTotal: counter(),
+    waAccountAlertsTotal: counter(),
     captureWaException: jest.fn(),
   };
 });

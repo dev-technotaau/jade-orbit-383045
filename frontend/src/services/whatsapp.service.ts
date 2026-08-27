@@ -1691,9 +1691,23 @@ export const whatsappService = {
   },
 
   // ── Conversation transcript export (CSV download) ──
-  async exportTranscript(id: string): Promise<void> {
+  /**
+   * @param opts Both flags have been accepted by the endpoint from the start —
+   *   it reads `?notes=true` and `?includeDeleted=true`, and streams a
+   *   decrypted notes section for the first. The client simply never sent
+   *   either, so the export a team reached for during a dispute contained
+   *   neither the internal commentary nor anything an agent had deleted.
+   */
+  async exportTranscript(
+    id: string,
+    opts?: { notes?: boolean; includeDeleted?: boolean },
+  ): Promise<void> {
     const res = await api.get(API.SUPER_ADMIN.WA_CONV_TRANSCRIPT(id), {
       responseType: 'blob',
+      params: {
+        ...(opts?.notes ? { notes: 'true' } : {}),
+        ...(opts?.includeDeleted ? { includeDeleted: 'true' } : {}),
+      },
     });
     downloadBlob(res.data as Blob, `wa-transcript-${id}.csv`);
   },

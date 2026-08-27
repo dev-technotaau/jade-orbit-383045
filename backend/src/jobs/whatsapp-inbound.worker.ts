@@ -32,6 +32,7 @@ import { emitWa } from '../utils/whatsapp-realtime';
 import {
   waMessagesTotal,
   waAccountAlertsTotal,
+  waInboundSideEffectFailuresTotal,
   waWebhookUnhandledTotal,
   captureWaException,
 } from '../utils/whatsapp-metrics';
@@ -1004,7 +1005,20 @@ async function processMessages(value: any): Promise<MessagesOutcome> {
         // matched by a rule on the word the customer actually saw.
         buttonTitle,
         isNewConversation: isNewContact,
-      });
+      })
+        // Guarded because this runs AFTER the message row is committed. An
+        // unguarded throw here aborts the batch, and the retry is a no-op: the
+        // WAMID dedup at the top of this loop sees the stored row and skips
+        // straight past it. So the failure took the auto-reply with it AND
+        // abandoned every message behind it in the same callback — for a
+        // Redis blip that had nothing to do with either.
+        .catch((err) => {
+          waInboundSideEffectFailuresTotal.inc({ kind: 'auto_reply' });
+          logger.error(
+            `WhatsApp inbound: could not queue the auto-reply for ${msg.id}: ` +
+              `${(err as Error).message}`
+          );
+        });
     }
 
     // Durably archive inbound media to R2 for long-term access. Decoupled into
@@ -1015,7 +1029,20 @@ async function processMessages(value: any): Promise<MessagesOutcome> {
         messageId: message.id,
         mediaId,
         mime: mediaMime ?? 'application/octet-stream',
-      });
+      })
+        // Same guard, and this one is genuinely recoverable: the row already
+        // carries `mediaArchiveStatus: 'PENDING'`, written inside the
+        // transaction, so the stale-PENDING sweep in the media reconcile cron
+        // re-queues it within the day — well inside Meta's ~30-day window.
+        // Letting the throw escape would instead abandon the rest of the batch
+        // for a job the sweep would have recovered anyway.
+        .catch((err) => {
+          waInboundSideEffectFailuresTotal.inc({ kind: 'media_archive' });
+          logger.error(
+            `WhatsApp inbound: could not queue the media archive for ${message.id} — ` +
+              `left PENDING for the reconcile sweep: ${(err as Error).message}`
+          );
+        });
     }
   }
   return { unroutable: false, racingReaction };
