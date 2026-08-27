@@ -1,4 +1,4 @@
-import { Prisma } from '@prisma/client';
+import type { Prisma } from '@prisma/client';
 import { prisma } from '../config/prisma';
 import { AppError } from '../middleware/error';
 import { encryptField, decryptField, warnIfEncryptionDisabled } from '../utils/encryption';

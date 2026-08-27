@@ -955,6 +955,39 @@ export const whatsappService = {
     return res.data;
   },
 
+  /**
+   * Catalogue orders this contact has placed.
+   *
+   * An ORDER message is rendered once in its own bubble and never looked at
+   * again, so "has this customer bought from us before?" had no answer on the
+   * screen where an agent decides how much time they are worth.
+   */
+  async listContactOrders(
+    id: string,
+    params?: { limit?: number },
+  ): Promise<
+    ApiResponse<{
+      items: Array<{
+        id: string;
+        conversationId: string;
+        createdAt: string;
+        totalQuantity: number;
+        totalPrice: number;
+        currency: string;
+        note: string | null;
+        productCount: number;
+      }>;
+      total: number;
+      summedValue: number;
+      /** Whether `summedValue` covers every order or only the page returned. */
+      summedAll: boolean;
+      currency: string;
+    }>
+  > {
+    const res = await api.get(API.SUPER_ADMIN.WA_CONTACT_ORDERS(id), { params });
+    return res.data;
+  },
+
   async updateContact(
     id: string,
     body: {

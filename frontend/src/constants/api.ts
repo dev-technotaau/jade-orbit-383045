@@ -162,6 +162,7 @@ export const API = {
     WA_CONTACT_TAGS: '/whatsapp/contacts/tags',
     WA_CONTACT_CAMPAIGNS: (id: string) => `/whatsapp/contacts/${id}/campaigns`,
     WA_CONTACT_CONVERSIONS: (id: string) => `/whatsapp/contacts/${id}/conversions`,
+    WA_CONTACT_ORDERS: (id: string) => `/whatsapp/contacts/${id}/orders`,
     WA_MESSAGES_SEARCH: (id: string) => `/whatsapp/conversations/${id}/messages/search`,
     WA_MSG_STAR: (id: string, messageId: string) =>
       `/whatsapp/conversations/${id}/messages/${messageId}/star`,

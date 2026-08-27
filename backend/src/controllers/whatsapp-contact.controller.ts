@@ -152,6 +152,23 @@ export const listContactCampaigns = async (
   }
 };
 
+/** Catalogue orders this contact has placed, most recent first. */
+export const listContactOrders = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const raw = parseInt(String(req.query.limit), 10);
+    const data = await contactService.getContactOrders(String(req.params.id), {
+      limit: Number.isFinite(raw) ? raw : undefined,
+    });
+    res.json({ success: true, data });
+  } catch (e) {
+    next(e);
+  }
+};
+
 export const updateContact = async (
   req: Request,
   res: Response,

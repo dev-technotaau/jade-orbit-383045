@@ -583,8 +583,13 @@ function ContactHistory({ contactId }: { contactId: string }) {
     queryKey: ['wa-contact-conversions', contactId],
     queryFn: () => svc.listContactConversions(contactId, { limit: 10 }),
   });
+  const ordersQuery = useQuery({
+    queryKey: ['wa-contact-orders', contactId],
+    queryFn: () => svc.listContactOrders(contactId, { limit: 20 }),
+  });
   const campaigns = campaignsQuery.data?.data?.items ?? [];
   const conversions = conversionsQuery.data?.data;
+  const orders = ordersQuery.data?.data;
 
   const [recording, setRecording] = useState(false);
   const [amount, setAmount] = useState('');
@@ -645,6 +650,30 @@ function ContactHistory({ contactId }: { contactId: string }) {
             </span>
           </div>
         ))}
+
+        {/* Catalogue orders. Each ORDER arrives as its own bubble, is rendered
+            once and never looked at again — so "have they bought from us
+            before?" had no answer on this screen. */}
+        {orders && orders.total > 0 && (
+          <div className="border-t border-[var(--border)] pt-2">
+            <p className="text-[11px] text-[var(--text)]">
+              <span className="font-semibold">{orders.total}</span> order
+              {orders.total === 1 ? '' : 's'}
+              {orders.summedValue > 0 && (
+                <span className="text-[var(--text-muted)]">
+                  {' · '}
+                  {orders.currency} {orders.summedValue.toFixed(2)}
+                  {/* Said plainly rather than presenting a page total as a
+                      lifetime figure that silently stops growing. */}
+                  {!orders.summedAll && ` (latest ${orders.items.length})`}
+                </span>
+              )}
+            </p>
+            <p className="mt-0.5 text-[10px] text-[var(--text-muted)]">
+              Last order {fmtDateTime(orders.items[0]?.createdAt)}
+            </p>
+          </div>
+        )}
 
         <div className="border-t border-[var(--border)] pt-2">
           {conversions && conversions.total > 0 ? (

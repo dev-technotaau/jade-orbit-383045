@@ -568,6 +568,7 @@ router.get(
 );
 // Both ABOVE '/contacts/:id' for the same reason as the two below.
 router.get('/contacts/:id/campaigns', contactCtrl.listContactCampaigns);
+router.get('/contacts/:id/orders', contactCtrl.listContactOrders);
 router.get('/contacts/:id/conversions', conversionCtrl.byContact);
 // ABOVE '/contacts/:id' — Express would otherwise match 'tags' as a contact id.
 router.get('/contacts/tags', contactCtrl.listTags);

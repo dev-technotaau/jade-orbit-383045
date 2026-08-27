@@ -1421,6 +1421,72 @@ export async function listContactCampaigns(contactId: string, opts: { limit?: nu
   return { items, total };
 }
 
+/** One line of an order, as normalised at ingest. */
+interface OrderProduct {
+  productRetailerId: string | null;
+  quantity: number;
+  itemPrice: number;
+  currency: string | null;
+}
+
+/**
+ * Everything this contact has ordered through the catalogue.
+ *
+ * An ORDER message is normalised at ingest and then rendered exactly once, in
+ * its own bubble, and never looked at again — so "has this customer bought from
+ * us before, and what?" had no answer anywhere in the product, on the one screen
+ * where an agent is deciding how much time they are worth.
+ *
+ * Aggregated in JS over a BOUNDED read rather than in SQL: the figures live
+ * inside a jsonb payload, so a SQL sum would mean jsonb extraction across the
+ * largest table in the module with no index that can serve it.
+ */
+export async function getContactOrders(contactId: string, opts: { limit?: number } = {}) {
+  const take = Math.min(Math.max(opts.limit ?? 20, 1), 100);
+  const [rows, total] = await Promise.all([
+    prisma.waMessage.findMany({
+      where: { contactId, type: 'ORDER', deletedAt: null },
+      orderBy: { createdAt: 'desc' },
+      take,
+      select: { id: true, createdAt: true, payload: true, conversationId: true },
+    }),
+    prisma.waMessage.count({ where: { contactId, type: 'ORDER', deletedAt: null } }),
+  ]);
+
+  const items = rows.map((r) => {
+    const p = (r.payload ?? {}) as {
+      products?: OrderProduct[];
+      totalQuantity?: number;
+      totalPrice?: number;
+      currency?: string;
+      note?: string | null;
+    };
+    return {
+      id: r.id,
+      conversationId: r.conversationId,
+      createdAt: r.createdAt,
+      totalQuantity: Number(p.totalQuantity ?? 0) || 0,
+      totalPrice: Number(p.totalPrice ?? 0) || 0,
+      currency: p.currency ?? '',
+      note: p.note ?? null,
+      productCount: Array.isArray(p.products) ? p.products.length : 0,
+    };
+  });
+
+  // Summed only over what was READ, and the caller is told so — quietly
+  // presenting the newest 20 orders' value as a lifetime total would be a
+  // number that silently stops growing.
+  const summedValue = items.reduce((n, i) => n + i.totalPrice, 0);
+  return {
+    items,
+    total,
+    summedValue,
+    /** Whether `summedValue` covers every order or only the page. */
+    summedAll: items.length === total,
+    currency: items.find((i) => i.currency)?.currency ?? '',
+  };
+}
+
 export async function getContact(id: string) {
   const c = await prisma.waContact.findUnique({ where: { id } });
   return c ? { ...c, consentEvidence: decryptJson(c.consentEvidence) } : c;
