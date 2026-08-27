@@ -53,9 +53,11 @@ import Button from '@/components/ui/Button';
 import Select from '@/components/ui/Select';
 import Tooltip from '@/components/ui/Tooltip';
 import { showToast } from '@/components/ui/Toast';
-import api from '@/lib/api';
+import api, { errorMessage } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { loadDrafts, persistDrafts } from '@/lib/wa-drafts';
+import { WA_FORMATS, applyWaFormat } from '@/lib/wa-format';
+import EmojiPicker from '@/components/whatsapp/EmojiPicker';
 import RealtimeStatus from '@/components/whatsapp/RealtimeStatus';
 import { stripWhatsAppFormatting, hasWaFormatting } from '@/lib/wa-format';
 import { useClickOutside } from '@/hooks/use-click-outside';
@@ -68,7 +70,7 @@ import type {
   WaMessageStatus,
   WaReaction,
 } from '@/types/whatsapp';
-import type { ApiError, ApiResponse } from '@/types/api';
+import type { ApiResponse } from '@/types/api';
 import TemplateComposeModal from '@/components/whatsapp/TemplateComposeModal';
 import InboxComposerTools from '@/components/whatsapp/InboxComposerTools';
 import Spinner from '@/components/ui/Spinner';
@@ -115,25 +117,6 @@ type ScopeFilter = 'active' | 'archived' | 'snoozed' | 'all';
 
 /** Backend sentinel for "has no assignee" (whatsapp-conversation.service.ts). */
 const UNASSIGNED = '__none__';
-
-const EMOJIS = [
-  '😀',
-  '😂',
-  '😊',
-  '😍',
-  '👍',
-  '🙏',
-  '🎉',
-  '🔥',
-  '❤️',
-  '😎',
-  '🤝',
-  '👋',
-  '✅',
-  '💯',
-  '🚀',
-  '😢',
-];
 
 /** Group messages by calendar day for thread day-separators. */
 function dayKey(iso: string): string {
@@ -839,6 +822,15 @@ function MessageBubble({
  * shifts visually — but it must stay in sync with the row markup: a row that
  * renders taller than this would drift the window's scroll math.
  */
+/**
+ * Meta's ceiling on a text message body, mirrored from `whatsapp.schema.ts`.
+ *
+ * Enforced in the browser as well as on the server because the server's refusal
+ * is a bare "Validation failed" that arrives only after the message was typed
+ * and sent.
+ */
+const WA_TEXT_MAX = 4096;
+
 const CONV_ROW_H = 86;
 /** Rows the render window steps by — also its overscan on either side. */
 const CONV_WINDOW_BLOCK = 8;
@@ -1177,6 +1169,34 @@ export default function SuperAdminWhatsappInboxPage() {
     el.style.height = 'auto';
     el.style.height = `${Math.min(el.scrollHeight, 128)}px`;
   }, [draft, selectedId]);
+
+  /**
+   * Wrap the composer's selection in a WhatsApp marker.
+   *
+   * Shares `applyWaFormat` with the six settings editors rather than
+   * reimplementing it — including the toggle, so pressing Bold twice removes the
+   * asterisks instead of producing `**text**` (which WhatsApp renders as a
+   * literal asterisk either side of bold text).
+   *
+   * The selection is restored after React has re-rendered the controlled value;
+   * without that the caret jumps to the end and the operator has to re-select to
+   * keep typing inside what they just formatted.
+   */
+  const applyComposerFormat = useCallback(
+    (marker: string) => {
+      const el = composerRef.current;
+      if (!el) return;
+      const r = applyWaFormat(draft, el.selectionStart, el.selectionEnd, marker);
+      if (r.value.length > WA_TEXT_MAX) return;
+      setDraft(r.value);
+      requestAnimationFrame(() => {
+        el.focus();
+        el.setSelectionRange(r.selectionStart, r.selectionEnd);
+      });
+    },
+    [draft, setDraft],
+  );
+
   const [emojiOpen, setEmojiOpen] = useState(false);
   // The emoji grid used to close ONLY by picking an emoji or clicking the
   // trigger a second time, so clicking on into the thread left it floating
@@ -1570,8 +1590,7 @@ export default function SuperAdminWhatsappInboxPage() {
       // Anchor the NEXT fetch on the last row of this one.
       if (page?.nextCursor) setConvPageCursor(page.nextCursor);
     },
-    onError: (e) =>
-      showToast.error((e as unknown as ApiError).message || 'Failed to load more conversations'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to load more conversations')),
   });
 
   const detailQuery = useQuery({
@@ -2263,11 +2282,11 @@ export default function SuperAdminWhatsappInboxPage() {
       setPendingMessages((prev) =>
         prev.map((m) =>
           m.id === vars.optimisticId
-            ? { ...m, status: 'FAILED', errorTitle: (e as unknown as ApiError).message || null }
+            ? { ...m, status: 'FAILED', errorTitle: errorMessage(e) || null }
             : m,
         ),
       );
-      showToast.error((e as unknown as ApiError).message || 'Failed to send message');
+      showToast.error(errorMessage(e, 'Failed to send message'));
     },
   });
 
@@ -2324,7 +2343,7 @@ export default function SuperAdminWhatsappInboxPage() {
       qc.invalidateQueries({ queryKey: ['wa-conversation', selectedId] });
       qc.invalidateQueries({ queryKey: ['wa-conversations'] });
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Action failed'),
+    onError: (e) => showToast.error(errorMessage(e, 'Action failed')),
   });
 
   // Load older messages: page on a COMPOUND cursor (oldest createdAt + its id).
@@ -2357,8 +2376,7 @@ export default function SuperAdminWhatsappInboxPage() {
         return { ...old, data: { ...old.data, items: [...add, ...old.data.items] } };
       });
     },
-    onError: (e) =>
-      showToast.error((e as unknown as ApiError).message || 'Failed to load older messages'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to load older messages')),
   });
 
   // Name of the file currently uploading, for the in-thread indicator. A media
@@ -2372,6 +2390,14 @@ export default function SuperAdminWhatsappInboxPage() {
   // has stalled outright, so the operator's only options were to wait blindly or
   // to send it again. null while a percentage is not yet known.
   const [uploadPct, setUploadPct] = useState<number | null>(null);
+  /**
+   * The in-flight upload's abort handle.
+   *
+   * A ref, not state: pressing Cancel must reach the CURRENT request, and a
+   * re-render is neither needed nor wanted — the Cancel button's visibility is
+   * already driven by `uploadingName`.
+   */
+  const uploadAbortRef = useRef<AbortController | null>(null);
 
   // A multi-file attach / drop / paste, in the order it was picked, together with
   // the thread it was picked FOR. Sending five screenshots meant five round trips
@@ -2450,6 +2476,8 @@ export default function SuperAdminWhatsappInboxPage() {
     }) => {
       setUploadingName(file.name);
       setUploadPct(0);
+      const ac = new AbortController();
+      uploadAbortRef.current = ac;
       return svc.sendMedia(
         selectedId as string,
         file,
@@ -2458,18 +2486,29 @@ export default function SuperAdminWhatsappInboxPage() {
         idempotencyKeyFor(file),
         setUploadPct,
         contextWamid,
+        ac.signal,
       );
     },
     onSettled: () => {
       setUploadingName(null);
       setUploadPct(null);
+      uploadAbortRef.current = null;
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['wa-messages', selectedId] });
       qc.invalidateQueries({ queryKey: ['wa-conversations'] });
       if (selectedId) setOpenUnread({ convId: selectedId, count: 0 });
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Failed to send media'),
+    onError: (e) => {
+      // The operator pressed Cancel. Reporting their own action back to them as
+      // "Failed to send media" reads as a fault and invites a pointless retry.
+      const msg = errorMessage(e, '');
+      if ((e as { code?: string })?.code === 'ERR_CANCELED' || /cancel/i.test(msg)) {
+        showToast.info('Upload cancelled');
+        return;
+      }
+      showToast.error(msg || 'Failed to send media');
+    },
   });
 
   // The file on the pre-send sheet (preview + caption) is simply the head of the
@@ -2547,7 +2586,7 @@ export default function SuperAdminWhatsappInboxPage() {
       exitMessageSelection();
       showToast.success(ids.length > 1 ? `${ids.length} messages deleted` : 'Message deleted');
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Failed to delete'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to delete')),
   });
   const deleteOneMessage = (id: string) => deleteMessagesMut.mutate([id]);
   const deleteSelectedMessages = () => {
@@ -2582,7 +2621,7 @@ export default function SuperAdminWhatsappInboxPage() {
       setOpenUnread(null);
       showToast.success('Marked unread — the customer still sees it as read');
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Could not mark unread'),
+    onError: (e) => showToast.error(errorMessage(e, 'Could not mark unread')),
   });
 
   const archiveMut = useMutation({
@@ -2592,7 +2631,7 @@ export default function SuperAdminWhatsappInboxPage() {
       qc.invalidateQueries({ queryKey: ['wa-conversation', selectedId] });
       qc.invalidateQueries({ queryKey: ['wa-conversations'] });
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Failed to archive'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to archive')),
   });
 
   // "Verified" on the identity-change banner. Clearing the flag is a security
@@ -2604,8 +2643,7 @@ export default function SuperAdminWhatsappInboxPage() {
       qc.invalidateQueries({ queryKey: ['wa-conversation', selectedId] });
       qc.invalidateQueries({ queryKey: ['wa-conversations'] });
     },
-    onError: (e) =>
-      showToast.error((e as unknown as ApiError).message || 'Failed to clear the warning'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to clear the warning')),
   });
 
   // Request a CSAT rating from the contact (only while the 24h window is open).
@@ -2615,14 +2653,13 @@ export default function SuperAdminWhatsappInboxPage() {
       showToast.success('Rating request sent');
       qc.invalidateQueries({ queryKey: ['wa-conversation', selectedId] });
     },
-    onError: (e) =>
-      showToast.error((e as unknown as ApiError).message || 'Failed to request rating'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to request rating')),
   });
 
   // Export the current conversation transcript as CSV.
   const transcriptMut = useMutation({
     mutationFn: () => svc.exportTranscript(selectedId as string),
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Failed to export'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to export')),
   });
 
   // ── Bulk selection (page id list OR "all matching the filter") ──
@@ -3506,6 +3543,49 @@ export default function SuperAdminWhatsappInboxPage() {
                     </button>
                   </div>
                 )}
+                {/* Formatting toolbar + length counter.
+                    The composer was the only send field in the product without a
+                    toolbar — the markers had to be typed from memory — and the
+                    only one that could be typed past its limit with no warning. */}
+                {canReply && (
+                  <div className="mb-1 flex items-center gap-0.5">
+                    {WA_FORMATS.map((f) => (
+                      <Tooltip
+                        key={f.label}
+                        content={
+                          f.shortcut ? `${f.label} (Ctrl+${f.shortcut.toUpperCase()})` : f.label
+                        }
+                      >
+                        <button
+                          type="button"
+                          aria-label={f.label}
+                          // Keeps the caret in the textarea: a plain click would
+                          // blur it first and the selection to wrap would be gone
+                          // by the time the handler ran.
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => applyComposerFormat(f.marker)}
+                          className="rounded p-1 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-secondary)] hover:text-[var(--text)]"
+                        >
+                          <f.icon className="h-3.5 w-3.5" />
+                        </button>
+                      </Tooltip>
+                    ))}
+                    {/* Silent until it is nearly relevant — a counter on every
+                        two-word reply is noise. */}
+                    {draft.length > WA_TEXT_MAX - 600 && (
+                      <span
+                        className={cn(
+                          'ml-auto text-[10px] tabular-nums',
+                          draft.length >= WA_TEXT_MAX
+                            ? 'font-semibold text-[var(--danger)]'
+                            : 'text-[var(--text-muted)]',
+                        )}
+                      >
+                        {draft.length}/{WA_TEXT_MAX}
+                      </span>
+                    )}
+                  </div>
+                )}
                 {/* Live formatting preview — shows how *bold* / _italic_ / etc.
                     will render once sent (WhatsApp keeps the markers in the input,
                     so this is the only place the agent sees the result pre-send). */}
@@ -3538,6 +3618,18 @@ export default function SuperAdminWhatsappInboxPage() {
                           +{mediaQueuedCount} queued
                         </span>
                       )}
+                      {/* The only way out of a stalled upload short of reloading
+                          the page, which would have lost the rest of the pick. */}
+                      <Tooltip content="Cancel upload">
+                        <button
+                          type="button"
+                          onClick={() => uploadAbortRef.current?.abort()}
+                          aria-label="Cancel upload"
+                          className="shrink-0 rounded p-0.5 text-[var(--text-muted)] hover:bg-[var(--bg)] hover:text-[var(--danger)]"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </Tooltip>
                     </div>
                     {uploadPct !== null && (
                       <div
@@ -3613,27 +3705,26 @@ export default function SuperAdminWhatsappInboxPage() {
                         </button>
                       </Tooltip>
                       {emojiOpen && (
-                        <div
-                          className="absolute bottom-12 left-0 z-20 grid w-44 grid-cols-8 gap-1 rounded-lg border border-[var(--border)] bg-white p-2 shadow-lg"
-                          role="menu"
-                          aria-label="Emoji"
-                        >
-                          {EMOJIS.map((e) => (
-                            <button
-                              key={e}
-                              type="button"
-                              role="menuitem"
-                              aria-label={`Insert ${e}`}
-                              onClick={() => {
-                                setDraft((d) => d + e);
-                                setEmojiOpen(false);
-                              }}
-                              className="rounded text-lg hover:bg-[var(--bg-secondary)]"
-                            >
-                              {e}
-                            </button>
-                          ))}
-                        </div>
+                        <EmojiPicker
+                          onPick={(char) => {
+                            // Inserted AT THE CARET, not appended. Appending was
+                            // fine only for an emoji typed at the end of an
+                            // empty draft; picking one mid-sentence dropped it
+                            // after the full stop.
+                            const el = composerRef.current;
+                            const at = el ? el.selectionStart : draft.length;
+                            const to = el ? el.selectionEnd : draft.length;
+                            const next = draft.slice(0, at) + char + draft.slice(to);
+                            if (next.length > WA_TEXT_MAX) return;
+                            setDraft(next);
+                            requestAnimationFrame(() => {
+                              el?.focus();
+                              el?.setSelectionRange(at + char.length, at + char.length);
+                            });
+                            // Left OPEN: reacting to a message takes one emoji,
+                            // writing a message often takes several.
+                          }}
+                        />
                       )}
                     </div>
                     {/* Attach menu: Photos & Videos / Audio / Document (any file) */}
@@ -3681,6 +3772,19 @@ export default function SuperAdminWhatsappInboxPage() {
                         notifyTyping();
                       }}
                       onKeyDown={(e) => {
+                        // Ctrl/Cmd+B and +I, the two every operator already has
+                        // in their fingers. The other two markers are on the
+                        // toolbar only — WhatsApp itself binds no key to them.
+                        if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+                          const fmt = WA_FORMATS.find(
+                            (f) => f.shortcut && f.shortcut === e.key.toLowerCase(),
+                          );
+                          if (fmt) {
+                            e.preventDefault();
+                            applyComposerFormat(fmt.marker);
+                            return;
+                          }
+                        }
                         if (e.key === 'Enter' && !e.shiftKey) {
                           e.preventDefault();
                           submitDraft(draft);
@@ -3697,6 +3801,11 @@ export default function SuperAdminWhatsappInboxPage() {
                         queueMedia(files);
                       }}
                       rows={1}
+                      // Meta's own ceiling for a text body. Without it the
+                      // server 400'd with a bare "Validation failed" AFTER the
+                      // operator had typed past it — the one failure mode a
+                      // native attribute prevents outright.
+                      maxLength={WA_TEXT_MAX}
                       placeholder="Type a message…"
                       aria-label="Message"
                       className="max-h-32 min-h-[40px] flex-1 resize-none overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm text-[var(--text)] outline-none focus:border-[var(--primary)]"

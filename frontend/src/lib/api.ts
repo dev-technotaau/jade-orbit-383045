@@ -229,4 +229,28 @@ function redirectToLogin() {
   window.location.href = `/unlock?redirect=${encodeURIComponent(path)}`;
 }
 
+/**
+ * The message worth SHOWING for a failed request.
+ *
+ * The validation middleware answers every bad field with the same top-level
+ * "Validation failed" and puts the specific reason — "String must contain at
+ * most 4096 character(s)" — in `error.details`, which nothing rendered. Every
+ * validation failure in the product therefore looked identical and told the
+ * operator nothing about which field to fix.
+ *
+ * Only unpacked for VALIDATION_ERROR: other codes carry a message written for a
+ * human already, and `details` on those is a structured payload (the admin
+ * concurrency conflict, for one) that would read as gibberish in a toast.
+ */
+export function errorMessage(err: unknown, fallback = 'Something went wrong'): string {
+  const e = err as ApiError | null;
+  if (e?.code === 'VALIDATION_ERROR' && Array.isArray(e.errors)) {
+    const first = e.errors[0] as { field?: string; message?: string } | undefined;
+    if (first?.message) {
+      return first.field ? `${first.field}: ${first.message}` : first.message;
+    }
+  }
+  return e?.message || fallback;
+}
+
 export default api;

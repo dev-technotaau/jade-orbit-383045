@@ -6,6 +6,8 @@ import { MessageSquareText, LayoutList, X, Trash2, Plus } from 'lucide-react';
 import DialogShell from '@/components/ui/DialogShell';
 import Input from '@/components/ui/Input';
 import Textarea from '@/components/ui/Textarea';
+import FormattedTextarea from '@/components/whatsapp/FormattedTextarea';
+import { cn } from '@/lib/utils';
 import Button from '@/components/ui/Button';
 import Select from '@/components/ui/Select';
 import Tooltip from '@/components/ui/Tooltip';
@@ -36,10 +38,29 @@ function CannedPopover({
 }) {
   const qc = useQueryClient();
   const { data } = useQuery({ queryKey: ['wa-canned'], queryFn: () => svc.listCannedReplies() });
-  const replies = data?.data ?? [];
+  const allReplies = data?.data ?? [];
   const [adding, setAdding] = useState(false);
   const [title, setTitle] = useState('');
   const [text, setText] = useState('');
+  /**
+   * Filter box.
+   *
+   * The list was rendered whole into a 240px scroll box, so a team with thirty
+   * saved replies — which is the point of saving them — had to scroll and read
+   * to find one. Matched against the body as well as the title: an agent
+   * remembers the phrase far more reliably than the label someone else gave it.
+   */
+  const [q, setQ] = useState('');
+  /** Highlighted row for ↑/↓ + Enter. -1 = nothing highlighted. */
+  const [cursor, setCursor] = useState(0);
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  const needle = q.trim().toLowerCase();
+  const replies = needle
+    ? allReplies.filter(
+        (r) => r.title.toLowerCase().includes(needle) || r.text.toLowerCase().includes(needle),
+      )
+    : allReplies;
 
   const createMut = useMutation({
     mutationFn: () => svc.createCannedReply({ title: title.trim(), text: text.trim() }),
@@ -83,24 +104,58 @@ function CannedPopover({
   // Escape closes the popover. It has to be a document listener because focus is
   // normally still in the composer textarea while the popover is open, so the key
   // event never reaches this subtree.
-  const escapeRef = useRef<() => void>(() => {});
+  //
+  // ↑/↓/Enter are handled here for the same reason: focus is in the filter box
+  // or still in the composer, and the popover has no focusable list to receive
+  // them. Without it the only way to pick a reply was the mouse.
+  const keyRef = useRef<(e: KeyboardEvent) => void>(() => {});
   useEffect(() => {
-    escapeRef.current = () => {
-      // Inside the "New canned reply" sub-form, Escape backs out of the sub-form
-      // rather than the whole popover — otherwise a stray key press silently
-      // discards a half-typed reply.
-      if (adding) setAdding(false);
-      else onClose();
+    keyRef.current = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        // Inside the "New canned reply" sub-form, Escape backs out of the
+        // sub-form rather than the whole popover — otherwise a stray key press
+        // silently discards a half-typed reply.
+        if (adding) setAdding(false);
+        else onClose();
+        return;
+      }
+      // The sub-form owns the keyboard while it is open: ↑/↓ move the caret in
+      // the body field and Enter inserts a newline.
+      if (adding || replies.length === 0) return;
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setCursor((c) => (c + 1) % replies.length);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setCursor((c) => (c - 1 + replies.length) % replies.length);
+      } else if (e.key === 'Enter') {
+        const pick = replies[cursor];
+        if (!pick) return;
+        e.preventDefault();
+        // Enter would otherwise SEND the composer's draft — the popover is open
+        // over a form whose Enter is bound to submit.
+        e.stopPropagation();
+        onInsert(pick.text);
+        onClose();
+      }
     };
   });
   useEffect(() => {
     if (confirming) return;
     function onKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') escapeRef.current();
+      keyRef.current(e);
     }
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
+    // Capture phase, so Enter is claimed before the composer form's own keydown
+    // turns it into a send.
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => document.removeEventListener('keydown', onKeyDown, true);
   }, [confirming]);
+
+  // Focus the filter the moment the popover opens — the whole point of a
+  // keyboard path is not having to reach for the mouse first.
+  useEffect(() => {
+    searchRef.current?.focus();
+  }, []);
 
   return (
     <div className="absolute bottom-14 left-3 z-20 w-72 rounded-lg border border-[var(--border)] bg-white shadow-lg">
@@ -110,18 +165,48 @@ function CannedPopover({
           <X className="h-4 w-4" />
         </button>
       </div>
+      {allReplies.length > 3 && (
+        <div className="border-b border-[var(--border)] px-2 py-1.5">
+          <input
+            ref={searchRef}
+            value={q}
+            onChange={(e) => {
+              setQ(e.target.value);
+              // Typing re-filters, so the old index points at a different reply
+              // — or at nothing. Reset rather than leave Enter aimed at whatever
+              // happens to sit there now.
+              setCursor(0);
+            }}
+            placeholder="Search replies…"
+            aria-label="Search canned replies"
+            className="w-full rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-1 text-xs text-[var(--text)] outline-none focus:border-[var(--primary)]"
+          />
+        </div>
+      )}
       <div className="max-h-60 overflow-y-auto">
-        {replies.length === 0 && (
+        {allReplies.length === 0 && (
           <p className="px-3 py-3 text-xs text-[var(--text-muted)]">No canned replies yet.</p>
         )}
-        {replies.map((r) => (
+        {allReplies.length > 0 && replies.length === 0 && (
+          <p className="px-3 py-3 text-xs text-[var(--text-muted)]">
+            Nothing matches “{q.trim()}”.
+          </p>
+        )}
+        {replies.map((r, i) => (
           <div
             key={r.id}
-            className="flex items-start gap-2 px-3 py-2 hover:bg-[var(--bg-secondary)]"
+            className={cn(
+              'flex items-start gap-2 px-3 py-2 hover:bg-[var(--bg-secondary)]',
+              i === cursor && 'bg-[var(--bg-secondary)]',
+            )}
           >
             <button
               type="button"
-              onClick={() => onInsert(r.text)}
+              onClick={() => {
+                onInsert(r.text);
+                onClose();
+              }}
+              onMouseEnter={() => setCursor(i)}
               className="min-w-0 flex-1 text-left"
             >
               <p className="truncate text-xs font-medium text-[var(--text)]">{r.title}</p>
@@ -141,7 +226,16 @@ function CannedPopover({
       {adding ? (
         <div className="space-y-2 border-t border-[var(--border)] p-3">
           <Input label="Title" value={title} onChange={(e) => setTitle(e.target.value)} />
-          <Textarea label="Text" value={text} onChange={(e) => setText(e.target.value)} rows={2} />
+          {/* The saved text is sent verbatim, so it needs the same marker
+              toolbar every other send field has — a canned reply was the one
+              place formatting had to be typed from memory. */}
+          <FormattedTextarea
+            label="Text"
+            value={text}
+            onChange={setText}
+            rows={3}
+            maxLength={1024}
+          />
           <div className="flex justify-end gap-2">
             <Button variant="secondary" onClick={() => setAdding(false)}>
               Cancel

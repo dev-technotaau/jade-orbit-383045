@@ -117,7 +117,12 @@ function toMediaForm(
  * sent. The signed URL is deliberately fetched through the proxy (it is a tiny
  * JSON call) and only the bytes bypass it.
  */
-async function stageDirectUpload(file: File, onProgress?: (pct: number) => void): Promise<string> {
+async function stageDirectUpload(
+  file: File,
+  onProgress?: (pct: number) => void,
+  signal?: AbortSignal,
+): Promise<string> {
+  if (signal?.aborted) throw new Error('Upload cancelled');
   const signed = await api.post(API.SUPER_ADMIN.WA_UPLOAD_SIGN, {
     filename: file.name,
     mime: file.type || 'application/octet-stream',
@@ -151,7 +156,17 @@ async function stageDirectUpload(file: File, onProgress?: (pct: number) => void)
     // status 0 — the browser blocked it or the connection died, and it never
     // reached storage at all, so there is no status code to report.
     xhr.onerror = () => reject(new Error(`Upload to storage failed (network). ${corsHint}`));
-    xhr.onabort = () => reject(new Error('Upload to storage was cancelled'));
+    xhr.onabort = () => reject(new Error('Upload cancelled'));
+    // This is the ONLY leg with no deadline of its own — the proxied branch is
+    // capped by UPLOAD_TIMEOUT_MS. A half-open connection here (a dropped uplink
+    // mid-PUT, which XHR reports as neither load nor error) left the progress bar
+    // frozen forever with nothing to press. Scaled to the file: 60s of headroom
+    // plus a minute per 5 MB, so a slow-but-alive 90 MB video is not killed for
+    // being large.
+    xhr.timeout = 60_000 + Math.ceil(file.size / (5 * 1024 * 1024)) * 60_000;
+    xhr.ontimeout = () =>
+      reject(new Error('Upload to storage timed out — check the connection and try again.'));
+    signal?.addEventListener('abort', () => xhr.abort(), { once: true });
     xhr.send(file);
   });
   return data.key;
@@ -1353,6 +1368,8 @@ export const whatsappService = {
     onProgress?: (pct: number) => void,
     /** WAMID this attachment quotes, when the reply banner was up. */
     contextWamid?: string,
+    /** Aborts the upload when the operator presses Cancel. */
+    signal?: AbortSignal,
   ): Promise<ApiResponse<WaMessage>> {
     // Refuse a file WhatsApp itself will not carry. Anything under that but over
     // the proxy's body limit goes straight to storage instead of being refused.
@@ -1362,7 +1379,7 @@ export const whatsappService = {
     const url = API.SUPER_ADMIN.WA_SEND_MEDIA(conversationId);
 
     if (file.size > MAX_UPLOAD_BYTES) {
-      const r2Key = await stageDirectUpload(file, onProgress);
+      const r2Key = await stageDirectUpload(file, onProgress, signal);
       // The bytes are up; what follows is a small JSON call, so hold the bar at
       // 100 rather than letting it sit at 99 for the whole Meta hop.
       onProgress?.(100);
@@ -1376,7 +1393,7 @@ export const whatsappService = {
           voice,
           contextWamid,
         },
-        { headers, timeout: UPLOAD_TIMEOUT_MS },
+        { headers, timeout: UPLOAD_TIMEOUT_MS, signal },
       );
       return res.data;
     }
@@ -1392,6 +1409,7 @@ export const whatsappService = {
     const res = await api.post(url, form, {
       headers: { ...headers, 'Content-Type': 'multipart/form-data' },
       timeout: UPLOAD_TIMEOUT_MS,
+      signal,
       onUploadProgress: onProgress
         ? (e) => {
             // `total` is absent when the size is not known up front; there is no

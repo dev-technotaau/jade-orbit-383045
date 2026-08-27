@@ -1,8 +1,8 @@
 'use client';
 
 import { useRef } from 'react';
-import { Bold, Italic, Strikethrough, Code } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { WA_FORMATS, applyWaFormat } from '@/lib/wa-format';
 
 interface FormattedTextareaProps {
   value: string;
@@ -14,14 +14,6 @@ interface FormattedTextareaProps {
   id?: string;
   className?: string;
 }
-
-// WhatsApp text-formatting markers, wrapped around the current selection.
-const FORMATS = [
-  { icon: Bold, label: 'Bold', marker: '*' },
-  { icon: Italic, label: 'Italic', marker: '_' },
-  { icon: Strikethrough, label: 'Strikethrough', marker: '~' },
-  { icon: Code, label: 'Monospace', marker: '```' },
-] as const;
 
 /**
  * A textarea with a WhatsApp-style formatting toolbar (bold/italic/strikethrough/
@@ -41,19 +33,20 @@ export default function FormattedTextarea({
 }: FormattedTextareaProps) {
   const ref = useRef<HTMLTextAreaElement>(null);
 
+  // Shared with the inbox composer (`lib/wa-format.ts`) rather than kept as a
+  // private copy — which is also how this field gained the toggle: pressing Bold
+  // twice now removes the markers instead of producing `**text**`, which
+  // WhatsApp renders as a literal asterisk either side of bold text.
   const applyFormat = (marker: string) => {
     const el = ref.current;
     if (!el) return;
-    const start = el.selectionStart;
-    const end = el.selectionEnd;
-    const selected = value.slice(start, end);
-    const next = value.slice(0, start) + marker + selected + marker + value.slice(end);
-    onChange(next);
+    const r = applyWaFormat(value, el.selectionStart, el.selectionEnd, marker);
+    if (maxLength != null && r.value.length > maxLength) return;
+    onChange(r.value);
     // Restore focus + selection after React re-renders the controlled value.
     requestAnimationFrame(() => {
       el.focus();
-      const innerStart = start + marker.length;
-      el.setSelectionRange(innerStart, innerStart + selected.length);
+      el.setSelectionRange(r.selectionStart, r.selectionEnd);
     });
   };
 
@@ -66,7 +59,7 @@ export default function FormattedTextarea({
       )}
       <div className="overflow-hidden rounded-lg border border-[var(--border)] focus-within:border-[var(--primary)]">
         <div className="flex items-center gap-0.5 border-b border-[var(--border)] bg-[var(--bg-secondary)] px-1.5 py-1">
-          {FORMATS.map((f) => (
+          {WA_FORMATS.map((f) => (
             <button
               key={f.label}
               type="button"
