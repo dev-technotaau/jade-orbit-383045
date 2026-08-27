@@ -237,6 +237,7 @@ export default function MessageVideo({ message, outbound }: MessageVideoProps) {
             'mt-1.5 text-sm break-words whitespace-pre-wrap',
             outbound ? 'text-white' : 'text-[var(--text)]',
           )}
+          dir="auto"
         >
           {caption}
         </p>

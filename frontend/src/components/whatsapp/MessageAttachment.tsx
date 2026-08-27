@@ -134,7 +134,11 @@ export default function MessageAttachment({
       >
         <span className="text-[var(--text-muted)]">{iconForMime(message.mediaMime)}</span>
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium text-[var(--text)]" title={filename}>
+          <p
+            dir="auto"
+            className="truncate text-sm font-medium text-[var(--text)]"
+            title={filename}
+          >
             {filename}
           </p>
           <p className="text-xs text-[var(--text-muted)]">
@@ -172,6 +176,7 @@ export default function MessageAttachment({
             // on dark green. MessageImage and MessageVideo already branch here.
             outbound ? 'text-white' : 'text-[var(--text)]',
           )}
+          dir="auto"
         >
           {caption}
         </p>

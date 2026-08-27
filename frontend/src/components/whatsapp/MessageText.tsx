@@ -181,7 +181,16 @@ export default function MessageText({
   const terms = highlightTerms(highlight);
   const lines = text.split('\n');
   return (
-    <div className={cn('break-words whitespace-pre-wrap', className)}>
+    // `dir="auto"` because this renders text the CUSTOMER wrote.
+    //
+    // Arabic, Hebrew, Urdu and Farsi render left-to-right in a container that
+    // declares nothing, which puts the punctuation on the wrong end and reverses
+    // the reading order of mixed content — a phone number quoted inside an
+    // Arabic sentence comes out backwards. `auto` resolves from the first strong
+    // character, which is the only correct answer for content whose language we
+    // cannot know. On the container, not the leaves, so a multi-line message
+    // reads as one block rather than each line choosing its own direction.
+    <div dir="auto" className={cn('break-words whitespace-pre-wrap', className)}>
       {lines.map((line, idx) => {
         const key = `l${idx}`;
         const nl = idx > 0 ? '\n' : '';

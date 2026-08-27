@@ -731,7 +731,9 @@ function MessageBubble({
                       : 'border-[var(--primary)] bg-[var(--bg-secondary)] text-[var(--text-muted)]',
                   )}
                 >
-                  <span className="line-clamp-2 break-words">{quotedText}</span>
+                  <span dir="auto" className="line-clamp-2 break-words">
+                    {quotedText}
+                  </span>
                 </div>
               )}
               {/* The customer tapped a catalogue item and asked about it. The
@@ -1126,6 +1128,10 @@ function ConversationRow({
                 'truncate text-sm text-[var(--text)]',
                 hasUnread ? 'font-bold' : 'font-semibold',
               )}
+              // The customer's own WhatsApp profile name, in whatever script
+              // they chose. On the name span only — the blocked/archived chips
+              // beside it are ours and must not move.
+              dir="auto"
             >
               {displayName(conv.contact)}
             </span>
@@ -1151,6 +1157,10 @@ function ConversationRow({
               <Search className="h-3 w-3 shrink-0 text-amber-600" aria-hidden="true" />
               <HighlightText
                 className="truncate"
+                // Customer-authored — see the note on MessageText. NOT on the
+                // flex row above: that row holds the icon and the count badge,
+                // which must keep their positions whatever the text does.
+                dir="auto"
                 text={stripWhatsAppFormatting(conv.matchSnippet)}
                 highlight={highlight}
               />
@@ -1175,7 +1185,12 @@ function ConversationRow({
               {conv.lastMessageDirection === 'OUTBOUND' && conv.lastMessagePreview && (
                 <span className="text-[var(--text-secondary)]">You: </span>
               )}
-              {stripWhatsAppFormatting(conv.lastMessagePreview ?? '') || conv.contact.phone}
+              {/* The preview only. The "You:" prefix above stays in the page's
+                  direction, or an Arabic reply would move the label to the far
+                  side and read as part of the message. */}
+              <span dir="auto">
+                {stripWhatsAppFormatting(conv.lastMessagePreview ?? '') || conv.contact.phone}
+              </span>
             </p>
           )}
           <ConversationRowMeta conv={conv} />
@@ -3558,7 +3573,7 @@ export default function SuperAdminWhatsappInboxPage() {
                   />
                   <div className="min-w-0">
                     <div className="flex items-center gap-1.5">
-                      <span className="truncate font-semibold text-[var(--text)]">
+                      <span dir="auto" className="truncate font-semibold text-[var(--text)]">
                         {displayName(selected.contact)}
                       </span>
                       {selectedSnoozed && (
@@ -4600,6 +4615,10 @@ export default function SuperAdminWhatsappInboxPage() {
                         queueMedia(files);
                       }}
                       rows={1}
+                      // An agent replying in Arabic gets a right-to-left box
+                      // that agrees with what they are typing, and an English
+                      // one that does not move.
+                      dir="auto"
                       // Meta's own ceiling for a text body. Without it the
                       // server 400'd with a bare "Validation failed" AFTER the
                       // operator had typed past it — the one failure mode a

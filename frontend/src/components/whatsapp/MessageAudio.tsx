@@ -214,6 +214,7 @@ export default function MessageAudio({ message, outbound }: MessageAudioProps) {
               // on dark green. MessageImage and MessageVideo already branch here.
               outbound ? 'text-white' : 'text-[var(--text)]',
             )}
+            dir="auto"
           >
             {caption}
           </p>
@@ -278,6 +279,7 @@ export default function MessageAudio({ message, outbound }: MessageAudioProps) {
             // on dark green. MessageImage and MessageVideo already branch here.
             outbound ? 'text-white' : 'text-[var(--text)]',
           )}
+          dir="auto"
         >
           {caption}
         </p>

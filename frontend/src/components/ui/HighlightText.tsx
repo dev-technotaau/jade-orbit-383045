@@ -4,6 +4,17 @@ interface HighlightTextProps {
   text: string;
   highlight?: string;
   className?: string;
+  /**
+   * Text direction. Pass `'auto'` for anything a CUSTOMER wrote.
+   *
+   * Arabic, Hebrew, Urdu and Farsi render left-to-right in a container that
+   * declares nothing, which puts the punctuation on the wrong end and reverses
+   * the reading order of mixed content — a phone number quoted inside an Arabic
+   * sentence comes out backwards. `auto` resolves from the first strong
+   * character in the string, which is the right answer for user content whose
+   * language we cannot know.
+   */
+  dir?: 'auto' | 'ltr' | 'rtl';
 }
 
 /**
@@ -22,11 +33,20 @@ export function highlightTerms(highlight: string | undefined): string[] {
     .map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
 }
 
-export default function HighlightText({ text, highlight, className = '' }: HighlightTextProps) {
+export default function HighlightText({
+  text,
+  highlight,
+  className = '',
+  dir,
+}: HighlightTextProps) {
   const terms = highlightTerms(highlight);
 
   if (terms.length === 0) {
-    return <span className={className}>{text}</span>;
+    return (
+      <span className={className} dir={dir}>
+        {text}
+      </span>
+    );
   }
 
   const regex = new RegExp(`(${terms.join('|')})`, 'gi');
@@ -34,7 +54,7 @@ export default function HighlightText({ text, highlight, className = '' }: Highl
   const parts = text.split(regex);
 
   return (
-    <span className={className}>
+    <span className={className} dir={dir}>
       {parts.map((part, i) =>
         testRegex.test(part) ? (
           <mark key={i} className="rounded-sm bg-yellow-200/80 px-0.5 text-inherit">

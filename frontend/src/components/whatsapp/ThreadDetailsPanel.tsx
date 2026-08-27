@@ -1215,7 +1215,10 @@ function NotesPanel({ conversationId }: { conversationId: string }) {
               className="group flex items-start gap-2 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2.5 py-1.5"
             >
               <div className="min-w-0 flex-1">
-                <p className="text-[11px] break-words whitespace-pre-wrap text-[var(--text)]">
+                <p
+                  dir="auto"
+                  className="text-[11px] break-words whitespace-pre-wrap text-[var(--text)]"
+                >
                   {note.body}
                 </p>
                 {/* Attribution: the author was recorded on every note since the
@@ -1294,6 +1297,10 @@ function NotesPanel({ conversationId }: { conversationId: string }) {
             }
           }}
           rows={2}
+          // An agent writing notes in an RTL script gets a box that agrees with
+          // them; an English one is unaffected, since `auto` resolves from the
+          // first strong character.
+          dir="auto"
           placeholder="Add an internal note… use @ to notify a colleague"
         />
         {mentionMatches.length > 0 && (

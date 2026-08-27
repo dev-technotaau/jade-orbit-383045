@@ -114,6 +114,7 @@ export default function MessageImage({ message, outbound }: MessageImageProps) {
               'mt-1.5 text-sm break-words whitespace-pre-wrap',
               outbound ? 'text-white' : 'text-[var(--text)]',
             )}
+            dir="auto"
           >
             {caption}
           </p>
@@ -187,6 +188,7 @@ export default function MessageImage({ message, outbound }: MessageImageProps) {
             'mt-1.5 text-sm break-words whitespace-pre-wrap',
             outbound ? 'text-white' : 'text-[var(--text)]',
           )}
+          dir="auto"
         >
           {caption}
         </p>
