@@ -753,7 +753,7 @@ function MessageBubble({
  * shifts visually — but it must stay in sync with the row markup: a row that
  * renders taller than this would drift the window's scroll math.
  */
-const CONV_ROW_H = 68;
+const CONV_ROW_H = 86;
 /** Rows the render window steps by — also its overscan on either side. */
 const CONV_WINDOW_BLOCK = 8;
 /** Rows to render before the list viewport has been measured (hidden pane). */
@@ -764,6 +764,85 @@ const CONV_WINDOW_FALLBACK_ROWS = 40;
  * DOM focus onto it — the rows carry their own focusable controls.
  */
 const convOptionId = (id: string) => `wa-conv-opt-${id}`;
+
+/**
+ * The triage state a shared queue is scanned for, on the row itself.
+ *
+ * Status, assignee, labels, snooze and "waiting since" are all filterable and
+ * were all invisible until a thread was opened — and every open blue-ticks the
+ * customer, so answering "is anyone already on this?" cost a read receipt and
+ * risked two operators picking up the same conversation. Every field here
+ * already ships with the row (the backend uses `include`, not `select`), so this
+ * is presentation only, no API change.
+ */
+function ConversationRowMeta({ conv }: { conv: WaConversation }) {
+  // No `> Date.now()` comparison: reading the clock during render is impure (the
+  // same render could answer twice), and it is not needed — whether a snoozed
+  // thread belongs in this view is already decided server-side by the scope
+  // filter, so the row only has to say WHEN.
+  const snoozedUntil = conv.snoozedUntil;
+  const labels = conv.labels ?? [];
+  const bits: React.ReactNode[] = [];
+
+  if (conv.status === 'RESOLVED') {
+    bits.push(
+      <span key="st" className="shrink-0 text-emerald-600" title="Resolved">
+        ✓
+      </span>,
+    );
+  } else if (conv.status === 'PENDING') {
+    bits.push(
+      <span key="st" className="shrink-0 text-amber-600" title="Pending">
+        ●
+      </span>,
+    );
+  }
+
+  if (conv.assignedTo) {
+    bits.push(
+      <span
+        key="as"
+        title={`Assigned to ${conv.assignedTo}`}
+        className="shrink-0 rounded-full bg-[var(--bg-secondary)] px-1.5 py-px text-[9px] font-medium text-[var(--text-secondary)]"
+      >
+        {conv.assignedTo.slice(0, 12)}
+      </span>,
+    );
+  }
+
+  labels.slice(0, 2).forEach((l) =>
+    bits.push(
+      <span
+        key={`l-${l}`}
+        className="max-w-[80px] shrink-0 truncate rounded-full bg-sky-100 px-1.5 py-px text-[9px] font-medium text-sky-800"
+      >
+        {l}
+      </span>,
+    ),
+  );
+  if (labels.length > 2) {
+    bits.push(
+      <span key="l-more" className="shrink-0 text-[9px] text-[var(--text-muted)]">
+        +{labels.length - 2}
+      </span>,
+    );
+  }
+
+  if (snoozedUntil) {
+    bits.push(
+      <span
+        key="sn"
+        title={`Snoozed until ${new Date(snoozedUntil).toLocaleString()}`}
+        className="shrink-0 text-[9px] text-[var(--text-muted)]"
+      >
+        ⏳ {fmtTime(snoozedUntil)}
+      </span>,
+    );
+  }
+
+  if (bits.length === 0) return null;
+  return <div className="mt-0.5 flex items-center gap-1 overflow-hidden">{bits}</div>;
+}
 
 function ConversationRow({
   conv,
@@ -881,6 +960,7 @@ function ConversationRow({
               {stripWhatsAppFormatting(conv.lastMessagePreview ?? '') || conv.contact.phone}
             </p>
           )}
+          <ConversationRowMeta conv={conv} />
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1">
           <span className="text-[10px] text-[var(--text-muted)]">
