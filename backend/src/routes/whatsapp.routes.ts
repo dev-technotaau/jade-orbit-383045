@@ -607,6 +607,9 @@ router.post(
 );
 router.get('/conversations/:id', ctrl.getConversation);
 router.get('/conversations/:id/messages', ctrl.getMessages);
+// Declared BEFORE any '/conversations/:id/messages/:messageId' route would be,
+// or Express matches 'search' as a message id.
+router.get('/conversations/:id/messages/search', ctrl.searchThreadMessages);
 // Media gallery. Distinct from the POST on the same path (which SENDS media):
 // without this the gallery could only show whatever media happened to be in the
 // thread page the client already held.

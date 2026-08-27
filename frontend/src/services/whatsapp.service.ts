@@ -34,6 +34,7 @@ import type {
   WaConversation,
   WaConversationMedia,
   WaConversationsPage,
+  WaThreadSearchResult,
   WaKeywordRule,
   WaMatchType,
   WaBotFlow,
@@ -1765,6 +1766,28 @@ export const whatsappService = {
     const res = await api.post(API.SUPER_ADMIN.WA_CONV_MUTE(id), { mutedUntil });
     return res.data;
   },
+  /**
+   * Search inside ONE conversation.
+   *
+   * Distinct from the inbox search, which finds the thread and returns a single
+   * newest hit per thread — no way to walk the rest.
+   */
+  async searchThreadMessages(
+    id: string,
+    q: string,
+    opts?: { limit?: number; cursorCreatedAt?: string; cursorId?: string },
+  ): Promise<ApiResponse<WaThreadSearchResult>> {
+    const res = await api.get(API.SUPER_ADMIN.WA_MESSAGES_SEARCH(id), {
+      params: {
+        q,
+        limit: opts?.limit,
+        cursorCreatedAt: opts?.cursorCreatedAt,
+        cursorId: opts?.cursorId,
+      },
+    });
+    return res.data;
+  },
+
   /** Star/unstar one message for later reference. */
   async starMessage(
     conversationId: string,

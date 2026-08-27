@@ -544,6 +544,13 @@ export type ConversationWithMatch<T> = T & {
   matchMessageId?: string;
   matchSnippet?: string;
   matchCreatedAt?: Date;
+  /**
+   * How many messages in this thread matched.
+   *
+   * The row showed the newest hit and nothing else, so a thread with forty
+   * matches looked identical to one with a single stray mention.
+   */
+  matchCount?: number;
 };
 
 /**
@@ -570,10 +577,22 @@ async function attachMessageMatches<T extends { id: string }>(
   // those characters treated as wildcards.
   const pattern = `%${q.replace(/[%_]/g, (ch) => '\\' + ch)}%`;
   const rows = await prisma
-    .$queryRaw<Array<{ id: string; conversationId: string; text: string | null; createdAt: Date }>>(
+    .$queryRaw<
+      Array<{
+        id: string;
+        conversationId: string;
+        text: string | null;
+        createdAt: Date;
+        matchCount: number;
+      }>
+    >(
       Prisma.sql`
         SELECT DISTINCT ON (m."conversationId")
-               m."id", m."conversationId", m."text", m."createdAt"
+               m."id", m."conversationId", m."text", m."createdAt",
+               -- How many messages in this thread matched, not just the newest.
+               -- The row showed one hit and gave no hint there were forty, so a
+               -- search over a long thread looked like a single stray mention.
+               COUNT(*) OVER (PARTITION BY m."conversationId")::int AS "matchCount"
           FROM "WaMessage" m
          WHERE m."conversationId" IN (${Prisma.join(items.map((i) => i.id))})
            AND m."deletedAt" IS NULL
@@ -595,8 +614,98 @@ async function attachMessageMatches<T extends { id: string }>(
       matchMessageId: hit.id,
       matchSnippet: snippetAround(hit.text ?? '', q),
       matchCreatedAt: hit.createdAt,
+      matchCount: hit.matchCount,
     };
   });
+}
+
+/**
+ * Search WITHIN one conversation.
+ *
+ * The inbox search finds the conversation and stops there: it returns the newest
+ * matching message per thread and nothing else, so "find where we agreed the
+ * delivery date" over a year-long thread gave one hit — usually the wrong one —
+ * with no way to see the rest.
+ *
+ * NO time window here, deliberately, unlike the list search above. That window
+ * exists because the list search is an unbounded leading-wildcard ILIKE across
+ * the WHOLE message table, evaluated per candidate conversation. Scoped to one
+ * `conversationId` the query is driven by @@index([conversationId, createdAt]),
+ * so bounding it would hide the operator's own history for no gain — and the
+ * older the message, the more likely it is the one being looked for.
+ */
+export async function searchThread(
+  conversationId: string,
+  params: { q: string; limit?: number; cursorCreatedAt?: string; cursorId?: string }
+) {
+  const q = params.q?.trim() ?? '';
+  if (q.length < MIN_MESSAGE_SEARCH_LEN) {
+    return { items: [], total: 0, hasMore: false, minLength: MIN_MESSAGE_SEARCH_LEN };
+  }
+  const limit = Math.min(100, Math.max(1, params.limit ?? 30));
+  // Same escaping as the list search: an operator searching for "100%" or "a_b"
+  // must not have those treated as wildcards.
+  const pattern = `%${q.replace(/[%_]/g, (ch) => '\\' + ch)}%`;
+  const cursorAt = params.cursorCreatedAt ? new Date(params.cursorCreatedAt) : null;
+  const hasCursor = !!(cursorAt && !Number.isNaN(cursorAt.getTime()) && params.cursorId);
+
+  const [rows, counted] = await Promise.all([
+    prisma.$queryRaw<
+      Array<{
+        id: string;
+        createdAt: Date;
+        direction: string;
+        type: string;
+        text: string | null;
+      }>
+    >(
+      Prisma.sql`
+        SELECT m."id", m."createdAt", m."direction"::text AS "direction",
+               m."type"::text AS "type", m."text"
+          FROM "WaMessage" m
+         WHERE m."conversationId" = ${conversationId}
+           AND m."deletedAt" IS NULL
+           AND m."text" ILIKE ${pattern} ESCAPE '\\'
+           ${
+             hasCursor
+               ? Prisma.sql`AND (m."createdAt", m."id") < (${cursorAt}, ${params.cursorId})`
+               : Prisma.empty
+           }
+         ORDER BY m."createdAt" DESC, m."id" DESC
+         LIMIT ${limit + 1}
+      `
+    ),
+    // The full count, so the UI can say "3 of 41" rather than only what fits on
+    // a page. Cheap under the same index.
+    prisma.$queryRaw<Array<{ count: bigint }>>(
+      Prisma.sql`
+        SELECT COUNT(*)::bigint AS count
+          FROM "WaMessage" m
+         WHERE m."conversationId" = ${conversationId}
+           AND m."deletedAt" IS NULL
+           AND m."text" ILIKE ${pattern} ESCAPE '\\'
+      `
+    ),
+  ]);
+
+  const hasMore = rows.length > limit;
+  const page = hasMore ? rows.slice(0, limit) : rows;
+  return {
+    items: page.map((r) => ({
+      id: r.id,
+      createdAt: r.createdAt,
+      direction: r.direction,
+      type: r.type,
+      snippet: snippetAround(r.text ?? '', q),
+    })),
+    total: Number(counted[0]?.count ?? 0),
+    hasMore,
+    /** Feed back as the cursor to get the next page of hits. */
+    nextCursor: hasMore
+      ? { createdAt: page[page.length - 1].createdAt.toISOString(), id: page[page.length - 1].id }
+      : null,
+    minLength: MIN_MESSAGE_SEARCH_LEN,
+  };
 }
 
 /** ~120 chars of the message centred on the first occurrence of `q`. */

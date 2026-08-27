@@ -95,6 +95,13 @@ export interface WaConversation {
   /** ~120 chars of that message centred on the search term. */
   matchSnippet?: string;
   matchCreatedAt?: string;
+  /**
+   * How many messages in this thread matched.
+   *
+   * The row showed the newest hit and nothing else, so a thread with forty
+   * matches looked identical to one with a single stray mention.
+   */
+  matchCount?: number;
 }
 
 /**
@@ -185,6 +192,26 @@ export interface WaMessage {
   referral?: unknown;
   reactions?: unknown;
   createdAt: string;
+}
+
+/** One matching message inside a conversation, from the in-thread search. */
+export interface WaThreadHit {
+  id: string;
+  createdAt: string;
+  direction: WaDirection;
+  type: string;
+  /** ~120 chars centred on the match. */
+  snippet: string;
+}
+
+export interface WaThreadSearchResult {
+  items: WaThreadHit[];
+  /** Every match, not just this page — so the UI can say "3 of 41". */
+  total: number;
+  hasMore: boolean;
+  nextCursor?: { createdAt: string; id: string } | null;
+  /** Shortest query the server will run; below it the result is empty by design. */
+  minLength: number;
 }
 
 export interface WaConversationsPage {

@@ -759,6 +759,32 @@ export const setBotPause = async (
 };
 
 /**
+ * Search inside one conversation.
+ *
+ * Separate from the inbox search, which finds the THREAD and stops: it returns
+ * the newest matching message per conversation, so "where did we agree the
+ * delivery date" over a year-long thread produced one hit and no way to reach
+ * the rest.
+ */
+export const searchThreadMessages = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const result = await conversationService.searchThread(String(req.params.id), {
+      q: String(req.query.q ?? ''),
+      limit: req.query.limit ? parseInt(String(req.query.limit), 10) : undefined,
+      cursorCreatedAt: req.query.cursorCreatedAt ? String(req.query.cursorCreatedAt) : undefined,
+      cursorId: req.query.cursorId ? String(req.query.cursorId) : undefined,
+    });
+    res.json({ success: true, data: result });
+  } catch (e) {
+    next(e);
+  }
+};
+
+/**
  * Mute/unmute a conversation's notifications until a time.
  *
  * `mutedUntil: null` unmutes. Deliberately a time rather than a boolean: a mute

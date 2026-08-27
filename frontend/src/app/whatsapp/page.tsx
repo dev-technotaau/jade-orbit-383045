@@ -1135,6 +1135,13 @@ function ConversationRow({
                 text={stripWhatsAppFormatting(conv.matchSnippet)}
                 highlight={highlight}
               />
+              {/* One hit was shown and the rest were invisible, so a thread with
+                  forty matches looked like one with a stray mention. */}
+              {(conv.matchCount ?? 0) > 1 && (
+                <span className="shrink-0 rounded-full bg-amber-100 px-1.5 text-[9px] font-semibold text-amber-800">
+                  +{(conv.matchCount as number) - 1}
+                </span>
+              )}
             </p>
           ) : (
             <p
@@ -2877,6 +2884,31 @@ export default function SuperAdminWhatsappInboxPage() {
   const [muteOpen, setMuteOpen] = useState(false);
   useClickOutside(muteMenuRef, () => setMuteOpen(false), muteOpen);
 
+  /**
+   * Search inside the open thread.
+   *
+   * The inbox search finds the CONVERSATION and stops — one newest hit per
+   * thread, no way to reach the other forty. Every hit here reuses the existing
+   * `searchAnchor` deep-link, which already loads the thread around a message
+   * and highlights it, so walking the results costs no new machinery.
+   */
+  const [threadSearchOpen, setThreadSearchOpen] = useState(false);
+  const [threadSearchQ, setThreadSearchQ] = useState('');
+  // Same pattern as the list search above: the input stays bound to the
+  // immediate value while the query key uses the debounced one, so typing does
+  // not fire a query per keystroke.
+  const [debouncedThreadSearchQ, setDebouncedThreadSearchQ] = useState('');
+  useEffect(() => {
+    const id = window.setTimeout(() => setDebouncedThreadSearchQ(threadSearchQ), 300);
+    return () => window.clearTimeout(id);
+  }, [threadSearchQ]);
+  const threadSearchQuery = useQuery({
+    queryKey: ['wa-thread-search', selectedId, debouncedThreadSearchQ],
+    queryFn: () => svc.searchThreadMessages(selectedId as string, debouncedThreadSearchQ),
+    enabled: threadSearchOpen && !!selectedId && debouncedThreadSearchQ.trim().length >= 3,
+  });
+  const threadHits = threadSearchQuery.data?.data;
+
   const starMut = useMutation({
     mutationFn: (v: { messageId: string; starred: boolean }) =>
       svc.starMessage(selectedId as string, v.messageId, v.starred),
@@ -3539,6 +3571,22 @@ export default function SuperAdminWhatsappInboxPage() {
                       </button>
                     </Tooltip>
                   )}
+                  <Tooltip content="Search in this conversation">
+                    <button
+                      type="button"
+                      onClick={() => setThreadSearchOpen((v) => !v)}
+                      aria-label="Search in this conversation"
+                      aria-pressed={threadSearchOpen}
+                      className={cn(
+                        'rounded-md border border-[var(--border)] px-2 py-1 text-xs hover:bg-[var(--bg-secondary)]',
+                        threadSearchOpen
+                          ? 'bg-[var(--bg-secondary)] text-[var(--text)]'
+                          : 'text-[var(--text-secondary)]',
+                      )}
+                    >
+                      <Search className="h-4 w-4" />
+                    </button>
+                  </Tooltip>
                   {/* Export, with the two extras the endpoint has always
                       accepted and the client never sent. A menu rather than more
                       header buttons: the plain CSV is the common case and stays
@@ -3841,6 +3889,95 @@ export default function SuperAdminWhatsappInboxPage() {
                     >
                       Jump to latest
                     </button>
+                  </div>
+                )}
+                {/* In-thread search results.
+                    Every hit reuses the same `searchAnchor` deep-link the inbox
+                    search already uses, so clicking one loads the thread around
+                    that message and highlights it. */}
+                {threadSearchOpen && (
+                  <div className="border-b border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      <Search className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]" />
+                      <input
+                        autoFocus
+                        value={threadSearchQ}
+                        onChange={(e) => setThreadSearchQ(e.target.value)}
+                        placeholder="Search in this conversation…"
+                        aria-label="Search in this conversation"
+                        className="min-w-0 flex-1 rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-1 text-xs text-[var(--text)] outline-none focus:border-[var(--primary)]"
+                      />
+                      {threadHits && (
+                        <span className="shrink-0 text-[11px] text-[var(--text-muted)] tabular-nums">
+                          {threadHits.total} {threadHits.total === 1 ? 'match' : 'matches'}
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setThreadSearchOpen(false);
+                          setThreadSearchQ('');
+                        }}
+                        aria-label="Close search"
+                        className="shrink-0 rounded p-0.5 text-[var(--text-muted)] hover:bg-[var(--bg)]"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    {threadSearchQ.trim().length > 0 && threadSearchQ.trim().length < 3 && (
+                      <p className="mt-1 text-[11px] text-[var(--text-muted)]">
+                        Type at least 3 characters.
+                      </p>
+                    )}
+                    {threadSearchQuery.isFetching && (
+                      <p className="mt-1 text-[11px] text-[var(--text-muted)]">Searching…</p>
+                    )}
+                    {threadHits &&
+                      threadHits.items.length === 0 &&
+                      !threadSearchQuery.isFetching && (
+                        <p className="mt-1 text-[11px] text-[var(--text-muted)]">
+                          No messages match. Only message text is searchable — not the contents of
+                          attachments.
+                        </p>
+                      )}
+                    {threadHits && threadHits.items.length > 0 && (
+                      <ul className="mt-1.5 max-h-44 space-y-0.5 overflow-y-auto">
+                        {threadHits.items.map((hit) => (
+                          <li key={hit.id}>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setSearchAnchor({
+                                  convId: selected.id,
+                                  messageId: hit.id,
+                                })
+                              }
+                              className={cn(
+                                'w-full rounded px-2 py-1 text-left text-[11px] hover:bg-[var(--bg)]',
+                                hit.id === anchorMessageId && 'bg-amber-50 ring-1 ring-amber-300',
+                              )}
+                            >
+                              <span className="mr-1.5 text-[var(--text-muted)]">
+                                {hit.direction === 'INBOUND' ? '←' : '→'}{' '}
+                                {new Date(hit.createdAt).toLocaleDateString([], {
+                                  day: 'numeric',
+                                  month: 'short',
+                                })}
+                              </span>
+                              <span className="text-[var(--text)]">
+                                {stripWhatsAppFormatting(hit.snippet)}
+                              </span>
+                            </button>
+                          </li>
+                        ))}
+                        {threadHits.hasMore && (
+                          <li className="px-2 py-1 text-[10px] text-[var(--text-muted)]">
+                            Showing the {threadHits.items.length} most recent of {threadHits.total}{' '}
+                            — narrow the search to see older ones.
+                          </li>
+                        )}
+                      </ul>
+                    )}
                   </div>
                 )}
                 <div
