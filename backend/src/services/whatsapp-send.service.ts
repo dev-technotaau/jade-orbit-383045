@@ -46,6 +46,7 @@ import {
   metaLimitFor,
   type WaHeaderMediaFormat,
 } from '../utils/wa-media-limits';
+import { previewForMessage } from '../utils/wa-preview';
 import { emitWa } from '../utils/whatsapp-realtime';
 import { emitWaEvent } from './whatsapp-events.service';
 import { waMessagesTotal, waSendFailuresTotal, waSendDuration } from '../utils/whatsapp-metrics';
@@ -1381,7 +1382,12 @@ export async function sendMediaMessage(
     text: caption ?? null,
     // Mark recorded voice notes so the inbox renders them as a voice message
     // (waveform player) rather than a generic audio file.
-    preview: caption || (input.voice ? '[voice message]' : `[${input.kind}]`),
+    // Same phrasing the inbox list uses for an inbound: "Photo", "Voice
+    // message", or the document's own filename — not a bracketed type name.
+    preview: previewForMessage(input.kind.toUpperCase(), caption, {
+      voice: input.voice,
+      filename: input.filename,
+    }),
     mediaId: input.mediaId ?? null,
     mediaMime: input.mime ?? null,
     // `filename` and `size` ride in the payload because WaMessage has no column
@@ -1532,7 +1538,7 @@ export async function sendLocation(
     actorUserId,
     type: 'LOCATION',
     text: input.name || input.address || null,
-    preview: input.name || input.address || '[location]',
+    preview: input.name || input.address || previewForMessage('LOCATION', null),
     payload: location,
     message: { type: 'location', location },
   });
@@ -1558,7 +1564,7 @@ export async function sendContacts(
     actorUserId,
     type: 'CONTACTS',
     text: null,
-    preview: '[contact card]',
+    preview: previewForMessage('CONTACTS', null),
     // The BARE array, matching what inbound persists and what MessageContact parses.
     // Wrapping it in { contacts } meant every card the operator sent rendered as a
     // generic "Shared a contact" stub while the inbound ones rendered fine.

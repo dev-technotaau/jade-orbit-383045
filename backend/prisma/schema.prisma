@@ -383,6 +383,12 @@ model WaConversation {
   csatAt             DateTime? // when the CSAT rating was received
   lastMessageAt      DateTime?
   lastMessagePreview String?
+  /// Which way the last message went.
+  ///
+  /// Without it an outbound reply and an unanswered inbound question render
+  /// identically in the list, so "has anyone answered this?" — the question a
+  /// shared queue is scanned to answer — could not be read off the row at all.
+  lastMessageDirection WaDirection?
   /// Meta's own conversation id from the status webhook, for cross-referencing a
   /// billed conversation against this thread.
   metaConversationId String?

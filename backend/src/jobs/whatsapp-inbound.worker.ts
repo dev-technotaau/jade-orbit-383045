@@ -45,6 +45,7 @@ import { recordFlowResponse } from '../services/whatsapp-flow.service';
 import { AuditService } from '../services/audit.service';
 import { Prisma } from '@prisma/client';
 import { encryptJson } from '../utils/encryption';
+import { previewForMessage } from '../utils/wa-preview';
 import type {
   WaMessageType,
   WaMessageStatus,
@@ -580,7 +581,9 @@ async function processMessages(value: any): Promise<boolean> {
         // has to see the row created just above, and from the global client it is
         // still uncommitted — every inbound message would count one short.
         const conv = await applyMessageTouch(tx, conversation.id, {
-          preview: text ?? `[${type.toLowerCase()}]`,
+          // `text` holds only the CAPTION for media, so this used to render a
+          // payment screenshot, a sticker and a signed PDF identically.
+          preview: previewForMessage(type, text, payload),
           at: createdAt,
           inbound: true,
         });

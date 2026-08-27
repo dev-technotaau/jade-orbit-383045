@@ -1087,7 +1087,11 @@ export async function applyMessageTouch(
   if (!opts.inbound) {
     return client.waConversation.update({
       where: { id: conversationId },
-      data: { lastMessageAt: opts.at, lastMessagePreview: preview },
+      data: {
+        lastMessageAt: opts.at,
+        lastMessagePreview: preview,
+        lastMessageDirection: 'OUTBOUND',
+      },
     });
   }
 
@@ -1111,6 +1115,7 @@ export async function applyMessageTouch(
     UPDATE "WaConversation" c
        SET "lastMessageAt" = ${at}::timestamp,
            "lastMessagePreview" = ${preview},
+           "lastMessageDirection" = 'INBOUND',
            "windowExpiresAt" = GREATEST(
              COALESCE(c."windowExpiresAt", ${expiry}::timestamp),
              ${expiry}::timestamp

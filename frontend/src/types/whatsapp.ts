@@ -54,6 +54,8 @@ export interface WaConversation {
   unreadCount: number;
   lastMessageAt: string | null;
   lastMessagePreview: string | null;
+  /** Which way the last message went — drives the "You:" prefix on the row. */
+  lastMessageDirection?: WaDirection | null;
   lastReadAt: string | null;
   firstResponseAt: string | null;
   resolvedAt: string | null;

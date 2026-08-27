@@ -872,6 +872,12 @@ function ConversationRow({
                 hasUnread ? 'font-medium text-[var(--text)]' : 'text-[var(--text-muted)]',
               )}
             >
+              {/* "You:" is what makes an answered thread distinguishable from an
+                  unanswered one at a glance — the single most-scanned fact in a
+                  shared queue, and the row carried no direction cue at all. */}
+              {conv.lastMessageDirection === 'OUTBOUND' && conv.lastMessagePreview && (
+                <span className="text-[var(--text-secondary)]">You: </span>
+              )}
               {stripWhatsAppFormatting(conv.lastMessagePreview ?? '') || conv.contact.phone}
             </p>
           )}
@@ -1658,6 +1664,28 @@ export default function SuperAdminWhatsappInboxPage() {
   // Real-time: refresh on inbound/outbound messages + status changes + conversation updates.
   useEffect(() => {
     if (!socket) return;
+
+    // Trailing-debounced list invalidation.
+    //
+    // Every socket event below used to invalidate ['wa-conversations'] straight
+    // away, and a campaign emits wa:conversation + wa:message for EVERY recipient
+    // — so a 15/s campaign meant ~30 refetches a second per open tab, each one a
+    // take-50 findMany plus an unbounded count(), against the same pool the
+    // campaign worker was already saturating. The queue also reordered under the
+    // operator's cursor exactly when it needed to stay still.
+    //
+    // Same fix Sidebar already applies to the unread badge, which was the same
+    // hazard and was never carried over here. The OPEN conversation is still
+    // invalidated immediately: it is a single cheap row and it is what the
+    // operator is looking at.
+    let listTimer: ReturnType<typeof setTimeout> | null = null;
+    const invalidateListSoon = () => {
+      if (listTimer) clearTimeout(listTimer);
+      listTimer = setTimeout(() => {
+        void qc.invalidateQueries({ queryKey: ['wa-conversations'] });
+      }, 1500);
+    };
+
     const onMessage = (data: { conversationId: string; message?: WaMessage }) => {
       // A wa:message carrying NO message means "this thread changed, refetch" —
       // which is exactly what delete-for-me and clear-history emit. The handler only
@@ -1669,7 +1697,7 @@ export default function SuperAdminWhatsappInboxPage() {
       // already carries the full row, so render it with zero extra round-trip.
       if (data.message)
         mergeMessageIntoCache(qc, data.conversationId, data.message, orphanStatusRef.current);
-      qc.invalidateQueries({ queryKey: ['wa-conversations'] });
+      invalidateListSoon();
       if (data.conversationId === selectedId) {
         if (data.message?.direction === 'INBOUND') {
           // Mark read ONLY if the operator can actually see the thread.
@@ -1726,7 +1754,7 @@ export default function SuperAdminWhatsappInboxPage() {
     };
     // Conversation-level updates: unread counts, assignment, status changes.
     const onConversation = (data: { conversationId: string }) => {
-      qc.invalidateQueries({ queryKey: ['wa-conversations'] });
+      invalidateListSoon();
       if (data.conversationId === selectedId) {
         qc.invalidateQueries({ queryKey: ['wa-conversation', selectedId] });
       }
@@ -1741,7 +1769,7 @@ export default function SuperAdminWhatsappInboxPage() {
       from?: string;
       side?: 'in' | 'out';
     }) => {
-      qc.invalidateQueries({ queryKey: ['wa-conversations'] });
+      invalidateListSoon();
       if (data.conversationId !== selectedId || !data.targetWamid) return;
       // Patch the target message's reactions in place (mirrors the backend merge:
       // one reaction per side; empty emoji = removed) — no thread refetch.
@@ -1804,6 +1832,8 @@ export default function SuperAdminWhatsappInboxPage() {
       // stale copy still holds its own selectedId - so returning to the tab would
       // fire a read receipt for every thread visited this session.
       document.removeEventListener('visibilitychange', flushOnVisible);
+      // A pending debounce must not fire against a torn-down query client.
+      if (listTimer) clearTimeout(listTimer);
       socket.off('connect', onConnect);
       socket.off('wa:message', onMessage);
       socket.off('wa:status', onStatus);
