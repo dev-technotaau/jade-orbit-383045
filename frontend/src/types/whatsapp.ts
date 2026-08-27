@@ -159,11 +159,14 @@ export interface WaMessage {
 
 export interface WaConversationsPage {
   items: WaConversation[];
+  /** -1 when paging by cursor: the count is only computed for the first page. */
   total: number;
   page: number;
   limit: number;
   totalPages: number;
   hasMore: boolean;
+  /** Feed back as `cursor` to fetch the next page. Null when this page is empty. */
+  nextCursor?: string | null;
 }
 
 export interface WaChannel {

@@ -1145,6 +1145,17 @@ export default function SuperAdminWhatsappInboxPage() {
   // Extra conversation-list pages appended below the first page.
   const [extraConvPages, setExtraConvPages] = useState<WaConversation[]>([]);
   const [convPage, setConvPage] = useState(1);
+  /**
+   * Keyset position of the last loaded row.
+   *
+   * "Load more" used to ask for page N by OFFSET, over an ordering that moves on
+   * every inbound message — so a thread pushed from rank 50 to 51 between the two
+   * fetches appeared in neither page and silently vanished from the operator's
+   * list until a filter change or a reload. Anchoring on the last row instead
+   * asks for "everything after THIS conversation", which stays true however much
+   * the list reorders underneath.
+   */
+  const [convPageCursor, setConvPageCursor] = useState<string | null>(null);
   const [convHasMore, setConvHasMore] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [compose, setCompose] = useState<null | { mode: 'new' | 'reply'; conversationId?: string }>(
@@ -1350,6 +1361,7 @@ export default function SuperAdminWhatsappInboxPage() {
     setConvPageKey(firstPageKey);
     setExtraConvPages([]);
     setConvPage(1);
+    setConvPageCursor(null);
     setConvHasMore(!!firstPage?.hasMore);
     setAllMatchingConv(false);
   }
@@ -1457,6 +1469,9 @@ export default function SuperAdminWhatsappInboxPage() {
         includeSnoozed,
         archivedOnly,
         snoozedOnly,
+        // `cursor` supersedes `page` server-side; `page` is still sent so a
+        // first "Load more" issued against an older backend still works.
+        cursor: convPageCursor ?? firstPage?.nextCursor ?? undefined,
         page: next,
         limit: 50,
       });
@@ -1466,6 +1481,8 @@ export default function SuperAdminWhatsappInboxPage() {
       setExtraConvPages((prev) => [...prev, ...(page?.items ?? [])]);
       setConvPage((p) => p + 1);
       setConvHasMore(!!page?.hasMore);
+      // Anchor the NEXT fetch on the last row of this one.
+      if (page?.nextCursor) setConvPageCursor(page.nextCursor);
     },
     onError: (e) =>
       showToast.error((e as unknown as ApiError).message || 'Failed to load more conversations'),

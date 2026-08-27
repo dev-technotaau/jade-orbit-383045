@@ -244,10 +244,72 @@ function buildConversationListWhere(
   };
 }
 
-export async function list(params: ConversationListFilters & { page?: number; limit?: number }) {
+/**
+ * Keyset cursor for the conversation list: the last row's sort position.
+ *
+ * The list paged by `skip:(page-1)*limit` over `lastMessageAt DESC`, which moves
+ * under you — every inbound message reorders it. A thread pushed from rank 50 to
+ * 51 between fetching page 1 and page 2 appeared in NEITHER, so an operator who
+ * had pressed "Load more" silently lost a visible row, with nothing to say it
+ * had gone and no way back short of a filter change or a reload.
+ *
+ * Anchoring on the row itself removes the drift: the next page is "everything
+ * that sorts after THIS conversation", which stays true however much the list
+ * moves. `id` is the tiebreaker, so rows sharing a timestamp still have a total
+ * order (and `lastMessageAt` is second-resolution in places, so ties are real).
+ */
+function encodeConvCursor(row: { lastMessageAt: Date | null; id: string }): string {
+  return `${row.lastMessageAt ? row.lastMessageAt.getTime() : ''}.${row.id}`;
+}
+
+function decodeConvCursor(raw?: string | null): { at: Date | null; id: string } | null {
+  if (!raw) return null;
+  const dot = raw.indexOf('.');
+  if (dot < 0) return null;
+  const ms = raw.slice(0, dot);
+  const id = raw.slice(dot + 1);
+  if (!id) return null;
+  if (ms === '') return { at: null, id };
+  const n = Number(ms);
+  return Number.isFinite(n) ? { at: new Date(n), id } : null;
+}
+
+/**
+ * "Sorts strictly after the cursor", for `ORDER BY lastMessageAt DESC, id DESC`.
+ *
+ * Postgres puts NULLs FIRST on a DESC column — which the ordering here relies on
+ * deliberately (see the note on orderBy) — so a null-timestamped row is at the
+ * TOP of the list, and the two cases are genuinely different:
+ *   - cursor still inside the null block: take later nulls, then everything dated
+ *   - cursor on a dated row: strictly older, or same instant with a smaller id
+ */
+function conversationsAfter(cursor: {
+  at: Date | null;
+  id: string;
+}): Prisma.WaConversationWhereInput {
+  if (cursor.at === null) {
+    return {
+      OR: [{ lastMessageAt: null, id: { lt: cursor.id } }, { lastMessageAt: { not: null } }],
+    };
+  }
+  return {
+    OR: [{ lastMessageAt: { lt: cursor.at } }, { lastMessageAt: cursor.at, id: { lt: cursor.id } }],
+  };
+}
+
+export async function list(
+  params: ConversationListFilters & { page?: number; limit?: number; cursor?: string }
+) {
   const page = Math.max(1, params.page ?? 1);
   const limit = Math.min(100, params.limit ?? 30);
-  const where = buildConversationListWhere(params);
+  const filterWhere = buildConversationListWhere(params);
+  const cursor = decodeConvCursor(params.cursor);
+  // A cursor supersedes `page`. `skip` is kept for callers that still pass a
+  // page number so nothing breaks mid-deploy, but it is the drifting path — see
+  // the note on encodeConvCursor.
+  const where: Prisma.WaConversationWhereInput = cursor
+    ? { AND: [filterWhere, conversationsAfter(cursor)] }
+    : filterWhere;
   const [items, total] = await Promise.all([
     prisma.waConversation.findMany({
       where,
@@ -259,8 +321,13 @@ export async function list(params: ConversationListFilters & { page?: number; li
       // the whole filtered set instead. The only rows this reorders are
       // conversations that have never carried a message (created but never
       // touched), which are transient and belong at the top anyway.
-      orderBy: { lastMessageAt: 'desc' },
-      skip: (page - 1) * limit,
+      // `id` is the tiebreaker that makes the order TOTAL. Without it two rows
+      // sharing a `lastMessageAt` have no defined relative position, so a keyset
+      // cursor on one of them could skip or repeat the other.
+      orderBy: [{ lastMessageAt: 'desc' }, { id: 'desc' }],
+      // Only the offset path skips. With a cursor the WHERE has already excluded
+      // everything above it.
+      ...(cursor ? {} : { skip: (page - 1) * limit }),
       take: limit,
       include: {
         contact: {
@@ -294,15 +361,25 @@ export async function list(params: ConversationListFilters & { page?: number; li
         },
       },
     }),
-    prisma.waConversation.count({ where }),
+    // Counted only for the FIRST page. It is an unbounded count over the whole
+    // filtered set with no index that can answer it, and paging deeper does not
+    // change the answer — re-running it per "Load more" was pure waste on the
+    // same pool a campaign saturates.
+    cursor ? Promise.resolve(-1) : prisma.waConversation.count({ where: filterWhere }),
   ]);
+  const withMatches = await attachMessageMatches(items, params);
+  const last = items[items.length - 1];
   return {
-    items: await attachMessageMatches(items, params),
+    items: withMatches,
     total,
     page,
     limit,
-    totalPages: Math.ceil(total / limit),
-    hasMore: page * limit < total,
+    totalPages: total >= 0 ? Math.ceil(total / limit) : 0,
+    // With a cursor there is no total to compare against, so a full page is the
+    // signal there may be more — one wasted fetch at the end beats hiding rows.
+    hasMore: cursor ? items.length === limit : page * limit < total,
+    /** Feed straight back as `cursor` to get the next page. */
+    nextCursor: last ? encodeConvCursor(last) : null,
   };
 }
 

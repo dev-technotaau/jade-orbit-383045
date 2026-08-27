@@ -126,6 +126,7 @@ export const getConversations = async (
       labels,
       page,
       limit,
+      cursor,
     } = req.query;
     // Accepts either repeated `?labels=a&labels=b` or a comma-separated list.
     const labelList = (Array.isArray(labels) ? labels : labels ? String(labels).split(',') : [])
@@ -145,6 +146,9 @@ export const getConversations = async (
       labels: labelList.length ? labelList : undefined,
       page: page ? parseInt(page as string, 10) : undefined,
       limit: limit ? parseInt(limit as string, 10) : undefined,
+      // Keyset position of the last row already loaded. Supersedes `page`: the
+      // offset path drifts under a list that reorders on every inbound message.
+      cursor: (cursor as string) || undefined,
     });
     res.json({ success: true, data: result });
   } catch (e) {

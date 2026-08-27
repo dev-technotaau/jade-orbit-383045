@@ -176,6 +176,12 @@ export interface WaConversationFilters {
   labels?: string[];
   page?: number;
   limit?: number;
+  /**
+   * Keyset position of the last row already loaded, from the previous page's
+   * `nextCursor`. Preferred over `page`: the list reorders on every inbound
+   * message, so an offset page 2 can miss a row that page 1 pushed past it.
+   */
+  cursor?: string;
 }
 
 /** Which half of the traffic the busiest-hours heatmap counts. */
@@ -204,6 +210,10 @@ export const whatsappService = {
         labels: f.labels?.length ? f.labels.join(',') : undefined,
         page: f.page,
         limit: f.limit,
+        // Keyset position of the last row already loaded. Supersedes `page` —
+        // offset paging over a list that reorders on every inbound message drops
+        // rows between pages.
+        cursor: f.cursor,
       },
     });
     return res.data;
