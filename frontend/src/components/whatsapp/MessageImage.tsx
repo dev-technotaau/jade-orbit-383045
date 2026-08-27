@@ -81,6 +81,14 @@ export default function MessageImage({ message, outbound }: MessageImageProps) {
 
   const caption = message.text && message.text.trim() ? message.text : null;
   const isSticker = message.type === 'STICKER';
+  // Animation survives only in the ORIGINAL. The thumbnail derivative is written
+  // with `animated: false` — right for a GIF preview, fatal for content whose
+  // entire point is that it moves — so a sticker or an animated GIF asked for
+  // the thumb and rendered as a frozen first frame once the archive job had run.
+  // Stickers are capped at 500 KB by Meta and a GIF bubble is small, so skipping
+  // the derivative here costs nothing worth measuring.
+  const isAnimatedKind = isSticker || /gif/i.test(message.mediaMime ?? '');
+  const bubbleSrc = isAnimatedKind ? src : thumbSrc;
 
   // ── Error fallback (broken image) ─────────────────────────────────────────
   if (errored) {
@@ -140,7 +148,7 @@ export default function MessageImage({ message, outbound }: MessageImageProps) {
 
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src={thumbSrc}
+        src={bubbleSrc}
         alt={caption || filename}
         loading="lazy"
         onLoad={() => setLoaded(true)}

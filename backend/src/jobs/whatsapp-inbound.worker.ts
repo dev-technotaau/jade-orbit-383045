@@ -199,7 +199,15 @@ function extractInbound(msg: any): {
       text = m.caption ?? null;
       // `m.voice` is true for WhatsApp voice notes (recorded), absent/false for
       // audio *files* — carried through so the UI can tell them apart.
-      payload = { filename: m.filename, sha256: m.sha256, voice: m.voice };
+      // `m.animated` is Meta's own sticker flag and was dropped here, so nothing
+      // downstream could tell an animated sticker from a static one — which is
+      // exactly what decides whether the bubble may use the still derivative.
+      payload = {
+        filename: m.filename,
+        sha256: m.sha256,
+        voice: m.voice,
+        ...(m.animated != null ? { animated: Boolean(m.animated) } : {}),
+      };
       break;
     }
     case 'location':

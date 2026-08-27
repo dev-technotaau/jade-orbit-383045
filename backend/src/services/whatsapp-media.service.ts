@@ -66,9 +66,21 @@ export type ArchiveResult =
  */
 const THUMB_MAX_EDGE = 320;
 
-/** Which archived objects are worth deriving a thumbnail from. */
+/**
+ * Which archived objects are worth deriving a thumbnail from.
+ *
+ * WEBP is deliberately excluded. On this platform a WebP is a STICKER, and Meta
+ * caps those at 500 KB static / 500 KB animated — so a 320px derivative saves
+ * nothing worth having, while `writeThumbnail`'s deliberate `animated: false`
+ * (correct for a GIF preview) silently froze every animated sticker to its first
+ * frame the moment the archive job ran. The bubble then requested that still
+ * unconditionally, so the animation was unreachable outside the gallery.
+ *
+ * GIF stays: an animated GIF can be genuinely large, the still is a fine
+ * thumbnail, and the bubble now asks for the original when it needs motion.
+ */
 function isThumbnailable(mime: string): boolean {
-  return /^image\/(jpeg|jpg|png|webp|gif|heic|heif|avif|tiff)$/i.test(mime.split(';')[0].trim());
+  return /^image\/(jpeg|jpg|png|gif|heic|heif|avif|tiff)$/i.test(mime.split(';')[0].trim());
 }
 
 /**

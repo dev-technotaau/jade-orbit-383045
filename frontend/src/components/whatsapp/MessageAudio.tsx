@@ -205,7 +205,16 @@ export default function MessageAudio({ message, outbound }: MessageAudioProps) {
           {DownloadButton}
         </div>
         {caption && (
-          <p className="mt-1.5 text-sm break-words whitespace-pre-wrap text-[var(--text)]">
+          <p
+            className={cn(
+              'mt-1.5 text-sm break-words whitespace-pre-wrap',
+              // The caption sits OUTSIDE the file card, directly on the bubble —
+              // which is emerald-600 with white text when outbound. Hard-coding
+              // --text (#0f172a, defined unconditionally) rendered it near-black
+              // on dark green. MessageImage and MessageVideo already branch here.
+              outbound ? 'text-white' : 'text-[var(--text)]',
+            )}
+          >
             {caption}
           </p>
         )}
@@ -260,7 +269,16 @@ export default function MessageAudio({ message, outbound }: MessageAudioProps) {
         {DownloadButton}
       </div>
       {caption && (
-        <p className="mt-1.5 text-sm break-words whitespace-pre-wrap text-[var(--text)]">
+        <p
+          className={cn(
+            'mt-1.5 text-sm break-words whitespace-pre-wrap',
+            // The caption sits OUTSIDE the file card, directly on the bubble —
+            // which is emerald-600 with white text when outbound. Hard-coding
+            // --text (#0f172a, defined unconditionally) rendered it near-black
+            // on dark green. MessageImage and MessageVideo already branch here.
+            outbound ? 'text-white' : 'text-[var(--text)]',
+          )}
+        >
           {caption}
         </p>
       )}
