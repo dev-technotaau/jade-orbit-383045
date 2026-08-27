@@ -1,6 +1,13 @@
 import { prisma } from '../config/prisma';
 import { AppError } from '../middleware/error';
-import { createCampaign } from './whatsapp-campaign.service';
+import {
+  createCampaign,
+  type CampaignTemplateParams,
+  type WaAbMetric,
+} from './whatsapp-campaign.service';
+
+/** The metrics an A/B test can be judged by — mirrors the zod enum on the API. */
+const AB_METRICS: readonly WaAbMetric[] = ['delivered', 'read', 'replied'];
 import type { WaCampaign } from '@prisma/client';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -48,6 +55,17 @@ export async function saveCampaignAsTemplate(
       // segment branch re-reads the segment as it stands today.
       segmentId: c.segmentId,
       variableMapping: c.variableMapping ?? undefined,
+      // The campaign-wide send values. Without them a blueprint of a
+      // media-header, coupon, offer, location, catalog or carousel campaign
+      // produced a campaign that could not launch — it failed the pre-flight
+      // asking for exactly the value the blueprint existed to remember.
+      templateParams: c.templateParams ?? undefined,
+      respectBusinessHours: c.respectBusinessHours,
+      // The A/B design. `isAbTest` and the variant list were saved without the
+      // split share or the metric, so a blueprint of an A/B campaign came back
+      // as one that sends to everyone at once with nothing to judge by.
+      abTestSamplePct: c.abTestSamplePct,
+      abTestMetric: c.abTestMetric,
       type: c.type,
       batchSize: c.batchSize,
       throttlePerSec: c.throttlePerSec,
@@ -109,6 +127,17 @@ export async function createCampaignFromTemplate(
     segmentId,
     variableMapping: Array.isArray(t.variableMapping) ? (t.variableMapping as string[]) : undefined,
     scheduledAt: opts.scheduledAt,
+    // Restored alongside the audience — see the note where they are saved.
+    templateParams: (t.templateParams ?? undefined) as CampaignTemplateParams | undefined,
+    respectBusinessHours: t.respectBusinessHours,
+    abTestSamplePct: t.abTestSamplePct ?? undefined,
+    // The column is a plain string, the input a three-value union. Narrowed
+    // rather than cast: a value that predates the enum — or arrives from a data
+    // fix — must fall back to the default rather than reach the A/B decision
+    // logic as a metric nothing knows how to measure.
+    abTestMetric: AB_METRICS.includes(t.abTestMetric as WaAbMetric)
+      ? (t.abTestMetric as WaAbMetric)
+      : undefined,
     batchSize: t.batchSize,
     throttlePerSec: t.throttlePerSec,
     type: t.type,

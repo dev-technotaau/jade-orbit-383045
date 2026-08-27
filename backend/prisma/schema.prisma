@@ -727,11 +727,33 @@ model WaCampaignTemplate {
   /// rather than the stale `audienceFilter` snapshot beside it.
   segmentId       String?
   variableMapping Json?
+  /// The campaign-wide send parameters — header media, header text, coupon code,
+  /// offer expiry, location pin, catalog SKUs, carousel cards.
+  ///
+  /// A blueprint without these is not reusable for the templates that most need
+  /// one: a media-header campaign saved as a blueprint produced a campaign with
+  /// no header at all, which then failed its own launch pre-flight asking for
+  /// the value the blueprint had been created to remember. `cloneCampaign`
+  /// (Duplicate) has always copied them; this path was the one that did not.
+  templateParams  Json?
+  /// Copied for the same reason `cloneCampaign` copies it: a campaign set to
+  /// hold sends outside business hours must keep holding them when it is
+  /// recreated from its blueprint, or an overnight batch reaches an
+  /// international list at 3am — the send nobody is awake to stop.
+  respectBusinessHours Boolean    @default(false)
   type            WaCampaignType  @default(BROADCAST)
   batchSize       Int             @default(100)
   throttlePerSec  Int             @default(15)
   recurrenceDays  Int?
   isAbTest        Boolean         @default(false)
+  /// The A/B DESIGN, not its verdict. `isAbTest` and `variants` were stored
+  /// without these, so a blueprint of an A/B campaign came back as one that
+  /// sends to the whole audience at once: the sample share is what holds the
+  /// launch at a slice so a winner can be measured, and without the metric there
+  /// is nothing to measure it by. The winner itself is deliberately never
+  /// stored — that would bind a fresh audience to a past run's result.
+  abTestSamplePct Int?
+  abTestMetric    String?
   variants        Json? // snapshot: [{label, templateId, weight}]
   steps           Json? // snapshot: [{stepOrder, templateId, delayHours, condition}]
   createdBy       String?
