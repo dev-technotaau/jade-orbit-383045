@@ -77,7 +77,16 @@ export const bulkConversations = async (
       action,
       ids,
       allMatching,
-      filters,
+      // The date bounds cross the wire as strings and the service takes Dates.
+      // Left as strings they are dropped by the where-builder's `params.from`
+      // check being truthy but unusable — silently widening the selection.
+      filters: filters
+        ? {
+            ...filters,
+            from: parseDayBound(filters.from, false),
+            to: parseDayBound(filters.to, true),
+          }
+        : undefined,
       assignedTo,
       snoozedUntil:
         snoozedUntil === undefined
@@ -107,6 +116,24 @@ export const getUnreadTotal = async (
   }
 };
 
+/**
+ * A `YYYY-MM-DD` day boundary, or a full ISO instant, as a Date.
+ *
+ * A bare date parses as UTC midnight, so a naive `new Date('2026-08-27')` used
+ * as an upper bound excludes everything that happened that day. The end variant
+ * takes the last millisecond of the day in the SERVER's zone, which is the zone
+ * every other timestamp in this API is rendered against.
+ */
+function parseDayBound(v: unknown, endOfDay: boolean): Date | undefined {
+  if (typeof v !== 'string' || !v.trim()) return undefined;
+  const raw = v.trim();
+  const iso = /^\d{4}-\d{2}-\d{2}$/.test(raw)
+    ? `${raw}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}`
+    : raw;
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? undefined : d;
+}
+
 export const getConversations = async (
   req: Request,
   res: Response,
@@ -125,6 +152,10 @@ export const getConversations = async (
       archivedOnly,
       snoozedOnly,
       labels,
+      awaiting,
+      from,
+      to,
+      sort,
       page,
       limit,
       cursor,
@@ -145,6 +176,14 @@ export const getConversations = async (
       archivedOnly: archivedOnly === 'true',
       snoozedOnly: snoozedOnly === 'true',
       labels: labelList.length ? labelList : undefined,
+      // "Still waiting on us" — the question that decides which thread to open
+      // next, previously answerable only by opening them.
+      awaitingOnly: awaiting === 'true',
+      from: parseDayBound(from, false),
+      to: parseDayBound(to, true),
+      // Anything unrecognised falls back to `recent` rather than 400ing: an
+      // unknown sort is a stale bookmark, not a client that needs correcting.
+      sort: sort === 'oldest' || sort === 'waiting' ? sort : 'recent',
       page: page ? parseInt(page as string, 10) : undefined,
       limit: limit ? parseInt(limit as string, 10) : undefined,
       // Keyset position of the last row already loaded. Supersedes `page`: the
@@ -713,6 +752,22 @@ export const setBotPause = async (
       String(req.params.id),
       req.body.botPausedUntil ? new Date(req.body.botPausedUntil) : null
     );
+    res.json({ success: true, data: conv });
+  } catch (e) {
+    next(e);
+  }
+};
+
+/** Pin/unpin a conversation to the top of the inbox. */
+export const pinConversation = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    // Default to pinning; pass { pinned: false } to unpin — the same shape the
+    // archive toggle beside it uses.
+    const conv = await conversationService.setPin(String(req.params.id), req.body.pinned !== false);
     res.json({ success: true, data: conv });
   } catch (e) {
     next(e);

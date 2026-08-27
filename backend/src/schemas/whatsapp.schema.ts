@@ -951,6 +951,12 @@ export const waBulkConversationsSchema = z.object({
         includeSnoozed: z.boolean().optional(),
         archivedOnly: z.boolean().optional(),
         snoozedOnly: z.boolean().optional(),
+        // Parity with the list, for the reason the comment above this object
+        // gives: a filter the list narrows by and this object drops is silently
+        // WIDENED, so "select all 12 matching" acts on far more than twelve.
+        awaitingOnly: z.boolean().optional(),
+        from: z.string().optional(),
+        to: z.string().optional(),
       })
       .optional(),
     assignedTo: z.string().max(120).nullable().optional(),

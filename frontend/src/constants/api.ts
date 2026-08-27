@@ -155,6 +155,7 @@ export const API = {
     WA_CONV_TRANSCRIPT: (id: string) => `/whatsapp/conversations/${id}/transcript`,
     WA_CONV_CSAT: (id: string) => `/whatsapp/conversations/${id}/csat`,
     WA_CONV_ARCHIVE: (id: string) => `/whatsapp/conversations/${id}/archive`,
+    WA_CONV_PIN: (id: string) => `/whatsapp/conversations/${id}/pin`,
     WA_CONV_CLEAR: (id: string) => `/whatsapp/conversations/${id}/clear`,
     WA_CONV_REACTION: (id: string) => `/whatsapp/conversations/${id}/reaction`,
     WA_CONV_LOCATION: (id: string) => `/whatsapp/conversations/${id}/location`,

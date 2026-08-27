@@ -374,6 +374,13 @@ model WaConversation {
   lastReadAt         DateTime? // agent last-read marker (unread = inbound after this)
   firstResponseAt    DateTime? // first agent reply (SLA)
   resolvedAt         DateTime? // when moved to RESOLVED (SLA)
+  /// Pinned to the top of the inbox, newest pin first.
+  ///
+  /// Distinct from every triage state already here: PENDING says "waiting on the
+  /// customer", a snooze says "not until later", a label says "this kind of
+  /// thing". None of them says "this is the thread I am working today", which is
+  /// what an operator reaches for a pin to mean.
+  pinnedAt       DateTime?
   snoozedUntil       DateTime? // hidden from the active queue until this time
   labels             String[]             @default([]) // triage labels
   archivedAt         DateTime? // soft-archive (hidden from default views)
@@ -483,6 +490,16 @@ model WaConversation {
   /// The default list filters archivedAt: null and sorts by lastMessageAt.
   @@index([archivedAt, lastMessageAt(sort: Desc)])
   @@index([snoozedUntil])
+  /// Serves the "waiting longest" sort.
+  ///
+  /// ASC is NULLS LAST in Postgres, which is exactly the order wanted here:
+  /// the thread that has been waiting longest first, and threads waiting on
+  /// nobody last. Without it that sort is a full sort of the filtered set.
+  @@index([awaitingReplySince])
+  /// Pinned threads render in their own block above the paged list, so this is
+  /// read on every page to exclude them from it. Sparse and capped, but the
+  /// index is what keeps that exclusion from scanning the whole table.
+  @@index([pinnedAt(sort: Desc)])
 }
 
 model WaMessage {

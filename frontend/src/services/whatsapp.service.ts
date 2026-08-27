@@ -189,6 +189,20 @@ export interface WaConversationFilters {
   snoozedOnly?: boolean;
   /** Triage labels to match (any-of). */
   labels?: string[];
+  /** Only threads where the customer is still waiting on a reply from us. */
+  awaiting?: boolean;
+  /** Inclusive `YYYY-MM-DD` lower bound on the thread's last activity. */
+  from?: string;
+  /** Inclusive `YYYY-MM-DD` upper bound on the thread's last activity. */
+  to?: string;
+  /**
+   * Ordering. `recent` is the default and the only one that used to exist.
+   *
+   * The cursor is minted against the active sort and the server discards one
+   * that does not match, so changing the sort mid-scroll restarts cleanly rather
+   * than paging into a different ordering.
+   */
+  sort?: 'recent' | 'oldest' | 'waiting';
   page?: number;
   limit?: number;
   /**
@@ -223,6 +237,10 @@ export const whatsappService = {
         archivedOnly: f.archivedOnly ? 'true' : undefined,
         snoozedOnly: f.snoozedOnly ? 'true' : undefined,
         labels: f.labels?.length ? f.labels.join(',') : undefined,
+        awaiting: f.awaiting ? 'true' : undefined,
+        from: f.from || undefined,
+        to: f.to || undefined,
+        sort: f.sort && f.sort !== 'recent' ? f.sort : undefined,
         page: f.page,
         limit: f.limit,
         // Keyset position of the last row already loaded. Supersedes `page` —
@@ -1715,6 +1733,16 @@ export const whatsappService = {
   // ── Conversation CSAT / archive ──
   async requestCsat(id: string): Promise<ApiResponse<unknown>> {
     const res = await api.post(API.SUPER_ADMIN.WA_CONV_CSAT(id));
+    return res.data;
+  },
+  /**
+   * Pin/unpin a thread to the top of the inbox.
+   *
+   * Capped server-side (409 `WA_PIN_LIMIT`) — the pinned block sits above the
+   * paged list, so an unbounded one starves the list it sits on top of.
+   */
+  async pinConversation(id: string, pinned: boolean): Promise<ApiResponse<WaConversation>> {
+    const res = await api.post(API.SUPER_ADMIN.WA_CONV_PIN(id), { pinned });
     return res.data;
   },
   async archiveConversation(id: string, archived: boolean): Promise<ApiResponse<WaConversation>> {

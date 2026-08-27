@@ -115,7 +115,23 @@ const MESSAGE_SEARCH_WINDOW_DAYS = parseInt(env.WA_MESSAGE_SEARCH_WINDOW_DAYS, 1
 /** Shorter than this, a body search matches nearly everything and costs the most. */
 const MIN_MESSAGE_SEARCH_LEN = 3;
 
+/**
+ * How the inbox is ordered.
+ *
+ * `recent` is the default and the only order that existed. The other two answer
+ * questions the list could not: "what have I left longest?" (oldest) and "who is
+ * still waiting on US?" (waiting) — the second being the one that decides which
+ * thread to open next, and which was previously answerable only by opening them.
+ */
+export type ConversationSort = 'recent' | 'oldest' | 'waiting';
+
 export interface ConversationListFilters {
+  /** Only threads where the customer is still waiting on a reply from us. */
+  awaitingOnly?: boolean;
+  /** Inclusive lower bound on `lastMessageAt`. */
+  from?: Date;
+  /** Inclusive upper bound on `lastMessageAt`. */
+  to?: Date;
   /**
    * Only conversations on this connected number.
    *
@@ -204,6 +220,20 @@ function buildConversationListWhere(
   return {
     ...(params.channelId ? { channelId: params.channelId } : {}),
     ...(params.status ? { status: params.status } : {}),
+    // `awaitingReplySince` is stamped when an inbound lands with no agent reply
+    // after it and cleared when one is sent, so "not null" IS "the customer is
+    // waiting on us". The column was written and read by nothing.
+    ...(params.awaitingOnly ? { awaitingReplySince: { not: null } } : {}),
+    // A date window on the thread's last activity. Without it, finding the
+    // conversations from a particular campaign day meant scrolling.
+    ...(params.from || params.to
+      ? {
+          lastMessageAt: {
+            ...(params.from ? { gte: params.from } : {}),
+            ...(params.to ? { lte: params.to } : {}),
+          },
+        }
+      : {}),
     // `__none__` is the sentinel for "unassigned". It has to be server-side:
     // filtering it in the client only ever saw the loaded page, so an inbox with
     // 50 assigned conversations on page 1 reported "no conversations" while
@@ -258,20 +288,51 @@ function buildConversationListWhere(
  * moves. `id` is the tiebreaker, so rows sharing a timestamp still have a total
  * order (and `lastMessageAt` is second-resolution in places, so ties are real).
  */
-function encodeConvCursor(row: { lastMessageAt: Date | null; id: string }): string {
-  return `${row.lastMessageAt ? row.lastMessageAt.getTime() : ''}.${row.id}`;
+/**
+ * The cursor also carries the SORT it was minted under.
+ *
+ * A keyset cursor is only meaningful against the ordering that produced it —
+ * "everything after this row" is a different set under `waiting` than under
+ * `recent`. Changing the sort with a cursor still in hand would otherwise page
+ * into nonsense, silently skipping or repeating rows. `list()` discards a
+ * mismatched cursor and starts again from page 1, which is what the operator
+ * meant by changing the sort anyway.
+ */
+function sortValue(row: SortableRow, sort: ConversationSort): Date | null {
+  return sort === 'waiting' ? (row.awaitingReplySince ?? null) : row.lastMessageAt;
 }
 
-function decodeConvCursor(raw?: string | null): { at: Date | null; id: string } | null {
+interface SortableRow {
+  lastMessageAt: Date | null;
+  awaitingReplySince?: Date | null;
+  id: string;
+}
+
+function encodeConvCursor(row: SortableRow, sort: ConversationSort): string {
+  const at = sortValue(row, sort);
+  return `${sort}|${at ? at.getTime() : ''}.${row.id}`;
+}
+
+function decodeConvCursor(
+  raw?: string | null
+): { sort: ConversationSort; at: Date | null; id: string } | null {
   if (!raw) return null;
-  const dot = raw.indexOf('.');
+  const bar = raw.indexOf('|');
+  // A cursor minted before the sort was part of it. Treat it as `recent`, which
+  // is what it was — rather than dropping the operator back to page 1 mid-scroll
+  // on the deploy that ships this.
+  const sortPart = bar < 0 ? 'recent' : raw.slice(0, bar);
+  const rest = bar < 0 ? raw : raw.slice(bar + 1);
+  const sort: ConversationSort =
+    sortPart === 'oldest' || sortPart === 'waiting' ? sortPart : 'recent';
+  const dot = rest.indexOf('.');
   if (dot < 0) return null;
-  const ms = raw.slice(0, dot);
-  const id = raw.slice(dot + 1);
+  const ms = rest.slice(0, dot);
+  const id = rest.slice(dot + 1);
   if (!id) return null;
-  if (ms === '') return { at: null, id };
+  if (ms === '') return { sort, at: null, id };
   const n = Number(ms);
-  return Number.isFinite(n) ? { at: new Date(n), id } : null;
+  return Number.isFinite(n) ? { sort, at: new Date(n), id } : null;
 }
 
 /**
@@ -283,10 +344,27 @@ function decodeConvCursor(raw?: string | null): { at: Date | null; id: string } 
  *   - cursor still inside the null block: take later nulls, then everything dated
  *   - cursor on a dated row: strictly older, or same instant with a smaller id
  */
-function conversationsAfter(cursor: {
-  at: Date | null;
-  id: string;
-}): Prisma.WaConversationWhereInput {
+function conversationsAfter(
+  cursor: { at: Date | null; id: string },
+  sort: ConversationSort
+): Prisma.WaConversationWhereInput {
+  // ASC orders. Postgres puts NULLs LAST on an ascending column, which inverts
+  // both cases relative to the DESC branch below: a null-valued row is at the
+  // BOTTOM, so a cursor sitting on one can only be followed by later nulls,
+  // and a dated cursor is followed by later dates OR by the whole null block.
+  if (sort === 'oldest' || sort === 'waiting') {
+    const field = sort === 'waiting' ? 'awaitingReplySince' : 'lastMessageAt';
+    if (cursor.at === null) {
+      return { [field]: null, id: { gt: cursor.id } } as Prisma.WaConversationWhereInput;
+    }
+    return {
+      OR: [
+        { [field]: { gt: cursor.at } },
+        { [field]: cursor.at, id: { gt: cursor.id } },
+        { [field]: null },
+      ],
+    } as Prisma.WaConversationWhereInput;
+  }
   if (cursor.at === null) {
     return {
       OR: [{ lastMessageAt: null, id: { lt: cursor.id } }, { lastMessageAt: { not: null } }],
@@ -297,19 +375,90 @@ function conversationsAfter(cursor: {
   };
 }
 
+/**
+ * The contact columns every conversation list row needs.
+ *
+ * Named because the pinned block is a second query over the same rows — two
+ * copies of this select would drift, and the row that lost a field would render
+ * differently for no reason a reader could see.
+ */
+const CONVERSATION_CONTACT_SELECT = {
+  id: true,
+  phone: true,
+  name: true,
+  // The customer's own WhatsApp display name. `name` is operator-owned now, so a
+  // contact nobody has renamed has only this one — without it the whole inbox
+  // would relabel itself to phone numbers.
+  profileName: true,
+  optInStatus: true,
+  isBlocked: true,
+  // Do-not-contact. Every outbound funnels through `isSuppressed`, so without
+  // this the composer stayed live for someone who had sent STOP: the send was
+  // accepted, the draft cleared, and the reply came back as a red FAILED bubble
+  // with no warning beforehand.
+  suppressedAt: true,
+  // Whether a marketing template is likely to be DELIVERED, which is a different
+  // question from whether we are allowed to send it. `lastInboundAt` null = this
+  // contact has never messaged us, which is when Meta's per-user marketing cap
+  // bites hardest; `marketingRefusedAt` means it has already refused them.
+  lastInboundAt: true,
+  marketingRefusedAt: true,
+} as const;
+
+/**
+ * How many conversations may be pinned at once.
+ *
+ * The pinned block renders ABOVE the paged list and is read on every page to
+ * exclude its rows from that list. Unbounded, it would both starve the page it
+ * sits on top of and turn that exclusion into an unbounded `notIn`.
+ */
+export const PIN_MAX = 20;
+
 export async function list(
-  params: ConversationListFilters & { page?: number; limit?: number; cursor?: string }
+  params: ConversationListFilters & {
+    page?: number;
+    limit?: number;
+    cursor?: string;
+    sort?: ConversationSort;
+  }
 ) {
   const page = Math.max(1, params.page ?? 1);
   const limit = Math.min(100, params.limit ?? 30);
+  const sort: ConversationSort = params.sort ?? 'recent';
   const filterWhere = buildConversationListWhere(params);
-  const cursor = decodeConvCursor(params.cursor);
+  const rawCursor = decodeConvCursor(params.cursor);
+  // A cursor minted under a different sort describes a position in an ordering
+  // that no longer applies — paging on it would skip and repeat rows silently.
+  // Dropping it restarts at page 1, which is what changing the sort means.
+  const cursor = rawCursor && rawCursor.sort === sort ? rawCursor : null;
   // A cursor supersedes `page`. `skip` is kept for callers that still pass a
   // page number so nothing breaks mid-deploy, but it is the drifting path — see
   // the note on encodeConvCursor.
-  const where: Prisma.WaConversationWhereInput = cursor
-    ? { AND: [filterWhere, conversationsAfter(cursor)] }
-    : filterWhere;
+  // Pinned ids are read on EVERY page, not just the first.
+  //
+  // The pinned rows are hydrated only for page 1 (they render once, above the
+  // list), but they must be excluded from every page — a pinned thread whose
+  // `lastMessageAt` happens to fall on page 3 would otherwise come back inside
+  // that page and render a second time, and the client's dedup only looks
+  // within the merged item list, never across the two.
+  //
+  // Cheap: sparse index, `take: PIN_MAX`, ids only.
+  const pinnedIds = (
+    await prisma.waConversation.findMany({
+      where: { pinnedAt: { not: null } },
+      select: { id: true },
+      orderBy: [{ pinnedAt: 'desc' }],
+      take: PIN_MAX,
+    })
+  ).map((r) => r.id);
+
+  const where: Prisma.WaConversationWhereInput = {
+    AND: [
+      filterWhere,
+      ...(cursor ? [conversationsAfter(cursor, sort)] : []),
+      ...(pinnedIds.length ? [{ id: { notIn: pinnedIds } }] : []),
+    ],
+  };
   const [items, total] = await Promise.all([
     prisma.waConversation.findMany({
       where,
@@ -324,53 +473,57 @@ export async function list(
       // `id` is the tiebreaker that makes the order TOTAL. Without it two rows
       // sharing a `lastMessageAt` have no defined relative position, so a keyset
       // cursor on one of them could skip or repeat the other.
-      orderBy: [{ lastMessageAt: 'desc' }, { id: 'desc' }],
+      // `recent` is the shape the four DESC indexes were declared for and stays
+      // untouched. The two ascending orders are NULLS LAST in Postgres, which is
+      // the order they want anyway: for `waiting`, threads waiting longest first
+      // and threads waiting on nobody at the end.
+      orderBy:
+        sort === 'waiting'
+          ? [{ awaitingReplySince: 'asc' as const }, { id: 'asc' as const }]
+          : sort === 'oldest'
+            ? [{ lastMessageAt: 'asc' as const }, { id: 'asc' as const }]
+            : [{ lastMessageAt: 'desc' as const }, { id: 'desc' as const }],
       // Only the offset path skips. With a cursor the WHERE has already excluded
       // everything above it.
       ...(cursor ? {} : { skip: (page - 1) * limit }),
       take: limit,
-      include: {
-        contact: {
-          // `userId` and the `user` relation (which supplied an avatar for
-          // contacts linked to a platform account) went with the User model.
-          // The Cloud API does not expose customers' profile photos, so the
-          // inbox falls back to initials.
-          select: {
-            id: true,
-            phone: true,
-            name: true,
-            // The customer's own WhatsApp display name. `name` is operator-owned
-            // now, so a contact nobody has renamed has only this one — without it
-            // the whole inbox would relabel itself to phone numbers.
-            profileName: true,
-            optInStatus: true,
-            isBlocked: true,
-            // Do-not-contact. Every outbound funnels through `isSuppressed`, so
-            // without this the composer stayed live for someone who had sent
-            // STOP: the send was accepted, the draft cleared, and the reply came
-            // back as a red FAILED bubble with no warning beforehand.
-            suppressedAt: true,
-            // Whether a marketing template is likely to be DELIVERED, which is a
-            // different question from whether we are allowed to send it.
-            // lastInboundAt null = this contact has never messaged us, which is
-            // when Meta's per-user marketing cap bites hardest; marketingRefusedAt
-            // means it has already refused them.
-            lastInboundAt: true,
-            marketingRefusedAt: true,
-          },
-        },
-      },
+      include: { contact: { select: CONVERSATION_CONTACT_SELECT } },
     }),
     // Counted only for the FIRST page. It is an unbounded count over the whole
     // filtered set with no index that can answer it, and paging deeper does not
     // change the answer — re-running it per "Load more" was pure waste on the
     // same pool a campaign saturates.
-    cursor ? Promise.resolve(-1) : prisma.waConversation.count({ where: filterWhere }),
+    // Counted over the SAME where the page used, pins excluded — otherwise the
+    // total counts rows the list will never show and "1-30 of 214" is wrong by
+    // exactly the number of pinned threads.
+    cursor ? Promise.resolve(-1) : prisma.waConversation.count({ where }),
   ]);
+
+  // Hydrated for the first page only: they render once, above the list.
+  const pinnedRows =
+    !cursor && page === 1 && pinnedIds.length
+      ? await prisma.waConversation.findMany({
+          where: { id: { in: pinnedIds } },
+          orderBy: [{ pinnedAt: 'desc' }],
+          include: { contact: { select: CONVERSATION_CONTACT_SELECT } },
+        })
+      : [];
+
   const withMatches = await attachMessageMatches(items, params);
+  // The same search treatment as the list, or a pinned row would lose the
+  // matched-message deep link that every other row in a search result has.
+  const pinned = await attachMessageMatches(pinnedRows, params);
   const last = items[items.length - 1];
   return {
     items: withMatches,
+    /**
+     * Pinned threads, newest pin first — a SEPARATE array, not prepended.
+     *
+     * Prepending would put rows inside `items` that the keyset cursor cannot
+     * describe, so the next page would start from a pinned row's timestamp.
+     * Present only on page 1.
+     */
+    pinned,
     total,
     page,
     limit,
@@ -379,7 +532,9 @@ export async function list(
     // signal there may be more — one wasted fetch at the end beats hiding rows.
     hasMore: cursor ? items.length === limit : page * limit < total,
     /** Feed straight back as `cursor` to get the next page. */
-    nextCursor: last ? encodeConvCursor(last) : null,
+    nextCursor: last ? encodeConvCursor(last, sort) : null,
+    /** Echoed so the client can tell which ordering the cursor belongs to. */
+    sort,
   };
 }
 
@@ -1141,6 +1296,37 @@ export async function setBotPause(conversationId: string, botPausedUntil: Date |
 }
 
 /** Snooze (or un-snooze when null) a conversation out of the active queue. */
+/**
+ * Pin or unpin a conversation.
+ *
+ * Its own state rather than a reuse of one that exists, because none of them
+ * means this: PENDING says "waiting on the customer", a snooze says "not until
+ * later", a label says "this kind of thing". "This is the thread I am working
+ * today" had no representation at all, so operators substituted a snooze — which
+ * HIDES the thread — or simply remembered.
+ *
+ * Capped. The pinned block sits above the paged list, so an unbounded one
+ * starves the list it is supposed to sit on top of.
+ */
+export async function setPin(conversationId: string, pinned: boolean) {
+  if (pinned) {
+    const current = await prisma.waConversation.count({ where: { pinnedAt: { not: null } } });
+    if (current >= PIN_MAX) {
+      throw new AppError(
+        `At most ${PIN_MAX} conversations can be pinned — unpin one first.`,
+        409,
+        'WA_PIN_LIMIT'
+      );
+    }
+  }
+  const conv = await prisma.waConversation.update({
+    where: { id: conversationId },
+    data: { pinnedAt: pinned ? new Date() : null },
+  });
+  emitWa('wa:conversation', { conversationId, conversation: conv }, conversationId);
+  return conv;
+}
+
 export async function setSnooze(conversationId: string, snoozedUntil: Date | null) {
   const conv = await prisma.waConversation.update({
     where: { id: conversationId },

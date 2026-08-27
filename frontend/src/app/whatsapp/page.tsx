@@ -35,6 +35,8 @@ import {
   FileText,
   ShoppingBag,
   MailQuestionMark,
+  Pin,
+  PinOff,
   Download,
   Archive,
   ArchiveRestore,
@@ -946,6 +948,13 @@ function ConversationRowMeta({ conv }: { conv: WaConversation }) {
   const labels = conv.labels ?? [];
   const bits: React.ReactNode[] = [];
 
+  // First, because it explains the row's POSITION. Without it a pinned thread
+  // simply sits at the top of a list sorted by something else, which reads as a
+  // sorting bug rather than as the operator's own choice.
+  if (conv.pinnedAt) {
+    bits.push(<Pin key="pin" className="h-3 w-3 shrink-0 text-amber-600" aria-label="Pinned" />);
+  }
+
   if (conv.status === 'RESOLVED') {
     bits.push(
       <span key="st" className="shrink-0 text-emerald-600" title="Resolved">
@@ -1202,6 +1211,26 @@ export default function SuperAdminWhatsappInboxPage() {
   // into the live queue and scroll — there was no archived-only or snoozed-only
   // view at all, and "what did I park last week?" had no answer.
   const [scopeFilter, setScopeFilter] = useState<ScopeFilter>('active');
+  /**
+   * "Still waiting on us."
+   *
+   * `awaitingReplySince` has been stamped on every inbound with no agent reply
+   * after it since the SLA work, and read by nothing. It is the one question
+   * that decides which thread to open next, and the only way to answer it was to
+   * open them.
+   */
+  const [awaitingOnly, setAwaitingOnly] = useState(false);
+  /** Inclusive YYYY-MM-DD bounds on last activity; '' = unbounded. */
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  /**
+   * Ordering.
+   *
+   * The list has only ever been newest-first, which answers "what just came in"
+   * and nothing else — not "what have I left longest", and not "who is still
+   * waiting". Both of those are the questions asked when clearing a backlog.
+   */
+  const [convSort, setConvSort] = useState<'recent' | 'oldest' | 'waiting'>('recent');
   const includeArchived = scopeFilter === 'all' || scopeFilter === 'archived';
   const archivedOnly = scopeFilter === 'archived';
   // The archive shows everything filed away, snoozed or not; the snoozed scope
@@ -1546,6 +1575,10 @@ export default function SuperAdminWhatsappInboxPage() {
         channelId: channelParam,
         searchMessages,
         scope: scopeFilter,
+        awaitingOnly,
+        dateFrom,
+        dateTo,
+        sort: convSort,
       },
     ],
     queryFn: () =>
@@ -1561,6 +1594,10 @@ export default function SuperAdminWhatsappInboxPage() {
         includeSnoozed,
         archivedOnly,
         snoozedOnly,
+        awaiting: awaitingOnly,
+        from: dateFrom || undefined,
+        to: dateTo || undefined,
+        sort: convSort,
         page: 1,
         limit: 50,
       }),
@@ -1572,7 +1609,7 @@ export default function SuperAdminWhatsappInboxPage() {
   // filter/search) changes. Render-time adjustment to avoid an effect cascade.
   const [convPageKey, setConvPageKey] = useState<string | undefined>(undefined);
   const firstPageKey = convQuery.dataUpdatedAt
-    ? `${debouncedSearch}|${unreadOnly}|${statusParam}|${assignedToParam}|${labelFilter}|${channelFilter}|${searchMessages}|${scopeFilter}`
+    ? `${debouncedSearch}|${unreadOnly}|${statusParam}|${assignedToParam}|${labelFilter}|${channelFilter}|${searchMessages}|${scopeFilter}|${awaitingOnly}|${dateFrom}|${dateTo}|${convSort}`
     : undefined;
   if (firstPageKey !== convPageKey) {
     setConvPageKey(firstPageKey);
@@ -1587,7 +1624,17 @@ export default function SuperAdminWhatsappInboxPage() {
   const allConversations = useMemo(() => {
     const seen = new Set<string>();
     const merged: WaConversation[] = [];
-    for (const c of [...(firstPage?.items ?? []), ...extraConvPages]) {
+    // Pinned rows lead. They arrive as their OWN array because the keyset cursor
+    // describes a position in the sorted list and a pinned row inside `items`
+    // would make the next page start from that row's timestamp — but they are
+    // merged here rather than rendered as a separate block, so they keep every
+    // affordance an ordinary row has: selection, keyboard nav, the virtualiser.
+    // The server excludes them from `items` on every page, so no row is doubled.
+    for (const c of [
+      ...(firstPage?.pinned ?? []),
+      ...(firstPage?.items ?? []),
+      ...extraConvPages,
+    ]) {
       if (seen.has(c.id)) continue;
       seen.add(c.id);
       merged.push(c);
@@ -1686,6 +1733,14 @@ export default function SuperAdminWhatsappInboxPage() {
         includeSnoozed,
         archivedOnly,
         snoozedOnly,
+        awaiting: awaitingOnly,
+        from: dateFrom || undefined,
+        to: dateTo || undefined,
+        // The sort has to be repeated too, and for a stronger reason than the
+        // others: the cursor is minted against it, and the server DISCARDS a
+        // cursor from a different ordering. Omitting it here would silently
+        // restart every "Load more" at page 1.
+        sort: convSort,
         // `cursor` supersedes `page` server-side; `page` is still sent so a
         // first "Load more" issued against an older backend still works.
         cursor: convPageCursor ?? firstPage?.nextCursor ?? undefined,
@@ -2762,6 +2817,18 @@ export default function SuperAdminWhatsappInboxPage() {
     onError: (e) => showToast.error(errorMessage(e, 'Could not mark unread')),
   });
 
+  const pinMut = useMutation({
+    mutationFn: (pinned: boolean) => svc.pinConversation(selectedId as string, pinned),
+    onSuccess: (_r, pinned) => {
+      qc.invalidateQueries({ queryKey: ['wa-conversations'] });
+      qc.invalidateQueries({ queryKey: ['wa-conversation', selectedId] });
+      showToast.success(pinned ? 'Pinned to the top' : 'Unpinned');
+    },
+    // The server caps pins (409 WA_PIN_LIMIT) and its message names the cap, so
+    // it is shown as-is rather than replaced with a generic failure.
+    onError: (e) => showToast.error(errorMessage(e, 'Could not pin this conversation')),
+  });
+
   const archiveMut = useMutation({
     mutationFn: (archived: boolean) => svc.archiveConversation(selectedId as string, archived),
     onSuccess: (_res, archived) => {
@@ -2827,8 +2894,17 @@ export default function SuperAdminWhatsappInboxPage() {
     includeSnoozed,
     archivedOnly,
     snoozedOnly,
+    awaitingOnly,
+    from: dateFrom || undefined,
+    to: dateTo || undefined,
   };
-  const totalMatchingConv = firstPage?.total ?? conversations.length;
+  // `total` counts the PAGED list, which excludes pinned rows; the bulk
+  // "select all matching" where-clause does not exclude them. Adding them back
+  // keeps the number the operator confirms equal to the number acted on.
+  const totalMatchingConv =
+    firstPage?.total != null && firstPage.total >= 0
+      ? firstPage.total + (firstPage.pinned?.length ?? 0)
+      : conversations.length;
   const canSelectAllMatchingConv = true;
 
   const toggleSelect = (id: string, checked: boolean) =>
@@ -3005,6 +3081,69 @@ export default function SuperAdminWhatsappInboxPage() {
                   Search messages
                 </button>
               </Tooltip>
+              <Tooltip content="Threads where the customer is still waiting on a reply from us">
+                <button
+                  type="button"
+                  onClick={() => setAwaitingOnly((v) => !v)}
+                  aria-pressed={awaitingOnly}
+                  className={cn(
+                    'rounded-full px-3 py-1 text-xs font-medium transition-colors',
+                    awaitingOnly
+                      ? 'bg-amber-600 text-white'
+                      : 'bg-[var(--bg-secondary)] text-[var(--text-secondary)]',
+                  )}
+                >
+                  Awaiting reply
+                </button>
+              </Tooltip>
+              {/* Distinct from "Unread only": a thread an agent has READ and not
+                  yet answered is the one most likely to be forgotten, and it is
+                  invisible to every other filter here. */}
+            </div>
+            <div className="mt-2 grid grid-cols-2 gap-1.5">
+              <div>
+                <label
+                  htmlFor="wa-sort"
+                  className="mb-0.5 block text-[10px] font-medium tracking-wide text-[var(--text-muted)] uppercase"
+                >
+                  Sort
+                </label>
+                <Select
+                  id="wa-sort"
+                  size="sm"
+                  clearable={false}
+                  value={convSort}
+                  onChange={(v) => setConvSort(v as 'recent' | 'oldest' | 'waiting')}
+                  options={[
+                    { value: 'recent', label: 'Newest first' },
+                    { value: 'oldest', label: 'Oldest first' },
+                    { value: 'waiting', label: 'Waiting longest' },
+                  ]}
+                />
+              </div>
+              <div>
+                <span className="mb-0.5 block text-[10px] font-medium tracking-wide text-[var(--text-muted)] uppercase">
+                  Last activity
+                </span>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="date"
+                    value={dateFrom}
+                    max={dateTo || undefined}
+                    onChange={(e) => setDateFrom(e.target.value)}
+                    aria-label="Active from"
+                    className="w-full min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg)] px-1.5 py-1 text-[11px] text-[var(--text)] outline-none focus:border-[var(--primary)]"
+                  />
+                  <input
+                    type="date"
+                    value={dateTo}
+                    min={dateFrom || undefined}
+                    onChange={(e) => setDateTo(e.target.value)}
+                    aria-label="Active until"
+                    className="w-full min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg)] px-1.5 py-1 text-[11px] text-[var(--text)] outline-none focus:border-[var(--primary)]"
+                  />
+                </div>
+              </div>
             </div>
             <div className="mt-2 grid grid-cols-2 gap-1.5">
               {/* Archived and snoozed are SCOPES, not "also show" checkboxes:
@@ -3412,6 +3551,25 @@ export default function SuperAdminWhatsappInboxPage() {
                       </div>
                     )}
                   </div>
+                  <Tooltip content={selected.pinnedAt ? 'Unpin' : 'Pin to top'}>
+                    <button
+                      type="button"
+                      onClick={() => pinMut.mutate(!selected.pinnedAt)}
+                      disabled={pinMut.isPending}
+                      aria-label={selected.pinnedAt ? 'Unpin conversation' : 'Pin conversation'}
+                      aria-pressed={!!selected.pinnedAt}
+                      className={cn(
+                        'rounded-md border border-[var(--border)] px-2 py-1 text-xs hover:bg-[var(--bg-secondary)] disabled:opacity-60',
+                        selected.pinnedAt ? 'text-amber-600' : 'text-[var(--text-secondary)]',
+                      )}
+                    >
+                      {selected.pinnedAt ? (
+                        <PinOff className="h-4 w-4" />
+                      ) : (
+                        <Pin className="h-4 w-4" />
+                      )}
+                    </button>
+                  </Tooltip>
                   <Tooltip content="Mark unread">
                     <button
                       type="button"

@@ -59,6 +59,8 @@ export interface WaConversation {
   lastReadAt: string | null;
   firstResponseAt: string | null;
   resolvedAt: string | null;
+  /** Pinned to the top of the inbox; null when not pinned. */
+  pinnedAt?: string | null;
   snoozedUntil: string | null;
   /** Automated replies are suppressed on this thread until this time. */
   botPausedUntil?: string | null;
@@ -178,6 +180,14 @@ export interface WaMessage {
 
 export interface WaConversationsPage {
   items: WaConversation[];
+  /**
+   * Pinned threads, newest pin first — page 1 only, and NOT included in `items`.
+   *
+   * A separate array rather than prepended rows: the keyset cursor describes a
+   * position in the sorted list, and a pinned row inside `items` would make the
+   * next page start from that row's timestamp instead of the list's.
+   */
+  pinned?: WaConversation[];
   /** -1 when paging by cursor: the count is only computed for the first page. */
   total: number;
   page: number;
@@ -186,6 +196,8 @@ export interface WaConversationsPage {
   hasMore: boolean;
   /** Feed back as `cursor` to fetch the next page. Null when this page is empty. */
   nextCursor?: string | null;
+  /** The ordering this page was built under; the cursor is only valid for it. */
+  sort?: 'recent' | 'oldest' | 'waiting';
 }
 
 export interface WaChannel {

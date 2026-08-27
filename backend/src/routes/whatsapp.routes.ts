@@ -753,6 +753,11 @@ router.post(
   ctrl.sendReaction
 );
 router.post(
+  '/conversations/:id/pin',
+  audit('WA_PIN_CONVERSATION', 'WaConversation'),
+  ctrl.pinConversation
+);
+router.post(
   '/conversations/:id/location',
   waSendLimiter,
   audit('WA_SEND_LOCATION', 'WaConversation'),
