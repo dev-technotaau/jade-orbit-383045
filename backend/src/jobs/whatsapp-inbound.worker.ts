@@ -324,6 +324,23 @@ function extractInbound(msg: any): {
 }
 
 /**
+ * Everything in Meta's inbound `context` except the WAMID.
+ *
+ * Returns undefined when there is nothing beyond the id, so a plain reply does
+ * not carry an empty object on every row — `contextWamid` alone already says
+ * "this is a reply".
+ */
+function inboundContextData(context: any): Prisma.InputJsonValue | undefined {
+  if (!context || typeof context !== 'object') return undefined;
+  const rest: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(context)) {
+    if (k === 'id' || v == null) continue;
+    rest[k] = v;
+  }
+  return Object.keys(rest).length > 0 ? (rest as Prisma.InputJsonValue) : undefined;
+}
+
+/**
  * Reconcile the two inbound signals that say something about WHO the customer
  * is rather than what they said: a `system` notice, and the `identity` block
  * Meta attaches to an otherwise ordinary message.
@@ -607,6 +624,10 @@ async function processMessages(value: any): Promise<boolean> {
             // being gone for good.
             mediaArchiveStatus: mediaId ? (isR2Configured() ? 'PENDING' : 'SKIPPED') : null,
             contextWamid: msg.context?.id ?? null,
+            // The rest of the context object — the forwarded flags and the
+            // catalogue product a question refers to. `id` stays in its own
+            // column; keeping a copy here too would give two places to disagree.
+            contextData: inboundContextData(msg.context),
             referral: referral ?? undefined,
             createdAt,
           },

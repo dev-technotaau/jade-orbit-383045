@@ -142,6 +142,18 @@ export interface WaMessage {
   mediaArchiveStatus?: string | null;
   templateName: string | null;
   contextWamid: string | null;
+  /**
+   * The rest of Meta's inbound `context` object (`id` lives in `contextWamid`).
+   *
+   * Carries the forwarded flags and, on a catalogue enquiry, the exact product
+   * the customer's question is about.
+   */
+  contextData?: {
+    forwarded?: boolean;
+    frequently_forwarded?: boolean;
+    referred_product?: { catalog_id?: string; product_retailer_id?: string };
+    from?: string;
+  } | null;
   errorCode: string | null;
   errorTitle: string | null;
   /**

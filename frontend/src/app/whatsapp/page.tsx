@@ -31,7 +31,9 @@ import {
   Reply,
   X,
   CalendarClock,
+  CornerUpRight,
   FileText,
+  ShoppingBag,
   MailQuestionMark,
   Download,
   Archive,
@@ -647,6 +649,21 @@ function MessageBubble({
                   : 'self-start rounded-bl-sm bg-white text-[var(--text)] ring-1 ring-[var(--border)]',
               )}
             >
+              {/* WhatsApp itself labels a forward, and for good reason: the
+                  customer did not write this, so replying as though they did
+                  reads as a non-sequitur. `frequently_forwarded` is Meta's own
+                  chain-message signal and is called out separately. */}
+              {(message.contextData?.forwarded || message.contextData?.frequently_forwarded) && (
+                <p
+                  className={cn(
+                    'mb-1 flex items-center gap-1 text-[11px] italic',
+                    outbound ? 'text-white/70' : 'text-[var(--text-muted)]',
+                  )}
+                >
+                  <CornerUpRight className="h-3 w-3" aria-hidden="true" />
+                  {message.contextData?.frequently_forwarded ? 'Forwarded many times' : 'Forwarded'}
+                </p>
+              )}
               {quotedText && (
                 <div
                   className={cn(
@@ -657,6 +674,28 @@ function MessageBubble({
                   )}
                 >
                   <span className="line-clamp-2 break-words">{quotedText}</span>
+                </div>
+              )}
+              {/* The customer tapped a catalogue item and asked about it. The
+                  product id was on the webhook and discarded, so "is this
+                  available?" arrived with no way to tell WHAT — the agent had to
+                  ask, on a question the customer had already answered. */}
+              {message.contextData?.referred_product?.product_retailer_id && (
+                <div
+                  className={cn(
+                    'mb-1 flex items-center gap-1.5 rounded px-2 py-1 text-[11px]',
+                    outbound
+                      ? 'bg-white/15 text-white/90'
+                      : 'bg-[var(--bg-secondary)] text-[var(--text-secondary)]',
+                  )}
+                >
+                  <ShoppingBag className="h-3 w-3 shrink-0" aria-hidden="true" />
+                  <span className="truncate">
+                    About product{' '}
+                    <span className="font-medium">
+                      {message.contextData.referred_product.product_retailer_id}
+                    </span>
+                  </span>
                 </div>
               )}
               {sentTemplate ? (

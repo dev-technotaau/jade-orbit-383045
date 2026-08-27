@@ -531,6 +531,19 @@ model WaMessage {
   /// category the message ACTUALLY went out under cannot change after the fact.
   templateCategory   WaTemplateCategory?
   contextWamid       String? // reply-to (threading)
+  /// Everything else Meta put in the inbound `context` object.
+  ///
+  /// Only `context.id` was kept, and the rest of that object is the part that
+  /// changes how a message should be read: `forwarded` / `frequently_forwarded`
+  /// mean the customer did not write this (WhatsApp itself labels those, and a
+  /// frequently-forwarded message is its own spam signal), and
+  /// `referred_product` names the exact catalogue item a "is this available?"
+  /// is about — the difference between answering the question and asking which
+  /// product they mean.
+  ///
+  /// Stored whole rather than as three columns so a field Meta adds later is
+  /// captured rather than silently dropped a second time.
+  contextData        Json?
   errorCode          String?
   errorTitle         String?
   /// Meta's `error_data.details` — the ACTIONABLE half of a delivery failure.
