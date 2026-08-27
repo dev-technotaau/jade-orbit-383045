@@ -46,6 +46,7 @@ import { AuditService } from '../services/audit.service';
 import { Prisma } from '@prisma/client';
 import { encryptJson } from '../utils/encryption';
 import { previewForMessage } from '../utils/wa-preview';
+import { waInboundUnsupportedTotal } from '../utils/whatsapp-metrics';
 import type {
   WaMessageType,
   WaMessageStatus,
@@ -305,8 +306,18 @@ function extractInbound(msg: any): {
       // completely EMPTY bubble while the conversation list preview said
       // "[order]" — the agent could see that something had arrived and could not
       // see what. A labelled placeholder is at least actionable.
-      payload = msg[msg.type] ?? null;
-      text = `[${msg.type ?? 'unsupported'} message]`;
+      // Meta explains itself on `errors` — e.g. {code:131051, title:'Message type
+      // is not currently supported'} — and for `type:'unsupported'` there is no
+      // `msg.unsupported` key at all, so the payload was simply null. A poll, a
+      // view-once photo and a live location therefore all rendered as the same
+      // flat "[unsupported message]": the agent could not tell the customer what
+      // had not arrived, and nobody could measure which type was worth building.
+      waInboundUnsupportedTotal.inc({ type: String(msg.type ?? 'unknown') });
+      payload = { raw: msg[msg.type] ?? null, errors: msg.errors ?? null };
+      text =
+        (Array.isArray(msg.errors) && typeof msg.errors[0]?.title === 'string'
+          ? msg.errors[0].title
+          : null) ?? `[${msg.type ?? 'unsupported'} message]`;
   }
   return { type, text, payload, mediaId, mediaMime };
 }
@@ -449,6 +460,20 @@ async function processMessages(value: any): Promise<boolean> {
 
   for (const msg of value.messages ?? []) {
     if (!msg?.id || !msg?.from) continue;
+
+    // `request_welcome` is Meta telling us a customer OPENED the chat — it is not
+    // something they said. Nothing filtered it, so it fell through to the
+    // unsupported branch and became a "[request_welcome message]" bubble in the
+    // thread, the same string in the conversation-list preview, and +1 on the
+    // unread badge the whole triage workflow keys off — for a customer who had
+    // not written a word. Turning ON the setting that asks Meta to send these
+    // (Settings -> "Tell us when a customer opens the chat") is what produced it.
+    //
+    // Skipped before the row is created, the same shape the reaction branch uses.
+    // The conversation is not touched either: an opened chat does not extend the
+    // 24h window, and pretending otherwise would let an agent send a free-form
+    // reply that Meta then refuses.
+    if (msg.type === 'request_welcome') continue;
 
     // Dedup is DB-first on purpose. The Redis key used to be written here, up
     // front, and a `null` reply (key already present) short-circuited with

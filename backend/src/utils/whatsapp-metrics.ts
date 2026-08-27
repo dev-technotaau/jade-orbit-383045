@@ -57,6 +57,20 @@ export const waMessagesTotal = new client.Counter({
 });
 
 /**
+ * `wa_inbound_unsupported_total` — inbound messages of a type this module does
+ * not model, keyed by Meta's own type string.
+ *
+ * These render as a placeholder bubble, so an operator sees that something
+ * arrived and not what. The counter is how "which unsupported type is actually
+ * worth building?" becomes answerable instead of a guess.
+ */
+export const waInboundUnsupportedTotal = new client.Counter({
+  name: 'wa_inbound_unsupported_total',
+  help: 'Inbound WhatsApp messages of an unmodelled type, by Meta type string',
+  labelNames: ['type'] as const,
+});
+
+/**
  * `wa_send_failures_total` — Cloud-API send failures keyed by Meta error code.
  * Drives the send-failure-spike alert.
  */
