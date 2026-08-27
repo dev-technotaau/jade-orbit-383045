@@ -450,7 +450,14 @@ export async function optOutContact(
       update: {},
     })
     .catch(() => {});
-  return contact;
+  // Mirror it onto the contact row, which every OTHER suppression path already
+  // does (`addSuppression` and the bulk import both call this). Without it a
+  // customer who sent STOP had `suppressedAt` null, so nothing the UI can read
+  // knew: the composer stayed live, the send was accepted, the draft cleared,
+  // and the reply came back as a red FAILED bubble — with the panel still
+  // offering "Do not contact" as though they were reachable.
+  await markContactsSuppressed([contact.phone], true).catch(() => {});
+  return { ...contact, suppressedAt: contact.suppressedAt ?? new Date() };
 }
 
 /**

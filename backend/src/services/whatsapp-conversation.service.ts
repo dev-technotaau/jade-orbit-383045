@@ -278,6 +278,11 @@ export async function list(params: ConversationListFilters & { page?: number; li
             profileName: true,
             optInStatus: true,
             isBlocked: true,
+            // Do-not-contact. Every outbound funnels through `isSuppressed`, so
+            // without this the composer stayed live for someone who had sent
+            // STOP: the send was accepted, the draft cleared, and the reply came
+            // back as a red FAILED bubble with no warning beforehand.
+            suppressedAt: true,
             // Whether a marketing template is likely to be DELIVERED, which is a
             // different question from whether we are allowed to send it.
             // lastInboundAt null = this contact has never messaged us, which is

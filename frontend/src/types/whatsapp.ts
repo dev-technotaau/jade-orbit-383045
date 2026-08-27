@@ -33,6 +33,11 @@ export interface WaContactLite {
   lastInboundAt?: string | null;
   /** Set when Meta deliberately refused a marketing message to this contact. */
   marketingRefusedAt?: string | null;
+  /**
+   * On the do-not-contact list. Every outbound is refused for this contact, so
+   * the composer must say so BEFORE the operator types a reply that cannot land.
+   */
+  suppressedAt?: string | null;
   // `userId` and `user` linked a contact to a platform account, which is how
   // the UI showed a real avatar and an "on-platform" badge. That relation was
   // dropped from WaContact — avatars now always fall back to initials, since

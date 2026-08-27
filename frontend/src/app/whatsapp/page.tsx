@@ -31,6 +31,7 @@ import {
   Reply,
   X,
   CalendarClock,
+  FileText,
   Download,
   Archive,
   ArchiveRestore,
@@ -2430,7 +2431,12 @@ export default function SuperAdminWhatsappInboxPage() {
   };
 
   const canReply = selected
-    ? windowOpen(selected.windowExpiresAt) && !selected.contact.isBlocked
+    ? windowOpen(selected.windowExpiresAt) &&
+      !selected.contact.isBlocked &&
+      // Do-not-contact. Every outbound is refused for a suppressed contact, so
+      // leaving the composer live only produced a red FAILED bubble after the
+      // fact — the operator had already written the reply.
+      !selected.contact.suppressedAt
     : false;
 
   /**
@@ -3380,6 +3386,25 @@ export default function SuperAdminWhatsappInboxPage() {
                         <CalendarClock className="h-5 w-5" />
                       </button>
                     </Tooltip>
+                    {/* Send a template WHILE the window is open.
+                        This was reachable only from the closed-window branch, so
+                        mid-conversation an operator could not send an order
+                        confirmation with a media header, a flow-launch button, an
+                        auth code or a catalog card — the workaround was copying
+                        the number into New compose, or scheduling it a minute out.
+                        Nothing in the backend imposed the restriction: the route,
+                        the controller and sendTemplateToConversation never check
+                        the window, and the modal already supports 'reply' mode. */}
+                    <Tooltip content="Send a template">
+                      <button
+                        type="button"
+                        onClick={() => setCompose({ mode: 'reply', conversationId: selected.id })}
+                        aria-label="Send a template"
+                        className="flex h-10 items-center rounded-lg px-2 text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text)]"
+                      >
+                        <FileText className="h-5 w-5" />
+                      </button>
+                    </Tooltip>
                     <textarea
                       ref={composerRef}
                       value={draft}
@@ -3421,6 +3446,25 @@ export default function SuperAdminWhatsappInboxPage() {
                       Send
                     </Button>
                   </form>
+                ) : selected.contact.suppressedAt ? (
+                  <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2.5 text-xs text-amber-900">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <span>
+                        This contact is on the do-not-contact list — usually because they replied
+                        STOP. Nothing can be sent to them until they opt in again.
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDetailsOpen(true);
+                          setMobilePane('details');
+                        }}
+                        className="inline-flex shrink-0 items-center gap-1 rounded-md border border-amber-400 bg-white px-2.5 py-1 font-medium text-amber-900 hover:bg-amber-100"
+                      >
+                        <UserCog className="h-3.5 w-3.5" /> Manage contact
+                      </button>
+                    </div>
+                  </div>
                 ) : selected.contact.isBlocked ? (
                   <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2.5 text-xs text-red-800">
                     <div className="flex flex-wrap items-center justify-between gap-3">
