@@ -973,6 +973,8 @@ export interface WaInteractiveInput {
   /** Header text — Meta requires one on a multi-product message. */
   headerText?: string;
   footerText?: string;
+  /** WAMID this prompt quotes, when sent from the reply banner. */
+  contextWamid?: string;
 }
 
 export interface WaTemplateAnalytics {

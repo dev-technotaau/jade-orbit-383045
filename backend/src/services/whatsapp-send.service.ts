@@ -433,6 +433,20 @@ export async function dispatchOutbound(p: DispatchParams) {
 }
 
 /**
+ * The quoted-reply envelope, shared by every session send.
+ *
+ * `context` is a BASE message property in the Cloud API — a sibling of `type`,
+ * not part of the text body — so it applies to media, location, contact cards
+ * and interactive messages exactly as it does to text. Only the text path ever
+ * set it, so an operator who hit Reply on a photo and answered with a photo of
+ * their own had the quote silently dropped: the customer saw a bare image with
+ * no indication of which of their five messages it answered.
+ */
+function replyContext(wamid?: string | null) {
+  return wamid ? { context: { message_id: wamid } } : {};
+}
+
+/**
  * Free-form (session) message — only inside the open 24h customer-service
  * window. Outside it, callers must use a template (see below).
  */
@@ -471,7 +485,7 @@ export async function sendSessionMessage(
     message: {
       type: 'text',
       text: { preview_url: true, body },
-      ...(input.contextWamid ? { context: { message_id: input.contextWamid } } : {}),
+      ...replyContext(input.contextWamid),
     },
   });
 }
@@ -982,6 +996,8 @@ interface InteractiveInput {
   /** Header text for a multi-product message (Meta requires one). */
   headerText?: string;
   footerText?: string;
+  /** WAMID this prompt quotes, when sent from the reply banner. */
+  contextWamid?: string | null;
 }
 
 /** Send an interactive (reply-buttons or list) message inside the open 24h window. */
@@ -1172,7 +1188,8 @@ export async function sendInteractiveMessage(
     // Persist the interactive structure so the inbox can render the options
     // (buttons / list / CTA) we sent — not just the body text.
     payload: interactive,
-    message: { type: 'interactive', interactive },
+    contextWamid: input.contextWamid ?? null,
+    message: { type: 'interactive', interactive, ...replyContext(input.contextWamid) },
   });
 }
 
@@ -1324,6 +1341,8 @@ export async function sendMediaMessage(
     /** Byte length of the uploaded file, persisted so the file card can state a size. */
     size?: number;
     voice?: boolean;
+    /** WAMID this attachment quotes, when sent from the reply banner. */
+    contextWamid?: string | null;
   }
 ) {
   const conv = await prisma.waConversation.findUnique({
@@ -1405,7 +1424,8 @@ export async function sendMediaMessage(
             ...(input.size ? { size: input.size } : {}),
           }
         : undefined,
-    message: { type: input.kind, [input.kind]: mediaObj },
+    contextWamid: input.contextWamid ?? null,
+    message: { type: input.kind, [input.kind]: mediaObj, ...replyContext(input.contextWamid) },
   });
 }
 
@@ -1518,7 +1538,13 @@ export async function sendReaction(
 export async function sendLocation(
   conversationId: string,
   actorUserId: string,
-  input: { latitude: number; longitude: number; name?: string; address?: string }
+  input: {
+    latitude: number;
+    longitude: number;
+    name?: string;
+    address?: string;
+    contextWamid?: string | null;
+  }
 ) {
   const conv = await loadSendableConversation(conversationId);
   const latitude = Number(input.latitude);
@@ -1540,7 +1566,8 @@ export async function sendLocation(
     text: input.name || input.address || null,
     preview: input.name || input.address || previewForMessage('LOCATION', null),
     payload: location,
-    message: { type: 'location', location },
+    contextWamid: input.contextWamid ?? null,
+    message: { type: 'location', location, ...replyContext(input.contextWamid) },
   });
 }
 
@@ -1548,7 +1575,7 @@ export async function sendLocation(
 export async function sendContacts(
   conversationId: string,
   actorUserId: string,
-  input: { contacts: any[] }
+  input: { contacts: any[]; contextWamid?: string | null }
 ) {
   const conv = await loadSendableConversation(conversationId);
   const contacts = Array.isArray(input.contacts) ? input.contacts : [];
@@ -1569,7 +1596,8 @@ export async function sendContacts(
     // Wrapping it in { contacts } meant every card the operator sent rendered as a
     // generic "Shared a contact" stub while the inbound ones rendered fine.
     payload: contacts as unknown as Record<string, unknown>,
-    message: { type: 'contacts', contacts },
+    contextWamid: input.contextWamid ?? null,
+    message: { type: 'contacts', contacts, ...replyContext(input.contextWamid) },
   });
 }
 

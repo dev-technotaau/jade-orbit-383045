@@ -2437,7 +2437,17 @@ export default function SuperAdminWhatsappInboxPage() {
   };
 
   const sendMediaMut = useMutation({
-    mutationFn: ({ file, caption, voice }: { file: File; caption?: string; voice?: boolean }) => {
+    mutationFn: ({
+      file,
+      caption,
+      voice,
+      contextWamid,
+    }: {
+      file: File;
+      caption?: string;
+      voice?: boolean;
+      contextWamid?: string;
+    }) => {
       setUploadingName(file.name);
       setUploadPct(0);
       return svc.sendMedia(
@@ -2447,6 +2457,7 @@ export default function SuperAdminWhatsappInboxPage() {
         voice,
         idempotencyKeyFor(file),
         setUploadPct,
+        contextWamid,
       );
     },
     onSettled: () => {
@@ -3578,10 +3589,12 @@ export default function SuperAdminWhatsappInboxPage() {
                   >
                     <InboxComposerTools
                       conversationId={selected.id}
+                      contextWamid={replyTo?.wamid ?? undefined}
                       onInsert={(t) => setDraft((d) => (d ? `${d}\n${t}` : t))}
                       onSent={() => {
                         qc.invalidateQueries({ queryKey: ['wa-messages', selected.id] });
                         qc.invalidateQueries({ queryKey: ['wa-conversations'] });
+                        setReplyTo(null);
                       }}
                     />
                     {/* Emoji picker */}
@@ -3690,7 +3703,14 @@ export default function SuperAdminWhatsappInboxPage() {
                     />
                     {/* Record + send a voice message (overlays the row while active) */}
                     <VoiceRecorder
-                      onRecorded={(file) => sendMediaMut.mutate({ file, voice: true })}
+                      onRecorded={(file) => {
+                        sendMediaMut.mutate({
+                          file,
+                          voice: true,
+                          contextWamid: replyTo?.wamid ?? undefined,
+                        });
+                        setReplyTo(null);
+                      }}
                       disabled={sendMediaMut.isPending}
                     />
                     <Button
@@ -3859,8 +3879,12 @@ export default function SuperAdminWhatsappInboxPage() {
       {contactOpen && selected && (
         <ContactComposeModal
           conversationId={selected.id}
+          contextWamid={replyTo?.wamid ?? undefined}
           onClose={() => setContactOpen(false)}
-          onSent={() => setContactOpen(false)}
+          onSent={() => {
+            setContactOpen(false);
+            setReplyTo(null);
+          }}
         />
       )}
 
@@ -3880,7 +3904,16 @@ export default function SuperAdminWhatsappInboxPage() {
             // agent's message rides WITH the file instead of arriving as a
             // separate bubble a moment later.
             if (caption && caption === draft.trim()) setDraft('');
-            sendMediaMut.mutate({ file, caption: caption || undefined });
+            sendMediaMut.mutate({
+              file,
+              caption: caption || undefined,
+              contextWamid: replyTo?.wamid ?? undefined,
+            });
+            // Cleared HERE rather than on success: an upload can outlast the
+            // operator's next action, and a banner still standing over a send
+            // already in flight is the exact way the quote leaked onto the
+            // message after it.
+            setReplyTo(null);
           }}
         />
       )}
@@ -3888,8 +3921,12 @@ export default function SuperAdminWhatsappInboxPage() {
       {locationOpen && selected && (
         <LocationComposeModal
           conversationId={selected.id}
+          contextWamid={replyTo?.wamid ?? undefined}
           onClose={() => setLocationOpen(false)}
-          onSent={() => setLocationOpen(false)}
+          onSent={() => {
+            setLocationOpen(false);
+            setReplyTo(null);
+          }}
         />
       )}
     </DashboardLayout>

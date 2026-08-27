@@ -489,6 +489,18 @@ export const uploadMedia = async (
  * Takes the file either as a multipart upload or as the key of an object the
  * browser already PUT to R2 — see `resolveOutboundMedia`.
  */
+/**
+ * The WAMID a send is quoting, when the composer had the reply banner up.
+ *
+ * Read the same way on every send route rather than per-handler: a reply is a
+ * property of the send, not of the text path that happened to implement it
+ * first, and the media/location/contacts/interactive routes silently ignored it.
+ */
+function replyWamidFrom(body: unknown): string | undefined {
+  const v = (body as { contextWamid?: unknown } | null)?.contextWamid;
+  return typeof v === 'string' && v.trim() ? v.trim() : undefined;
+}
+
 export const sendMedia = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const { buffer, mime, filename, stagedKey } = await resolveOutboundMedia(req);
@@ -548,6 +560,7 @@ export const sendMedia = async (req: Request, res: Response, next: NextFunction)
       // multipart path spells it 'true' (form fields are strings); the JSON one
       // sends a real boolean.
       voice: (req.body.voice === 'true' || req.body.voice === true) && kind === 'audio',
+      contextWamid: replyWamidFrom(req.body),
     });
     // Archive what we just sent.
     //
@@ -1091,7 +1104,10 @@ export const sendInteractive = async (
 ): Promise<void> => {
   try {
     // req.body carries `kind` (button | list | cta_url | flow) and its params.
-    const m = await sendInteractiveMessage(String(req.params.id), req.user!.id, req.body);
+    const m = await sendInteractiveMessage(String(req.params.id), req.user!.id, {
+      ...req.body,
+      contextWamid: replyWamidFrom(req.body),
+    });
     res.status(201).json({ success: true, data: m });
   } catch (e) {
     next(e);
@@ -1127,6 +1143,7 @@ export const sendLocation = async (
       longitude: Number(req.body.longitude),
       name: (req.body.name as string) || undefined,
       address: (req.body.address as string) || undefined,
+      contextWamid: replyWamidFrom(req.body),
     });
     res.status(201).json({ success: true, data: m });
   } catch (e) {
@@ -1143,6 +1160,7 @@ export const sendContacts = async (
   try {
     const m = await sendContactsMessage(String(req.params.id), req.user!.id, {
       contacts: req.body.contacts,
+      contextWamid: replyWamidFrom(req.body),
     });
     res.status(201).json({ success: true, data: m });
   } catch (e) {

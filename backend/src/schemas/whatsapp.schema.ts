@@ -410,6 +410,10 @@ export const waInteractiveSchema = z.object({
       .optional(),
     headerText: z.string().max(60).optional(),
     footerText: z.string().max(60).optional(),
+    // The WAMID this prompt quotes. Declared here or the validator strips it:
+    // zod objects are strip-by-default, so the reply banner's context would be
+    // dropped before the controller ever saw it.
+    contextWamid: z.string().max(256).optional(),
   }),
 });
 

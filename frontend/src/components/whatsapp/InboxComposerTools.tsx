@@ -166,10 +166,13 @@ function CannedPopover({
 
 function InteractiveModal({
   conversationId,
+  contextWamid,
   onClose,
   onSent,
 }: {
   conversationId: string;
+  /** WAMID this prompt quotes, when the reply banner was up. */
+  contextWamid?: string;
   onClose: () => void;
   onSent: () => void;
 }) {
@@ -277,12 +280,14 @@ function InteractiveModal({
     mutationFn: () => {
       if (kind === 'location_request_message') {
         return svc.sendInteractive(conversationId, {
+          contextWamid,
           kind: 'location_request_message',
           bodyText: bodyText.trim(),
         });
       }
       if (kind === 'address_message') {
         return svc.sendInteractive(conversationId, {
+          contextWamid,
           kind: 'address_message',
           bodyText: bodyText.trim(),
           addressCountry,
@@ -295,6 +300,7 @@ function InteractiveModal({
           .slice(0, 3)
           .map((title, i) => ({ id: `btn_${i + 1}`, title }));
         return svc.sendInteractive(conversationId, {
+          contextWamid,
           kind: 'button',
           bodyText: bodyText.trim(),
           buttons: b,
@@ -303,6 +309,7 @@ function InteractiveModal({
       }
       if (kind === 'cta_url') {
         return svc.sendInteractive(conversationId, {
+          contextWamid,
           kind: 'cta_url',
           bodyText: bodyText.trim(),
           ctaText: ctaText.trim(),
@@ -313,6 +320,7 @@ function InteractiveModal({
       if (kind === 'product' || kind === 'product_list') {
         const ids = productIds.map((p) => p.trim()).filter(Boolean);
         return svc.sendInteractive(conversationId, {
+          contextWamid,
           kind,
           bodyText: bodyText.trim(),
           ...(kind === 'product'
@@ -332,6 +340,7 @@ function InteractiveModal({
       }
       if (kind === 'flow') {
         return svc.sendInteractive(conversationId, {
+          contextWamid,
           kind: 'flow',
           bodyText: bodyText.trim(),
           flowId: flowMetaId,
@@ -350,6 +359,7 @@ function InteractiveModal({
         });
       }
       return svc.sendInteractive(conversationId, {
+        contextWamid,
         kind: 'list',
         bodyText: bodyText.trim(),
         listButton,
@@ -745,7 +755,10 @@ function InteractiveModal({
                 <button
                   type="button"
                   onClick={() =>
-                    setSections((p) => [...p, { title: '', rows: [{ title: '', description: '' }] }])
+                    setSections((p) => [
+                      ...p,
+                      { title: '', rows: [{ title: '', description: '' }] },
+                    ])
                   }
                   className="text-xs font-medium text-[var(--primary)]"
                 >
@@ -771,10 +784,13 @@ function InteractiveModal({
 /** Composer toolbar: canned-replies popover + interactive-message builder. */
 export default function InboxComposerTools({
   conversationId,
+  contextWamid,
   onInsert,
   onSent,
 }: {
   conversationId: string;
+  /** WAMID the open reply banner points at, forwarded to the interactive send. */
+  contextWamid?: string;
   onInsert: (text: string) => void;
   onSent: () => void;
 }) {
@@ -823,6 +839,7 @@ export default function InboxComposerTools({
       {interactiveOpen && (
         <InteractiveModal
           conversationId={conversationId}
+          contextWamid={contextWamid}
           onClose={() => setInteractiveOpen(false)}
           onSent={() => {
             onSent();

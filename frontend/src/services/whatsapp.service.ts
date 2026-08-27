@@ -1351,6 +1351,8 @@ export const whatsappService = {
     voice?: boolean,
     idempotencyKey?: string,
     onProgress?: (pct: number) => void,
+    /** WAMID this attachment quotes, when the reply banner was up. */
+    contextWamid?: string,
   ): Promise<ApiResponse<WaMessage>> {
     // Refuse a file WhatsApp itself will not carry. Anything under that but over
     // the proxy's body limit goes straight to storage instead of being refused.
@@ -1372,6 +1374,7 @@ export const whatsappService = {
           filename: file.name,
           caption,
           voice,
+          contextWamid,
         },
         { headers, timeout: UPLOAD_TIMEOUT_MS },
       );
@@ -1381,6 +1384,7 @@ export const whatsappService = {
     const form = toMediaForm(file);
     if (caption) form.append('caption', caption);
     if (voice) form.append('voice', 'true');
+    if (contextWamid) form.append('contextWamid', contextWamid);
     // Must override the axios instance's default `Content-Type: application/json`
     // so the multipart boundary is set — otherwise multer can't parse the upload
     // and the backend 400s with "A file is required" (matches the avatar/logo/
@@ -1705,13 +1709,23 @@ export const whatsappService = {
   },
   async sendLocation(
     id: string,
-    body: { latitude: number; longitude: number; name?: string; address?: string },
+    body: {
+      latitude: number;
+      longitude: number;
+      name?: string;
+      address?: string;
+      contextWamid?: string;
+    },
   ): Promise<ApiResponse<WaMessage>> {
     const res = await api.post(API.SUPER_ADMIN.WA_CONV_LOCATION(id), body);
     return res.data;
   },
-  async sendContacts(id: string, contacts: unknown[]): Promise<ApiResponse<WaMessage>> {
-    const res = await api.post(API.SUPER_ADMIN.WA_CONV_CONTACTS(id), { contacts });
+  async sendContacts(
+    id: string,
+    contacts: unknown[],
+    contextWamid?: string,
+  ): Promise<ApiResponse<WaMessage>> {
+    const res = await api.post(API.SUPER_ADMIN.WA_CONV_CONTACTS(id), { contacts, contextWamid });
     return res.data;
   },
 

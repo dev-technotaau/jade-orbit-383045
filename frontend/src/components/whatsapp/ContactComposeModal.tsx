@@ -28,10 +28,13 @@ const MAX_PHONES = 3;
  */
 export default function ContactComposeModal({
   conversationId,
+  contextWamid,
   onClose,
   onSent,
 }: {
   conversationId: string;
+  /** WAMID this card quotes, when the reply banner was up. */
+  contextWamid?: string;
   onClose: () => void;
   onSent: () => void;
 }) {
@@ -68,7 +71,7 @@ export default function ContactComposeModal({
         ...(trimmedEmail ? { emails: [{ email: trimmedEmail, type: 'WORK' }] } : {}),
         ...(trimmedOrg ? { org: { company: trimmedOrg } } : {}),
       };
-      await svc.sendContacts(conversationId, [contact]);
+      await svc.sendContacts(conversationId, [contact], contextWamid);
     },
     onSuccess: () => {
       showToast.success('Contact sent');

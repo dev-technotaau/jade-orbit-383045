@@ -21,10 +21,13 @@ import type { ApiError } from '@/types/api';
  */
 export default function LocationComposeModal({
   conversationId,
+  contextWamid,
   onClose,
   onSent,
 }: {
   conversationId: string;
+  /** WAMID this pin quotes, when the reply banner was up. */
+  contextWamid?: string;
   onClose: () => void;
   onSent: () => void;
 }) {
@@ -68,6 +71,7 @@ export default function LocationComposeModal({
         longitude: lng,
         ...(name.trim() ? { name: name.trim() } : {}),
         ...(address.trim() ? { address: address.trim() } : {}),
+        ...(contextWamid ? { contextWamid } : {}),
       }),
     onSuccess: () => {
       showToast.success('Location sent');
