@@ -1197,6 +1197,29 @@ export default function SuperAdminWhatsappInboxPage() {
     [draft, setDraft],
   );
 
+  /**
+   * Screen-reader announcement channel for the open thread.
+   *
+   * The thread is a scrolling list that mutates under a socket, and none of it
+   * was announced: a screen-reader user reading a conversation had no way to
+   * know a reply had arrived short of navigating back through the list to look.
+   *
+   * Deliberately NOT `aria-live` on the message container itself. Additions
+   * there include the whole first page on open and a slab of history on every
+   * "Load older messages", all of which a live container would read aloud. This
+   * region carries one sentence per NEW inbound instead.
+   *
+   * The text is written straight to the node rather than held in state: an
+   * effect that calls setState to produce a render whose only job is to update
+   * one text node is both a re-render of the whole thread and the exact shape
+   * `react-hooks/set-state-in-effect` exists to prevent.
+   */
+  const liveRegionRef = useRef<HTMLParagraphElement>(null);
+  const announcedRef = useRef<{ convId: string | null; messageId: string | null }>({
+    convId: null,
+    messageId: null,
+  });
+
   const [emojiOpen, setEmojiOpen] = useState(false);
   // The emoji grid used to close ONLY by picking an emoji or clicking the
   // trigger a second time, so clicking on into the thread left it floating
@@ -2066,6 +2089,33 @@ export default function SuperAdminWhatsappInboxPage() {
   useLayoutEffect(() => {
     messagesRef.current = messages;
   });
+
+  // Announce a newly arrived inbound to assistive tech (see `liveRegionRef`).
+  //
+  // The FIRST message seen on a thread is recorded without announcing it: it is
+  // the newest message of a conversation the user just opened, not something
+  // that arrived while they were reading. The same guard covers a thread switch,
+  // because the recorded conversation id changes with it.
+  useEffect(() => {
+    const last = messages[messages.length - 1];
+    if (!selectedId || !last) return;
+    const seen = announcedRef.current;
+    if (seen.convId !== selectedId) {
+      announcedRef.current = { convId: selectedId, messageId: last.id };
+      return;
+    }
+    if (seen.messageId === last.id) return;
+    announcedRef.current = { convId: selectedId, messageId: last.id };
+    if (last.direction !== 'INBOUND') return;
+    const node = liveRegionRef.current;
+    if (!node) return;
+    const who = selected ? displayName(selected.contact) : 'the customer';
+    const body = stripWhatsAppFormatting(last.text ?? '').trim();
+    // Falls back to the type rather than announcing an empty sentence — a photo
+    // with no caption is still worth knowing about.
+    const what = body || last.type.toLowerCase().replace(/_/g, ' ');
+    node.textContent = `New message from ${who}: ${what}`;
+  }, [messages, selectedId, selected]);
 
   // Auto-scroll on open/switch/reload:
   //  • no unread  → jump INSTANTLY to the newest message (chat opens at bottom);
@@ -3364,8 +3414,23 @@ export default function SuperAdminWhatsappInboxPage() {
                         onDrop: onThreadDrop,
                       }
                     : {})}
+                  // `log` rather than `feed`: the thread is an append-ordered
+                  // record, and `feed` obliges each entry to be a focusable
+                  // article, which these bubbles are not. The live announcements
+                  // ride on the separate region below, not on this container.
+                  role="log"
+                  aria-label={`Conversation with ${displayName(selected.contact)}`}
                   className="relative min-h-0 flex-1 space-y-2 overflow-y-auto p-4"
                 >
+                  {/* Announcement channel for newly arrived inbound messages.
+                      Off-screen rather than `hidden`: a hidden node is not read.
+                      `atomic` so the whole sentence is spoken, not the diff. */}
+                  <p
+                    ref={liveRegionRef}
+                    aria-live="polite"
+                    aria-atomic="true"
+                    className="sr-only"
+                  />
                   {msgQuery.isLoading && !msgQuery.isError && (
                     <p className="text-center text-sm text-[var(--text-muted)]">
                       Loading messages…
