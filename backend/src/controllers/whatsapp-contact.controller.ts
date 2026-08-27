@@ -135,6 +135,23 @@ export const listTags = async (_req: Request, res: Response, next: NextFunction)
   }
 };
 
+/** Campaigns this contact has been sent, most recent first. */
+export const listContactCampaigns = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const raw = parseInt(String(req.query.limit), 10);
+    const data = await contactService.listContactCampaigns(String(req.params.id), {
+      limit: Number.isFinite(raw) ? raw : undefined,
+    });
+    res.json({ success: true, data });
+  } catch (e) {
+    next(e);
+  }
+};
+
 export const updateContact = async (
   req: Request,
   res: Response,

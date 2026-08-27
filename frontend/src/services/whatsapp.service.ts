@@ -903,6 +903,58 @@ export const whatsappService = {
     return res.data;
   },
 
+  /**
+   * Campaigns this contact has been a recipient of, most recent first.
+   *
+   * The panel showed who they are and what the thread says, and nothing about
+   * what has been SENT to them — so before writing "just following up on our
+   * offer" an agent had no way to know whether three campaigns had already said
+   * exactly that this month, or whether the last one bounced.
+   */
+  async listContactCampaigns(
+    id: string,
+    params?: { limit?: number },
+  ): Promise<
+    ApiResponse<{
+      items: Array<{
+        id: string;
+        campaignId: string;
+        status: string;
+        sentAt: string | null;
+        repliedAt: string | null;
+        clickedAt: string | null;
+        errorCode: string | null;
+        campaign: { id: string; name: string; status: string } | null;
+      }>;
+      total: number;
+    }>
+  > {
+    const res = await api.get(API.SUPER_ADMIN.WA_CONTACT_CAMPAIGNS(id), { params });
+    return res.data;
+  },
+
+  /** This contact's recorded conversions, and what they are worth in total. */
+  async listContactConversions(
+    id: string,
+    params?: { limit?: number },
+  ): Promise<
+    ApiResponse<{
+      items: Array<{
+        id: string;
+        valuePaise: number | null;
+        note: string | null;
+        occurredAt: string | null;
+        createdAt: string;
+        campaign: { id: string; name: string } | null;
+      }>;
+      total: number;
+      totalValuePaise: number;
+    }>
+  > {
+    const res = await api.get(API.SUPER_ADMIN.WA_CONTACT_CONVERSIONS(id), { params });
+    return res.data;
+  },
+
   async updateContact(
     id: string,
     body: {

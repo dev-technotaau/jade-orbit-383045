@@ -566,6 +566,9 @@ router.get(
   audit('WA_CONTACT_EXPORT', 'WaContact', { extraDetails: dsarRef }),
   contactCtrl.exportContact
 );
+// Both ABOVE '/contacts/:id' for the same reason as the two below.
+router.get('/contacts/:id/campaigns', contactCtrl.listContactCampaigns);
+router.get('/contacts/:id/conversions', conversionCtrl.byContact);
 // ABOVE '/contacts/:id' — Express would otherwise match 'tags' as a contact id.
 router.get('/contacts/tags', contactCtrl.listTags);
 // ABOVE '/contacts/:id' — Express would otherwise match 'consent-events' as an id.

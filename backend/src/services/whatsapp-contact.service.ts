@@ -1390,6 +1390,37 @@ export async function listTagVocabulary(): Promise<Array<{ tag: string; count: n
   return rows.map((r) => ({ tag: r.tag, count: Number(r.count) }));
 }
 
+/**
+ * Every campaign this contact has been a recipient of, most recent first.
+ *
+ * The contact panel showed who they are and what the thread says, and nothing
+ * about what has been SENT to them — so before writing "just following up on
+ * our offer" an agent had no way to know whether three campaigns had already
+ * said exactly that this month, or whether the last one bounced.
+ */
+export async function listContactCampaigns(contactId: string, opts: { limit?: number } = {}) {
+  const take = Math.min(Math.max(opts.limit ?? 20, 1), 100);
+  const [items, total] = await Promise.all([
+    prisma.waCampaignRecipient.findMany({
+      where: { contactId },
+      orderBy: [{ createdAt: 'desc' }],
+      take,
+      select: {
+        id: true,
+        campaignId: true,
+        status: true,
+        sentAt: true,
+        repliedAt: true,
+        clickedAt: true,
+        errorCode: true,
+        campaign: { select: { id: true, name: true, status: true } },
+      },
+    }),
+    prisma.waCampaignRecipient.count({ where: { contactId } }),
+  ]);
+  return { items, total };
+}
+
 export async function getContact(id: string) {
   const c = await prisma.waContact.findUnique({ where: { id } });
   return c ? { ...c, consentEvidence: decryptJson(c.consentEvidence) } : c;

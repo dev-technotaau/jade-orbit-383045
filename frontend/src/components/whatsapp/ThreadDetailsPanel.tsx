@@ -13,6 +13,7 @@ import {
   Images,
   BotOff,
   IdCard,
+  Megaphone,
   Phone,
   Copy,
   Pencil,
@@ -26,6 +27,7 @@ import Textarea from '@/components/ui/Textarea';
 import Button from '@/components/ui/Button';
 import Select from '@/components/ui/Select';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import { confirmDialog, promptDialog } from '@/components/ui/dialog-service';
 import { cn } from '@/lib/utils';
 import { whatsappService as svc } from '@/services/whatsapp.service';
@@ -551,6 +553,162 @@ function ContactCard({
       {recordOpen && (
         <ContactDetailsDrawer contactId={contact.id} onClose={() => setRecordOpen(false)} />
       )}
+    </div>
+  );
+}
+
+/** Money formatting for a paise integer, matching the campaign pages. */
+function rupees(paise: number): string {
+  return `₹${(paise / 100).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+}
+
+/**
+ * What has already been sent to this contact, and what came back.
+ *
+ * The panel could say who someone is and what the thread says, and nothing
+ * about the campaigns they had received — so before writing "just following up
+ * on our offer" an agent had no way to know whether three campaigns had already
+ * said exactly that this month, or whether the last one bounced. And there was
+ * no way to record a sale from the thread at all: the postback API was the only
+ * door, so a conversion an agent closed by hand never reached campaign ROI.
+ */
+function ContactHistory({ contactId }: { contactId: string }) {
+  const qc = useQueryClient();
+  const campaignsQuery = useQuery({
+    queryKey: ['wa-contact-campaigns', contactId],
+    queryFn: () => svc.listContactCampaigns(contactId, { limit: 10 }),
+  });
+  const conversionsQuery = useQuery({
+    queryKey: ['wa-contact-conversions', contactId],
+    queryFn: () => svc.listContactConversions(contactId, { limit: 10 }),
+  });
+  const campaigns = campaignsQuery.data?.data?.items ?? [];
+  const conversions = conversionsQuery.data?.data;
+
+  const [recording, setRecording] = useState(false);
+  const [amount, setAmount] = useState('');
+  const [note, setNote] = useState('');
+
+  const recordMut = useMutation({
+    mutationFn: () => {
+      const rupeeValue = Number(amount.replace(/[^\d.]/g, ''));
+      return svc.recordConversion({
+        contactId,
+        // Paise, like every other money value in the module. The field asks for
+        // rupees because that is what the agent is looking at on the invoice.
+        valuePaise:
+          Number.isFinite(rupeeValue) && rupeeValue > 0 ? Math.round(rupeeValue * 100) : undefined,
+        note: note.trim() || undefined,
+      });
+    },
+    onSuccess: () => {
+      setRecording(false);
+      setAmount('');
+      setNote('');
+      showToast.success('Conversion recorded');
+      qc.invalidateQueries({ queryKey: ['wa-contact-conversions', contactId] });
+    },
+    onError: (e) => showToast.error(errorMessage(e, 'Could not record that conversion')),
+  });
+
+  return (
+    <div>
+      <p className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-[var(--text-muted)]">
+        <Megaphone className="h-3.5 w-3.5" /> Campaigns &amp; conversions
+      </p>
+      <div className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-2.5">
+        {campaigns.length === 0 && !campaignsQuery.isLoading && (
+          <p className="text-[11px] text-[var(--text-muted)]">
+            No campaigns have been sent to this contact.
+          </p>
+        )}
+        {campaigns.map((r) => (
+          <div key={r.id} className="flex items-start gap-2 text-[11px]">
+            <span className="min-w-0 flex-1 truncate text-[var(--text)]">
+              {r.campaign?.name ?? 'Campaign'}
+            </span>
+            <span
+              className={cn(
+                'shrink-0 rounded-full px-1.5 py-px text-[9px] font-semibold',
+                r.status === 'FAILED'
+                  ? 'bg-red-100 text-red-700'
+                  : r.repliedAt
+                    ? 'bg-emerald-100 text-emerald-700'
+                    : 'bg-[var(--bg)] text-[var(--text-muted)]',
+              )}
+              // The error code, not just "FAILED" — the two most common reasons
+              // (a closed window, a marketing cap) call for different actions.
+              title={r.errorCode ?? undefined}
+            >
+              {r.repliedAt ? 'replied' : r.status.toLowerCase()}
+            </span>
+          </div>
+        ))}
+
+        <div className="border-t border-[var(--border)] pt-2">
+          {conversions && conversions.total > 0 ? (
+            <p className="text-[11px] text-[var(--text)]">
+              <span className="font-semibold">{conversions.total}</span> conversion
+              {conversions.total === 1 ? '' : 's'}
+              {conversions.totalValuePaise > 0 && (
+                <span className="text-[var(--text-muted)]">
+                  {' · '}
+                  {rupees(conversions.totalValuePaise)}
+                </span>
+              )}
+            </p>
+          ) : (
+            <p className="text-[11px] text-[var(--text-muted)]">No conversions recorded.</p>
+          )}
+
+          {recording ? (
+            <div className="mt-1.5 space-y-1.5">
+              <Input
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                placeholder="Value in ₹ (optional)"
+                inputMode="decimal"
+                className="h-7 text-xs"
+              />
+              <Input
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                placeholder="Note (optional)"
+                className="h-7 text-xs"
+              />
+              <div className="flex justify-end gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setRecording(false)}
+                  className="rounded-md border border-[var(--border)] px-2 py-0.5 text-[11px] text-[var(--text-secondary)]"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => recordMut.mutate()}
+                  disabled={recordMut.isPending}
+                  className="rounded-md bg-emerald-600 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-emerald-700 disabled:opacity-60"
+                >
+                  Record
+                </button>
+              </div>
+              <p className="text-[10px] text-[var(--text-muted)]">
+                Credited to the campaign this contact was last sent, the same way the postback API
+                attributes one.
+              </p>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setRecording(true)}
+              className="mt-1 text-[11px] font-medium text-[var(--primary)] hover:underline"
+            >
+              Record a conversion
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1237,6 +1395,7 @@ export default function ThreadDetailsPanel({
             <Images className="h-4 w-4" /> View shared media
           </button>
         )}
+        <ContactHistory contactId={conversation.contactId} />
         <NotesPanel conversationId={conversation.id} />
         <ClearChatSection conversationId={conversation.id} onCleared={onCleared} />
       </div>

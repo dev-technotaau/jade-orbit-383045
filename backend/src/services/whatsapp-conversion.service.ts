@@ -92,23 +92,7 @@ export async function ingestConversion(input: {
     contactId = contact?.id ?? null;
   }
 
-  let campaignId = input.campaignId ?? null;
-  if (!campaignId && contactId) {
-    // Last-touch attribution over sends that actually went out. PENDING and
-    // SKIPPED recipients carry a null sentAt, and Postgres sorts NULLs first on
-    // DESC — so without the status filter the newest campaign the contact was
-    // merely *listed* in would win over the one they were actually sent.
-    const recipient = await prisma.waCampaignRecipient.findFirst({
-      where: {
-        contactId,
-        sentAt: { not: null, gte: new Date(Date.now() - CONVERSION_ATTRIBUTION_WINDOW_MS) },
-        status: { in: ['SENT', 'DELIVERED', 'READ'] },
-      },
-      orderBy: { sentAt: 'desc' },
-      select: { campaignId: true },
-    });
-    campaignId = recipient?.campaignId ?? null;
-  }
+  const campaignId = input.campaignId ?? (await attributeCampaignForContact(contactId));
 
   const conversion = await recordConversion({
     externalId: input.externalId,
@@ -145,6 +129,57 @@ export async function deleteConversion(id: string) {
   }
 
   return conversion;
+}
+
+/**
+ * The campaign a conversion by this contact should be credited to.
+ *
+ * Last-touch over sends that actually went out. PENDING and SKIPPED recipients
+ * carry a null `sentAt`, and Postgres sorts NULLs first on DESC — so without the
+ * status filter the newest campaign the contact was merely *listed* in would win
+ * over the one they were actually sent.
+ *
+ * Extracted so the in-thread "record a conversion" action attributes exactly the
+ * way the API postback does. Two implementations of last-touch attribution would
+ * eventually disagree, and the disagreement would show up as revenue credited to
+ * different campaigns depending on which door it came through.
+ */
+export async function attributeCampaignForContact(
+  contactId: string | null
+): Promise<string | null> {
+  if (!contactId) return null;
+  const recipient = await prisma.waCampaignRecipient.findFirst({
+    where: {
+      contactId,
+      sentAt: { not: null, gte: new Date(Date.now() - CONVERSION_ATTRIBUTION_WINDOW_MS) },
+      status: { in: ['SENT', 'DELIVERED', 'READ'] },
+    },
+    orderBy: { sentAt: 'desc' },
+    select: { campaignId: true },
+  });
+  return recipient?.campaignId ?? null;
+}
+
+/**
+ * One contact's conversions, most recent first, with the value they represent.
+ *
+ * The panel could show what was SENT to a contact and never what came back, so
+ * "is this customer worth the follow-up?" — the question an agent asks before
+ * spending twenty minutes on a thread — had no answer in the product.
+ */
+export async function getContactConversions(contactId: string, opts: { limit?: number } = {}) {
+  const take = Math.min(Math.max(opts.limit ?? 20, 1), CONVERSIONS_PAGE_MAX);
+  const [items, total, agg] = await Promise.all([
+    prisma.waConversion.findMany({
+      where: { contactId },
+      orderBy: { createdAt: 'desc' },
+      take,
+      include: { campaign: { select: { id: true, name: true } } },
+    }),
+    prisma.waConversion.count({ where: { contactId } }),
+    prisma.waConversion.aggregate({ where: { contactId }, _sum: { valuePaise: true } }),
+  ]);
+  return { items, total, totalValuePaise: agg._sum.valuePaise ?? 0 };
 }
 
 /** Conversions returned per request — the campaign page shows a recent list. */
