@@ -54,6 +54,7 @@ import {
   MAX_MEDIA_BYTES,
   byteLabel,
   isAnimatedWebp,
+  isOggOpusBytes,
   mediaKindForMime,
   metaLimitFor,
 } from '../utils/wa-media-limits';
@@ -559,7 +560,17 @@ export const sendMedia = async (req: Request, res: Response, next: NextFunction)
       // The voice recorder marks its uploads so they render as voice notes. The
       // multipart path spells it 'true' (form fields are strings); the JSON one
       // sends a real boolean.
-      voice: (req.body.voice === 'true' || req.body.voice === true) && kind === 'audio',
+      //
+      // And the bytes get the final say. The flag is a CLAIM from whatever
+      // client made the call, and the browsers that cannot record ogg/opus
+      // transcode to MP3 — which WhatsApp delivers as a downloadable audio file,
+      // not a push-to-talk bubble. Trusting the flag meant our thread drew a
+      // waveform and a duration for a message the customer received as a music
+      // file, and the transcript recorded it as a voice note for good.
+      voice:
+        (req.body.voice === 'true' || req.body.voice === true) &&
+        kind === 'audio' &&
+        isOggOpusBytes(buffer),
       contextWamid: replyWamidFrom(req.body),
     });
     // Archive what we just sent.

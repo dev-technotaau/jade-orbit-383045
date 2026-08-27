@@ -3967,10 +3967,14 @@ export default function SuperAdminWhatsappInboxPage() {
                     />
                     {/* Record + send a voice message (overlays the row while active) */}
                     <VoiceRecorder
-                      onRecorded={(file) => {
+                      onRecorded={(file, meta) => {
+                        // `meta.voice`, not a hardcoded true: only the ogg/opus
+                        // branch produces something WhatsApp renders as a voice
+                        // note, and claiming it for an MP3 transcode drew a
+                        // waveform here for a file card there.
                         sendMediaMut.mutate({
                           file,
-                          voice: true,
+                          voice: meta.voice,
                           contextWamid: replyTo?.wamid ?? undefined,
                         });
                         setReplyTo(null);

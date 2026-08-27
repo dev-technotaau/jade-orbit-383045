@@ -104,6 +104,29 @@ export function headerFormatHint(format: WaHeaderMediaFormat): string {
 }
 
 /**
+ * True when these bytes are Opus inside an OGG container.
+ *
+ * Asked of the BYTES, not of the declared mime. The mime arrives from the
+ * browser (and from the bridge, and from any API client), while the voice flag
+ * decides how the bubble, the conversation preview and the exported transcript
+ * describe this message forever. WhatsApp draws a push-to-talk bubble only for
+ * ogg/opus, so anything else labelled a voice note is a claim the customer's own
+ * phone contradicts — they get a file card where we drew a waveform.
+ *
+ * Deliberately NOT named `isOggOpus`: the recorder component has a helper by
+ * that name which sniffs the browser's declared `mimeType` STRING. The two
+ * answer different questions and must not be merged.
+ *
+ * An OGG page header is 27 bytes plus one segment-table byte, so the first
+ * packet starts at 28, and `OpusHead` is its magic.
+ */
+export function isOggOpusBytes(buffer: Buffer): boolean {
+  if (buffer.length < 36) return false;
+  if (buffer.toString('ascii', 0, 4) !== 'OggS') return false;
+  return buffer.toString('ascii', 28, 36) === 'OpusHead';
+}
+
+/**
  * True when a WebP buffer carries an animation.
  *
  * RIFF lists its chunks in the clear, so the extended (VP8X) header's ANIM flag

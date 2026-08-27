@@ -62,12 +62,22 @@ export default function VoiceRecorder({
   onRecorded,
   disabled,
 }: {
-  onRecorded: (file: File) => void;
+  /**
+   * @param meta.voice Whether this really is a voice note.
+   *
+   * The caller used to hardcode `voice: true` for anything this component
+   * produced, but only the ogg/opus branch IS one — a browser that cannot
+   * record it gets an MP3 transcode, which WhatsApp delivers as a downloadable
+   * audio file. The recorder is the only place that knows which branch ran.
+   */
+  onRecorded: (file: File, meta: { voice: boolean }) => void;
   disabled?: boolean;
 }) {
   const [status, setStatus] = useState<Status>('idle');
   const [seconds, setSeconds] = useState(0);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  /** Container of the clip in the preview bar — decides whether it is a real voice note. */
+  const [clipExt, setClipExt] = useState<'ogg' | 'mp3' | null>(null);
   // Encode progress, 0…1. The encode runs in a worker now, so there is a number
   // to report and the bar it sits in stays interactive while it climbs.
   const [progress, setProgress] = useState(0);
@@ -125,6 +135,7 @@ export default function VoiceRecorder({
     recorderRef.current = null;
     elapsedRef.current = 0;
     setPreviewUrl(null);
+    setClipExt(null);
     setSeconds(0);
     setProgress(0);
     setStatus('idle');
@@ -136,6 +147,10 @@ export default function VoiceRecorder({
     const url = URL.createObjectURL(clip.blob);
     previewUrlRef.current = url;
     setPreviewUrl(url);
+    // Mirrored into state because the preview bar RENDERS from it, and a ref
+    // read during render is both lint-forbidden here and genuinely wrong: the
+    // hint would not appear until some unrelated update happened to re-render.
+    setClipExt(clip.ext);
     setStatus('preview');
   };
 
@@ -231,7 +246,7 @@ export default function VoiceRecorder({
     const file = new File([clip.blob], `voice-message-${seconds}s.${clip.ext}`, {
       type: clip.type,
     });
-    onRecorded(file);
+    onRecorded(file, { voice: clip.ext === 'ogg' });
     reset();
   };
 
@@ -305,6 +320,14 @@ export default function VoiceRecorder({
             <Trash2 className="h-5 w-5" />
           </button>
           <audio src={previewUrl} controls className="h-9 min-w-0 flex-1" />
+          {/* Said before sending, not discovered afterwards: on this browser the
+              recording goes out as an audio file the customer taps to download,
+              not the push-to-talk bubble the mic button implies. */}
+          {clipExt === 'mp3' && (
+            <span className="hidden max-w-[13rem] shrink-0 text-[11px] leading-tight text-[var(--text-muted)] sm:block">
+              Sends as an audio file — this browser can’t record a voice note
+            </span>
+          )}
           <button
             type="button"
             onClick={send}
