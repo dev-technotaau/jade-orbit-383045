@@ -970,6 +970,8 @@ const CONV_WINDOW_FALLBACK_ROWS = 40;
  * DOM focus onto it — the rows carry their own focusable controls.
  */
 const convOptionId = (id: string) => `wa-conv-opt-${id}`;
+/** The row's own "open this thread" button — the keyboard cursor's focus target. */
+const convOpenId = (id: string) => `wa-conv-open-${id}`;
 
 /**
  * The triage state a shared queue is scanned for, on the row itself.
@@ -1083,8 +1085,15 @@ function ConversationRow({
     // whole rows, so a row of another height would shift every position below it.
     <div
       id={convOptionId(conv.id)}
-      role="option"
-      aria-selected={active}
+      // `listitem`, NOT `option`.
+      //
+      // ARIA does not expose interactive descendants of an `option`, and this
+      // row contains two: the bulk-selection checkbox and the button that opens
+      // the thread. Under the old role a screen-reader user could not select a
+      // conversation at all — the entire bulk bar was unreachable — and the row
+      // announced only its own flattened text.
+      role="listitem"
+      aria-current={active ? 'true' : undefined}
       style={{ height: CONV_ROW_H }}
       className={cn(
         'flex w-full items-center gap-2 border-b border-[var(--border)] pr-3 transition-colors',
@@ -1110,6 +1119,9 @@ function ConversationRow({
       </label>
       <button
         type="button"
+        // Focused directly by the list's arrow-key navigation, which is what
+        // makes the row announce itself now that there is no activedescendant.
+        id={convOpenId(conv.id)}
         onClick={onClick}
         className="flex min-w-0 flex-1 items-center gap-3 py-3 text-left"
       >
@@ -1918,6 +1930,16 @@ export default function SuperAdminWhatsappInboxPage() {
   // offset is computed from the fixed row height instead. Syncing the window here
   // rather than waiting for the scroll event mounts the row in the same render as
   // the `aria-activedescendant` that names it, so it is never dangling.
+  /**
+   * A row the keyboard cursor has just moved to, waiting to be focused.
+   *
+   * The windowed list may not have that row MOUNTED yet — `revealConvRow`
+   * scrolls and re-computes the window, and the row appears on the render that
+   * follows. Focusing has to wait for it, which is what this ref and the effect
+   * below are for.
+   */
+  const pendingConvFocusRef = useRef<string | null>(null);
+
   const revealConvRow = useCallback(
     (index: number) => {
       const el = convScrollRef.current;
@@ -1937,16 +1959,29 @@ export default function SuperAdminWhatsappInboxPage() {
     [syncConvWindow],
   );
 
+  // Apply a pending cursor focus once the row it names is mounted.
+  useEffect(() => {
+    const id = pendingConvFocusRef.current;
+    if (!id) return;
+    const el = document.getElementById(id);
+    if (el) {
+      pendingConvFocusRef.current = null;
+      el.focus();
+    }
+  });
+
   const onConvListKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    // Only when the listbox itself holds focus — a row's checkbox or open button
-    // keeps its native keys (Space toggles, Enter activates).
-    if (e.target !== e.currentTarget) return;
     if (conversations.length === 0) return;
     const move = (next: number) => {
       e.preventDefault();
       const idx = Math.min(Math.max(next, 0), conversations.length - 1);
       setConvCursor(idx);
       revealConvRow(idx);
+      // Real focus, not just a ring. Set ONLY on this keyboard path: the
+      // container's own onFocus also seeds the cursor, and moving focus from
+      // there would bounce straight back into onFocus and fight it.
+      const target = conversations[idx];
+      if (target) pendingConvFocusRef.current = convOpenId(target.id);
     };
     switch (e.key) {
       case 'ArrowDown':
@@ -1963,11 +1998,24 @@ export default function SuperAdminWhatsappInboxPage() {
       case 'End':
         move(conversations.length - 1);
         break;
-      case 'Enter':
-      case ' ': {
+      case 'Enter': {
+        // Focus now lands on the row's own button, whose native Enter already
+        // opens the thread. Handling it here as well would fire twice.
+        if (e.target !== e.currentTarget) break;
         const conv = conversations[convCursorIndex];
         if (!conv) break;
-        // Space would otherwise page-scroll the list out from under the cursor.
+        e.preventDefault();
+        openConversation(conv);
+        break;
+      }
+      case ' ': {
+        // Space belongs to whatever is focused: it toggles the row's checkbox
+        // and activates its button. Only the container's own Space opens the
+        // cursor row — and that one must be prevented, or it page-scrolls the
+        // windowed list out from under the cursor.
+        if (e.target !== e.currentTarget) break;
+        const conv = conversations[convCursorIndex];
+        if (!conv) break;
         e.preventDefault();
         openConversation(conv);
         break;
@@ -3469,16 +3517,21 @@ export default function SuperAdminWhatsappInboxPage() {
                 stand in for the rows above and below it (see CONV_ROW_H). */}
             <div
               ref={convRowsRef}
-              role="listbox"
+              role="list"
               aria-label="Conversations"
-              aria-activedescendant={
-                convCursorIndex >= 0 ? convOptionId(conversations[convCursorIndex].id) : undefined
-              }
+              // No `aria-activedescendant`: that is a composite-widget mechanism
+              // and it is invalid on a list. The cursor moves REAL DOM focus to
+              // the row's open button instead, which is what makes the row
+              // announce itself — and what lets Tab reach its checkbox.
               tabIndex={0}
               onKeyDown={onConvListKeyDown}
+              // `focusin`, so the ring follows the cursor while focus sits on a
+              // row's own button too — the roving-focus path below moves it
+              // there, and gating on `e.target === e.currentTarget` would drop
+              // the ring the moment navigation started working.
               onFocus={(e) => {
-                if (e.target !== e.currentTarget) return;
                 setConvListFocused(true);
+                if (e.target !== e.currentTarget) return;
                 // Start from the open thread rather than the top, so a list
                 // focused after a `?c=` restore does not arrow away from where
                 // the operator already is. Every other path (click, Enter) has
@@ -3486,13 +3539,18 @@ export default function SuperAdminWhatsappInboxPage() {
                 const open = conversations.findIndex((c) => c.id === selectedId);
                 if (open >= 0) {
                   setConvCursor(open);
-                  // Also scrolled into the window, so the row the
-                  // `aria-activedescendant` names is actually mounted.
+                  // Also scrolled into the window, so the row the cursor names
+                  // is actually mounted.
                   revealConvRow(open);
                 }
               }}
               onBlur={(e) => {
-                if (e.target === e.currentTarget) setConvListFocused(false);
+                // Only when focus leaves the list ENTIRELY. Moving between a row
+                // button and its checkbox is still "in the list", and clearing
+                // the ring on every internal hop would make the cursor flicker.
+                if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                  setConvListFocused(false);
+                }
               }}
               className="focus-visible:ring-primary/40 outline-none focus-visible:ring-2 focus-visible:ring-inset"
             >
