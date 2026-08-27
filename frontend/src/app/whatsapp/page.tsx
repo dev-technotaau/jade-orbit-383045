@@ -156,6 +156,37 @@ function fmtRemaining(ms: number): string {
 function fmtTime(s: string | null): string {
   return s ? new Date(s).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
 }
+
+/**
+ * The conversation row's timestamp.
+ *
+ * The row used `fmtTime`, so a thread last touched three weeks ago and one
+ * touched this morning both read as a bare "09:42". Recency was inferable only
+ * from position in the list — which stops being true the moment the operator
+ * sorts by anything but last message, and was never true for someone scanning
+ * rather than reading top-down.
+ *
+ * WhatsApp's own escalation: time today, "Yesterday", weekday inside a week,
+ * then the date. The exact instant rides on the `title`, so nothing is lost.
+ */
+function fmtListTime(s: string | null): string {
+  // Guarded BEFORE `dayKey`, which takes a non-nullable string — `new Date(null)`
+  // is the epoch, and the row would have announced "1 Jan".
+  if (!s) return '';
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return '';
+  const now = new Date();
+  if (dayKey(s) === dayKey(now.toISOString())) {
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+  const yesterday = new Date();
+  yesterday.setDate(now.getDate() - 1);
+  if (dayKey(s) === dayKey(yesterday.toISOString())) return 'Yesterday';
+  if (now.getTime() - d.getTime() < 7 * 24 * 60 * 60 * 1000) {
+    return d.toLocaleDateString([], { weekday: 'short' });
+  }
+  return d.toLocaleDateString([], { day: 'numeric', month: 'short' });
+}
 /**
  * What to call this contact.
  *
@@ -1094,8 +1125,12 @@ function ConversationRow({
           <ConversationRowMeta conv={conv} />
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1">
-          <span className="text-[10px] text-[var(--text-muted)]">
-            {fmtTime(conv.lastMessageAt)}
+          <span
+            className="text-[10px] text-[var(--text-muted)]"
+            // The exact instant, so shortening the visible label costs nothing.
+            title={conv.lastMessageAt ? new Date(conv.lastMessageAt).toLocaleString() : undefined}
+          >
+            {fmtListTime(conv.lastMessageAt)}
           </span>
           {conv.unreadCount > 0 && (
             <span
@@ -3196,7 +3231,9 @@ export default function SuperAdminWhatsappInboxPage() {
                         {displayName(selected.contact)}
                       </span>
                       {selectedSnoozed && (
-                        <Tooltip content={`Snoozed until ${fmtTime(selected.snoozedUntil)}`}>
+                        <Tooltip
+                          content={`Snoozed until ${selected.snoozedUntil ? new Date(selected.snoozedUntil).toLocaleString() : ''}`}
+                        >
                           <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">
                             <Clock className="h-3 w-3" /> Snoozed
                           </span>

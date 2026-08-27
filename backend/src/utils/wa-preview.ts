@@ -51,6 +51,7 @@ const LABELS: Record<string, string> = {
   ORDER: 'Order',
   INTERACTIVE: 'Interactive message',
   BUTTON: 'Button reply',
+  REACTION: 'Reaction',
   UNSUPPORTED: 'Unsupported message',
 };
 
@@ -85,6 +86,14 @@ export function previewForMessage(
     // deciding whether to open a thread.
     const label = p.voice ? 'Voice message' : LABELS.AUDIO;
     return body ? `${label} · ${body}` : label;
+  }
+
+  if (kind === 'REACTION') {
+    // The attached path already writes these exact strings when it hangs the
+    // emoji on its target (`Reacted 👍` / `Removed a reaction`). An ORPHAN
+    // reaction — one whose target has not landed yet — fell through to the
+    // generic fallback and put the lowercase word "reaction" in the inbox list.
+    return body ? `Reacted ${body}` : 'Removed a reaction';
   }
 
   const label = LABELS[kind] ?? kind.toLowerCase();

@@ -292,7 +292,10 @@ function extractInbound(msg: any): {
       payload = msg.button;
       break;
     case 'reaction':
-      text = msg.reaction?.emoji ?? null;
+      // Meta signals a REMOVED reaction with `emoji: ""`, and `'' ?? null` keeps
+      // the empty string — so a removal was stored as a message with a body that
+      // is present and blank, which every reader downstream treats as "has text".
+      text = msg.reaction?.emoji || null;
       payload = msg.reaction;
       break;
     case 'system':
@@ -442,10 +445,31 @@ async function reconcileIdentitySignals(
 }
 
 /**
- * @returns true when the batch could not be routed to any channel — the caller
- * leaves the event unprocessed so the recovery pass replays it.
+ * How long a reaction whose target we do not hold is treated as a RACE with the
+ * message it points at, rather than as a reaction to history we never had.
+ *
+ * Meta delivers the reaction and the message it reacts to as separate callbacks
+ * with no ordering guarantee, so the reaction routinely arrives first. Filed
+ * immediately it becomes an orphan row: an emoji with nothing to hang on,
+ * which shows in the inbox as its own entry and — before this — answered the
+ * customer with the away message.
+ *
+ * Deliberately short. Past this the event MUST be allowed to complete: an event
+ * that exhausts its replays is retired as an abandoned MESSAGE event and logged
+ * as a lost customer message, which a late reaction is not. At a 5-minute
+ * recovery cadence this costs at most two replays out of the twelve available.
  */
-async function processMessages(value: any): Promise<boolean> {
+const REACTION_TARGET_RACE_MS = 5 * 60 * 1000;
+
+/** Why a batch is being left unprocessed, if it is. */
+interface MessagesOutcome {
+  /** No channel could be resolved — the customer's message has nowhere to go. */
+  unroutable: boolean;
+  /** A reaction arrived ahead of the message it points at. */
+  racingReaction: boolean;
+}
+
+async function processMessages(value: any): Promise<MessagesOutcome> {
   const phoneNumberId = value?.metadata?.phone_number_id;
   // `metadata.phone_number_id` is how a batch is routed to a channel, and it used
   // to be treated as mandatory: absent → a bare `return`, with no log, no message
@@ -466,7 +490,7 @@ async function processMessages(value: any): Promise<boolean> {
       'WhatsApp inbound: messages batch carries no metadata.phone_number_id and no ' +
         'default channel is configured — left unprocessed for the recovery pass'
     );
-    return true;
+    return { unroutable: true, racingReaction: false };
   }
   if (!phoneNumberId) {
     logger.warn(
@@ -475,6 +499,8 @@ async function processMessages(value: any): Promise<boolean> {
     );
   }
   const contacts: any[] = Array.isArray(value.contacts) ? value.contacts : [];
+  /** Set when a reaction pointed at a message this batch has not seen yet. */
+  let racingReaction = false;
 
   for (const msg of value.messages ?? []) {
     if (!msg?.id || !msg?.from) continue;
@@ -585,7 +611,22 @@ async function processMessages(value: any): Promise<boolean> {
         );
         continue; // handled — do not create an orphan REACTION message row
       }
-      // Fall through to current behavior (create a REACTION row) if no target found.
+      // No target. That is USUALLY a race rather than history we never had:
+      // Meta ships the reaction and the message it reacts to as separate
+      // callbacks with no ordering guarantee, and the reaction routinely wins.
+      //
+      // Filed straight away it becomes an orphan — an emoji with nothing to
+      // hang on, taking its own line in the inbox. Deferring lets the recovery
+      // pass replay the batch once the target has landed, at which point the
+      // branch above attaches it properly. The whole handler is idempotent
+      // (WAMID dedup before any write), so the replay costs nothing.
+      if (Date.now() - createdAt.getTime() < REACTION_TARGET_RACE_MS) {
+        racingReaction = true;
+        continue;
+      }
+      // Past the race window the target genuinely is not coming — a reaction to
+      // a message older than our retention, or one sent from another client.
+      // Fall through and store the orphan rather than deferring forever.
     }
 
     // ── Create the inbound message row + the thread fields it drives ─────────
@@ -932,7 +973,13 @@ async function processMessages(value: any): Promise<boolean> {
     // customer: answering it with a greeting or a keyword rule would message
     // somebody who has said nothing, and after a merge the contact this job
     // names may already be a tombstone.
-    if (!justOptedOut && !contact.isBlocked && type !== 'SYSTEM') {
+    // REACTION joins SYSTEM for the same reason spelled out above: it is not a
+    // question. Answering an emoji tap with the away message writes to a
+    // customer who said nothing — and burns the once-per-window away claim, so
+    // the message they actually send next gets no acknowledgement at all.
+    // Only ORPHAN reactions reach here; one that resolved its target returned
+    // long before, so this makes the two paths behave identically.
+    if (!justOptedOut && !contact.isBlocked && type !== 'SYSTEM' && type !== 'REACTION') {
       // `isNewContact` is resolved from a pre-upsert existence check, not from
       // "this conversation has exactly one message". That count was taken AFTER
       // the inbound row was written, so two messages arriving together both read
@@ -971,7 +1018,7 @@ async function processMessages(value: any): Promise<boolean> {
       });
     }
   }
-  return false;
+  return { unroutable: false, racingReaction };
 }
 
 /**
@@ -1291,8 +1338,13 @@ async function processStatuses(value: any): Promise<boolean> {
     if (status === 'DELIVERED') patch.deliveredAt = ts;
     if (status === 'READ') patch.readAt = ts;
     if (status === 'FAILED') {
-      patch.errorCode = err?.code != null ? String(err.code) : undefined;
-      patch.errorTitle = err?.title ?? err?.message;
+      // Explicit null, NOT undefined. Prisma omits undefined from the update, so
+      // a fresh failure that carried no `errors[]` kept the PREVIOUS attempt's
+      // code and reason sitting beside it — and `errorDetails` below nulls
+      // properly, which left the three columns describing two different
+      // failures. The emit path a few lines down has always nulled correctly.
+      patch.errorCode = err?.code != null ? String(err.code) : null;
+      patch.errorTitle = err?.title ?? err?.message ?? null;
       // The sentence that distinguishes THIS failure from every other instance
       // of the same code. Meta puts it under `error_data.details`; older
       // payloads spell it `error_data.messaging_product`-style flat, and some
@@ -1774,6 +1826,7 @@ export async function processInboundEvent(eventRowId: string): Promise<{
   const payload: any = event.payload;
   let sawUnmatchedStatus = false;
   let sawUnroutableMessages = false;
+  let sawRacingReaction = false;
   for (const entry of payload?.entry ?? []) {
     for (const change of entry?.changes ?? []) {
       const value = change?.value;
@@ -1781,7 +1834,12 @@ export async function processInboundEvent(eventRowId: string): Promise<{
       const hasMessages = Array.isArray(value.messages) && value.messages.length;
       const hasStatuses = Array.isArray(value.statuses) && value.statuses.length;
       if (hasMessages) {
-        if (await processMessages(value)) sawUnroutableMessages = true;
+        // An object, not a boolean: an unroutable batch and a reaction that
+        // outran its target both defer, but they are different problems and
+        // logging one as the other sends an operator to the wrong place.
+        const outcome = await processMessages(value);
+        if (outcome.unroutable) sawUnroutableMessages = true;
+        if (outcome.racingReaction) sawRacingReaction = true;
       }
       if (hasStatuses) {
         if (await processStatuses(value)) sawUnmatchedStatus = true;
@@ -1811,6 +1869,18 @@ export async function processInboundEvent(eventRowId: string): Promise<{
   // Same contract for a messages batch that resolved to no channel at all: the
   // payload is intact on the event row, so replaying it once a channel exists is
   // strictly better than stamping it complete and losing the customer's message.
+  // A reaction that arrived ahead of the message it points at. Checked before
+  // the unroutable branch below so the log names the real reason — and INFO,
+  // not WARN: this is the expected shape of a race Meta does not order for us,
+  // and it settles on the next replay.
+  if (sawRacingReaction) {
+    logger.info(
+      `WhatsApp inbound: event ${event.id} carries a reaction whose target message ` +
+        'has not landed yet — left unprocessed for the recovery pass to replay'
+    );
+    return { processed: true, eventType: event.eventType, deferred: true };
+  }
+
   if (sawUnroutableMessages) {
     logger.warn(
       `WhatsApp inbound: event ${event.id} carries messages that resolve to no channel — ` +

@@ -93,7 +93,16 @@ function WhatsappUnreadBadge() {
     // answer, and this fired on EVERY wa:message — including every outbound message
     // a campaign sends. A campaign at 15/s meant 15 full-table aggregates per second
     // per open browser tab, against the same pool the campaign worker was already
-    // saturating.
+    // saturating. `wa:conversation` is on the same debounce for the same reason:
+    // a campaign emits one per recipient too.
+    //
+    // It replaces `wa:read`, which NO backend code has ever emitted — grep the
+    // server for it and there are zero hits. So the badge only ever recounted on
+    // a new message; reading a thread, marking one unread, archiving one or a
+    // bulk action left it standing at its old number until the 30s poll or a
+    // navigation caught up. `markRead` and `markUnread` both emit
+    // `wa:conversation` with the updated row, which is the event that actually
+    // means "the unread total may have moved".
     let bumpTimer: ReturnType<typeof setTimeout> | null = null;
     const bump = () => {
       if (bumpTimer) clearTimeout(bumpTimer);
@@ -102,10 +111,10 @@ function WhatsappUnreadBadge() {
       }, 5000);
     };
     socket.on('wa:message', bump);
-    socket.on('wa:read', bump);
+    socket.on('wa:conversation', bump);
     return () => {
       socket.off('wa:message', bump);
-      socket.off('wa:read', bump);
+      socket.off('wa:conversation', bump);
     };
   }, [socket, qc]);
 

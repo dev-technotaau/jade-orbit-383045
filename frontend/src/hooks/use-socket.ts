@@ -180,10 +180,15 @@ export function useSocket() {
       });
 
       // The host platform also listened for `notification` and
-      // `application_update` here. This backend emits exactly four events —
-      // wa:message, wa:status, wa:conversation, wa:campaign — so both were dead
-      // listeners for events that can never fire. WhatsApp events are consumed
-      // by the components that need them (see Sidebar, inbox).
+      // `application_update` here. This backend emits exactly six events —
+      // wa:message, wa:status, wa:conversation, wa:campaign, wa:reaction,
+      // wa:settings — so both were dead listeners for events that can never
+      // fire. Keeping this list accurate is not bookkeeping: the sidebar badge
+      // spent its life subscribed to `wa:read`, which is not on it and never
+      // was, so the badge silently never updated on a read.
+      //
+      // WhatsApp events are consumed by the components that need them (see
+      // Sidebar, inbox, WaNotificationsProvider).
 
       globalSocket = newSocket;
       notifyListeners();
