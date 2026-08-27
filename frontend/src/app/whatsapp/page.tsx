@@ -35,6 +35,7 @@ import {
   CalendarClock,
   CornerUpRight,
   FileText,
+  Forward,
   ShoppingBag,
   MailQuestionMark,
   Pin,
@@ -64,6 +65,7 @@ import { cn } from '@/lib/utils';
 import { loadDrafts, persistDrafts } from '@/lib/wa-drafts';
 import { WA_FORMATS, applyWaFormat } from '@/lib/wa-format';
 import EmojiPicker from '@/components/whatsapp/EmojiPicker';
+import ForwardModal from '@/components/whatsapp/ForwardModal';
 import RealtimeStatus from '@/components/whatsapp/RealtimeStatus';
 import { stripWhatsAppFormatting, hasWaFormatting } from '@/lib/wa-format';
 import { useClickOutside } from '@/hooks/use-click-outside';
@@ -538,6 +540,7 @@ function MessageBubble({
   retrying,
   onReply,
   onToggleStar,
+  onForward,
   quotedText,
   selectionMode,
   selected,
@@ -576,6 +579,8 @@ function MessageBubble({
   onReply?: (message: WaMessage) => void;
   /** Toggle this message's star. Absent for rows that have no server id yet. */
   onToggleStar?: (message: WaMessage) => void;
+  /** Forward this message elsewhere. Absent for rows with no server id yet. */
+  onForward?: (message: WaMessage) => void;
   /** Resolved text/label of the message this one replies to (contextWamid). */
   quotedText?: string;
   /** Multi-select (delete) mode: bubbles become selectable checkboxes. */
@@ -654,6 +659,7 @@ function MessageBubble({
                     onSelect={() => onStartSelect(message.id)}
                     starred={!!message.starredAt}
                     onToggleStar={onToggleStar ? () => onToggleStar(message) : undefined}
+                    onForward={onForward ? () => onForward(message) : undefined}
                     align="end"
                   />
                 </div>
@@ -875,6 +881,7 @@ function MessageBubble({
                     onSelect={() => onStartSelect(message.id)}
                     starred={!!message.starredAt}
                     onToggleStar={onToggleStar ? () => onToggleStar(message) : undefined}
+                    onForward={onForward ? () => onForward(message) : undefined}
                     align="start"
                   />
                 </div>
@@ -1515,6 +1522,14 @@ export default function SuperAdminWhatsappInboxPage() {
   // Message multi-select (delete / copy) state + helpers.
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedMessageIds, setSelectedMessageIds] = useState<Set<string>>(new Set());
+  /**
+   * Messages queued for forwarding.
+   *
+   * Its own state rather than reusing the selection: the picker is modal, and
+   * clearing the selection while it is open would leave the modal describing a
+   * set that no longer exists.
+   */
+  const [forwarding, setForwarding] = useState<string[] | null>(null);
   const copyMessageText = (text: string | null) => {
     const t = (text ?? '').trim();
     if (!t) return;
@@ -3855,6 +3870,14 @@ export default function SuperAdminWhatsappInboxPage() {
                     </button>
                     <button
                       type="button"
+                      onClick={() => setForwarding([...selectedMessageIds])}
+                      disabled={selectedMessageIds.size === 0}
+                      className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] px-2 py-1 text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] disabled:opacity-50"
+                    >
+                      <Forward className="h-3.5 w-3.5" /> Forward
+                    </button>
+                    <button
+                      type="button"
                       onClick={deleteSelectedMessages}
                       disabled={selectedMessageIds.size === 0 || deleteMessagesMut.isPending}
                       className="inline-flex items-center gap-1 rounded-md bg-red-600 px-2 py-1 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
@@ -4114,6 +4137,11 @@ export default function SuperAdminWhatsappInboxPage() {
                                     messageId: msg.id,
                                     starred: !msg.starredAt,
                                   })
+                          }
+                          onForward={
+                            m.id.startsWith(OPTIMISTIC_PREFIX)
+                              ? undefined
+                              : (msg) => setForwarding([msg.id])
                           }
                           quotedText={m.contextWamid ? wamidToText.get(m.contextWamid) : undefined}
                           selectionMode={selectionMode}
@@ -4680,6 +4708,20 @@ export default function SuperAdminWhatsappInboxPage() {
             // already in flight is the exact way the quote leaked onto the
             // message after it.
             setReplyTo(null);
+          }}
+        />
+      )}
+
+      {forwarding && selected && (
+        <ForwardModal
+          conversationId={selected.id}
+          messageIds={forwarding}
+          onClose={() => setForwarding(null)}
+          onDone={() => {
+            // Leave selection mode once the forward lands — the operator picked
+            // these to move them, not to keep working with them here.
+            setSelectionMode(false);
+            setSelectedMessageIds(new Set());
           }}
         />
       )}

@@ -32,6 +32,7 @@ import {
   waCreateTemplateSchema,
   waSendTemplateSchema,
   waStartConversationSchema,
+  waForwardMessageSchema,
   waUpdateContactSchema,
   waMergeContactSchema,
   waImportContactsSchema,
@@ -754,6 +755,13 @@ router.post(
   validate(waReactionSchema),
   audit('WA_SEND_REACTION', 'WaConversation'),
   ctrl.sendReaction
+);
+router.post(
+  '/conversations/:id/forward',
+  waSendLimiter,
+  validate(waForwardMessageSchema),
+  audit('WA_FORWARD_MESSAGES', 'WaConversation'),
+  ctrl.forwardMessages
 );
 router.post(
   '/conversations/:id/mute',

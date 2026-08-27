@@ -194,6 +194,17 @@ export interface WaMessage {
   createdAt: string;
 }
 
+/** One target's outcome from a forward. Partial success is the normal case. */
+export interface WaForwardResult {
+  conversationId: string;
+  /** The SOURCE message this result is about. */
+  messageId: string;
+  ok: boolean;
+  sentMessageId?: string;
+  errorCode?: string;
+  error?: string;
+}
+
 /** One matching message inside a conversation, from the in-thread search. */
 export interface WaThreadHit {
   id: string;

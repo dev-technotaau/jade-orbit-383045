@@ -7,7 +7,12 @@ import { env } from '../config/env';
 import logger from '../config/logger';
 import { prisma } from '../config/prisma';
 import { r2Client } from '../config/r2';
-import { putBufferToR2, getObjectStream, R2RangeNotSatisfiableError } from './storage.service';
+import {
+  putBufferToR2,
+  getObjectStream,
+  downloadFileFromR2,
+  R2RangeNotSatisfiableError,
+} from './storage.service';
 import { graphVersion } from './whatsapp.service';
 import { AppError } from '../middleware/error';
 
@@ -163,6 +168,61 @@ export async function archiveInboundMedia(
   } catch (err) {
     logger.warn('WhatsApp media archival failed', { mediaId, err });
     return { ok: false, reason: 'transient' };
+  }
+}
+
+/**
+ * The BYTES of a message's attachment, from wherever they still exist.
+ *
+ * Forwarding needs the actual file: a Meta media id belongs to the phone-number
+ * id that uploaded it and cannot simply be re-referenced in another send, so the
+ * file has to be fetched and uploaded again.
+ *
+ * The bucket is tried first and is usually the only copy that still exists —
+ * Meta expires inbound media after ~30 days, and our own outbound ids are
+ * deleted after archival. Meta is the fallback for rows whose archive is still
+ * PENDING, was SKIPPED (no bucket configured) or FAILED, which is exactly the
+ * window in which Meta's copy is likely to be alive.
+ *
+ * Returns null when neither has it, so the caller can report "the file is gone"
+ * rather than forwarding an empty message.
+ */
+export async function loadMessageMediaBytes(message: {
+  mediaId: string | null;
+  mediaUrl: string | null;
+  mediaMime: string | null;
+}): Promise<{ buffer: Buffer; mime: string } | null> {
+  const fallbackMime = message.mediaMime || 'application/octet-stream';
+  if (message.mediaUrl && r2Client) {
+    try {
+      const buffer = await downloadFileFromR2(message.mediaUrl);
+      if (buffer?.length) return { buffer, mime: fallbackMime };
+    } catch (err) {
+      // Not fatal: fall through to Meta, which may still hold it.
+      logger.warn('WhatsApp forward: archived copy unreadable, trying Meta', {
+        key: message.mediaUrl,
+        err,
+      });
+    }
+  }
+  if (!message.mediaId) return null;
+  try {
+    const meta = await getMediaMeta(message.mediaId);
+    if (!meta) return null;
+    const token = env.META_WHATSAPP_TOKEN as string;
+    // eslint-disable-next-line n/no-unsupported-features/node-builtins
+    const media = await fetch(meta.url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!media.ok) return null;
+    return {
+      buffer: Buffer.from(await media.arrayBuffer()),
+      mime: meta.mime || fallbackMime,
+    };
+  } catch (err) {
+    logger.warn('WhatsApp forward: could not fetch media from Meta', {
+      mediaId: message.mediaId,
+      err,
+    });
+    return null;
   }
 }
 

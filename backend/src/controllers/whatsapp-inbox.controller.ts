@@ -5,6 +5,7 @@ import {
   sendSessionMessage,
   sendTemplateToConversation,
   startConversationWithTemplate,
+  forwardMessages as forwardMessagesToConversations,
   sendInteractiveMessage,
   sendMediaMessage,
   sendReaction as sendReactionMessage,
@@ -753,6 +754,30 @@ export const setBotPause = async (
       req.body.botPausedUntil ? new Date(req.body.botPausedUntil) : null
     );
     res.json({ success: true, data: conv });
+  } catch (e) {
+    next(e);
+  }
+};
+
+/**
+ * Forward one or more of this conversation's messages into other conversations.
+ *
+ * Always 200 with a per-target result list, never a throw for a single failure:
+ * a batch where three targets accepted and one had a closed 24h window is a
+ * partial success, and reporting it as an error would tell the operator nothing
+ * about which three landed.
+ */
+export const forwardMessages = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const result = await forwardMessagesToConversations(String(req.params.id), req.user!.id, {
+      messageIds: req.body.messageIds,
+      toConversationIds: req.body.toConversationIds,
+    });
+    res.json({ success: true, data: result });
   } catch (e) {
     next(e);
   }

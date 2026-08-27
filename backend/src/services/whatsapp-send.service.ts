@@ -12,12 +12,16 @@ import { noteMarketingRefusal } from './whatsapp-contact.service';
 const MARKETING_REFUSAL_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 import { AppError } from '../middleware/error';
 import logger from '../config/logger';
-import { sendWhatsappRaw, toGraphPhone } from './whatsapp.service';
+import { sendWhatsappRaw, toGraphPhone, uploadMediaToMeta } from './whatsapp.service';
+// Forwarding re-uploads the bytes rather than re-referencing the media id,
+// because a media id belongs to the phone-number id that created it.
+import { loadMessageMediaBytes } from './whatsapp-media.service';
 import {
   windowOpen,
   applyMessageTouch,
   touchOnMessage,
   getConversationForOutbound,
+  getConversationSenderPhoneId,
 } from './whatsapp-conversation.service';
 import {
   getChannelPhoneNumberId,
@@ -43,6 +47,8 @@ import {
   HEADER_FORMAT_MIMES,
   byteLabel,
   headerFormatHint,
+  isAnimatedWebp,
+  mediaKindForMime,
   metaLimitFor,
   type WaHeaderMediaFormat,
 } from '../utils/wa-media-limits';
@@ -1712,4 +1718,198 @@ export async function startConversationWithTemplate(input: {
     carouselCards: input.carouselCards,
   });
   return { conversationId: conversation.id, message };
+}
+
+/** One target's outcome from a forward. */
+export interface ForwardResult {
+  conversationId: string;
+  /** The SOURCE message this result is about. */
+  messageId: string;
+  ok: boolean;
+  sentMessageId?: string;
+  errorCode?: string;
+  error?: string;
+}
+
+/** Types a forward can actually reproduce. */
+const FORWARDABLE_TYPES = new Set<WaMessageType>([
+  'TEXT',
+  'IMAGE',
+  'VIDEO',
+  'AUDIO',
+  'DOCUMENT',
+  'STICKER',
+  'LOCATION',
+  'CONTACTS',
+]);
+
+/**
+ * Send copies of existing messages into other conversations.
+ *
+ * The only way to pass a customer's photo or address to a colleague's thread was
+ * to download it and re-attach it by hand — for a screenshot the customer had
+ * already sent us, which is the most common thing a support team needs to move
+ * between threads.
+ *
+ * Three things this deliberately does NOT do:
+ *
+ *  - It does not re-reference the Meta media id. A media id is scoped to the
+ *    phone-number id that uploaded it, so the same id in another number's send
+ *    is rejected outright. The bytes are fetched and uploaded again, fetched
+ *    ONCE per source message however many targets there are.
+ *  - It does not set `context`. A forward is not a reply, and quoting a WAMID
+ *    from another conversation would point at a message the recipient of this
+ *    one has never seen.
+ *  - It does not convert to a template when a target's 24h window is shut. That
+ *    would silently turn a free forward into a billed marketing send to someone
+ *    who did not ask for it. The closed window is reported per target instead.
+ *
+ * Every target is attempted; one closed window or one blocked contact must not
+ * abandon the rest, which is why the result is per-target rather than a throw.
+ */
+export async function forwardMessages(
+  sourceConversationId: string,
+  actorUserId: string,
+  input: { messageIds: string[]; toConversationIds: string[] }
+): Promise<{ results: ForwardResult[] }> {
+  const messageIds = [...new Set(input.messageIds ?? [])];
+  // The source thread is dropped rather than rejected: it is a plausible
+  // mis-click in a picker that lists every conversation, and forwarding a
+  // message into the thread it came from is never what was meant.
+  const targetIds = [...new Set(input.toConversationIds ?? [])].filter(
+    (id) => id !== sourceConversationId
+  );
+  if (messageIds.length === 0 || targetIds.length === 0) {
+    throw new AppError('Pick at least one message and one conversation', 400, 'WA_FORWARD_EMPTY');
+  }
+
+  const sources = await prisma.waMessage.findMany({
+    where: { id: { in: messageIds }, conversationId: sourceConversationId, deletedAt: null },
+    orderBy: { createdAt: 'asc' },
+  });
+  if (sources.length === 0) {
+    throw new AppError('No forwardable messages found', 404, 'WA_MESSAGE_NOT_FOUND');
+  }
+
+  const results: ForwardResult[] = [];
+
+  for (const source of sources) {
+    if (!FORWARDABLE_TYPES.has(source.type)) {
+      // A template cannot be forwarded AS a template — Meta requires an approved
+      // template plus its parameters, and the rendered text is not one. Reported
+      // per message rather than silently dropped.
+      for (const conversationId of targetIds) {
+        results.push({
+          conversationId,
+          messageId: source.id,
+          ok: false,
+          errorCode: 'WA_FORWARD_UNSUPPORTED',
+          error: `A ${source.type.toLowerCase()} message cannot be forwarded`,
+        });
+      }
+      continue;
+    }
+
+    // Resolved ONCE, before the target loop. The upload has to happen per target
+    // (a media id is scoped to its uploading number) but the fetch does not.
+    let media: { buffer: Buffer; mime: string } | null = null;
+    if (source.mediaId || source.mediaUrl) {
+      media = await loadMessageMediaBytes(source);
+      if (!media) {
+        for (const conversationId of targetIds) {
+          results.push({
+            conversationId,
+            messageId: source.id,
+            ok: false,
+            errorCode: 'WA_MEDIA_GONE',
+            error: 'The attachment is no longer available to forward',
+          });
+        }
+        continue;
+      }
+    }
+
+    for (const conversationId of targetIds) {
+      try {
+        let sent;
+        if (source.type === 'TEXT') {
+          const text = source.text?.trim();
+          if (!text) throw new AppError('That message has no text', 400, 'WA_EMPTY_MESSAGE');
+          sent = await sendSessionMessage(conversationId, actorUserId, { type: 'text', text });
+        } else if (source.type === 'LOCATION') {
+          const p = (source.payload ?? {}) as {
+            latitude?: number;
+            longitude?: number;
+            name?: string;
+            address?: string;
+          };
+          sent = await sendLocation(conversationId, actorUserId, {
+            latitude: Number(p.latitude),
+            longitude: Number(p.longitude),
+            name: p.name,
+            address: p.address,
+          });
+        } else if (source.type === 'CONTACTS') {
+          const cards = Array.isArray(source.payload) ? source.payload : [];
+          sent = await sendContacts(conversationId, actorUserId, { contacts: cards });
+        } else {
+          const buffer = (media as { buffer: Buffer }).buffer;
+          const mime = (media as { mime: string }).mime;
+          // Re-derived from the BYTES rather than trusted from the source row:
+          // the row's kind was decided when it arrived, and the archived copy is
+          // what is actually being sent (a WebP's animation flag, for one,
+          // decides which size ceiling applies).
+          const animated = mime === 'image/webp' && isAnimatedWebp(buffer);
+          const kind = mediaKindForMime(mime, buffer.length, animated);
+          const limit = metaLimitFor(kind, animated);
+          if (buffer.length > limit) {
+            throw new AppError(
+              `${kind} files must be under ${byteLabel(limit)}`,
+              400,
+              'WA_FILE_TOO_LARGE'
+            );
+          }
+          const filename =
+            ((source.payload ?? {}) as { filename?: string }).filename || `forwarded-${source.id}`;
+          // Uploaded under the TARGET's own number. A media id belongs to the
+          // phone-number id that created it, so a forward to a thread on another
+          // connected number would otherwise be rejected by Meta at send time.
+          const senderPhoneId = await getConversationSenderPhoneId(conversationId);
+          const mediaId = await uploadMediaToMeta(buffer, mime, filename, senderPhoneId);
+          if (!mediaId) {
+            throw new AppError('Could not upload the attachment', 502, 'WA_MEDIA_UPLOAD_FAILED');
+          }
+          sent = await sendMediaMessage(conversationId, actorUserId, {
+            kind,
+            mediaId,
+            mime,
+            // The caption travels with the file, as it did originally. Meta
+            // rejects one on audio/sticker and `sendMediaMessage` drops it there
+            // — the same rule the composer already follows.
+            caption: source.text ?? undefined,
+            filename: kind === 'document' ? filename : undefined,
+            size: buffer.length,
+            voice: ((source.payload ?? {}) as { voice?: boolean }).voice === true,
+          });
+        }
+        results.push({
+          conversationId,
+          messageId: source.id,
+          ok: true,
+          sentMessageId: sent?.id,
+        });
+      } catch (err) {
+        const e = err as AppError;
+        results.push({
+          conversationId,
+          messageId: source.id,
+          ok: false,
+          errorCode: e?.code ?? 'WA_FORWARD_FAILED',
+          error: e?.message ?? 'Could not forward this message',
+        });
+      }
+    }
+  }
+
+  return { results };
 }

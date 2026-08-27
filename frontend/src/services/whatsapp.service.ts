@@ -35,6 +35,7 @@ import type {
   WaConversationMedia,
   WaConversationsPage,
   WaThreadSearchResult,
+  WaForwardResult,
   WaKeywordRule,
   WaMatchType,
   WaBotFlow,
@@ -1766,6 +1767,21 @@ export const whatsappService = {
     const res = await api.post(API.SUPER_ADMIN.WA_CONV_MUTE(id), { mutedUntil });
     return res.data;
   },
+  /**
+   * Copy messages into other conversations.
+   *
+   * Always resolves with a per-target result list rather than throwing on a
+   * single failure: three targets accepting and one having a closed 24h window
+   * is a partial success, and an error would say nothing about which three.
+   */
+  async forwardMessages(
+    conversationId: string,
+    body: { messageIds: string[]; toConversationIds: string[] },
+  ): Promise<ApiResponse<{ results: WaForwardResult[] }>> {
+    const res = await api.post(API.SUPER_ADMIN.WA_CONV_FORWARD(conversationId), body);
+    return res.data;
+  },
+
   /**
    * Search inside ONE conversation.
    *

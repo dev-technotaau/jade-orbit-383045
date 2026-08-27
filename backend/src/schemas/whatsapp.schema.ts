@@ -225,6 +225,20 @@ export const waSendTemplateSchema = z.object({
   body: z.object(templateSendBody),
 });
 
+/**
+ * Forward messages into other conversations.
+ *
+ * Both arrays are capped: the endpoint performs `messages × targets` real sends,
+ * each of which may re-upload a file, so an uncapped request is a way to hold a
+ * request open for minutes and hand Meta a burst it will rate-limit.
+ */
+export const waForwardMessageSchema = z.object({
+  body: z.object({
+    messageIds: z.array(z.string().uuid()).min(1).max(10),
+    toConversationIds: z.array(z.string().uuid()).min(1).max(10),
+  }),
+});
+
 export const waStartConversationSchema = z.object({
   body: z.object({
     phone: z.string().min(8).max(20),
