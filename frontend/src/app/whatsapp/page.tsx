@@ -53,6 +53,7 @@ import Tooltip from '@/components/ui/Tooltip';
 import { showToast } from '@/components/ui/Toast';
 import api from '@/lib/api';
 import { cn } from '@/lib/utils';
+import { loadDrafts, persistDrafts } from '@/lib/wa-drafts';
 import { stripWhatsAppFormatting, hasWaFormatting } from '@/lib/wa-format';
 import { useClickOutside } from '@/hooks/use-click-outside';
 import { useSocket } from '@/hooks/use-socket';
@@ -937,7 +938,36 @@ export default function SuperAdminWhatsappInboxPage() {
   // deliberately excludes archived threads (those live in the archive).
   const includeSnoozed = scopeFilter === 'all' || scopeFilter === 'archived';
   const snoozedOnly = scopeFilter === 'snoozed';
-  const [draft, setDraft] = useState('');
+  /**
+   * Composer drafts, keyed by conversation.
+   *
+   * This was a single string for the whole inbox, and the conversation-switch
+   * block below — which resets eleven other pieces of state — never cleared it.
+   * So half-typed text for one customer stayed in the box when the operator
+   * opened the next, and one Enter sent it to the wrong person, with no unsend
+   * on the Cloud API. Keying by id removes the hazard by construction: a switch
+   * derives an empty box because the map has no entry yet, so there is no reset
+   * to forget. Same shape `mediaPick` already uses to scope itself by `convId`.
+   */
+  const [drafts, setDrafts] = useState<Record<string, string>>(() => loadDrafts());
+  const draftKey = selectedId ?? '';
+  const draft = drafts[draftKey] ?? '';
+  const setDraft = useCallback(
+    (value: string | ((prev: string) => string)) => {
+      setDrafts((prev) => {
+        const current = prev[draftKey] ?? '';
+        const next = typeof value === 'function' ? value(current) : value;
+        if (next === current) return prev;
+        const merged = { ...prev, [draftKey]: next };
+        // An empty draft is an absent draft — otherwise the map accumulates one
+        // key per conversation ever opened.
+        if (!next) delete merged[draftKey];
+        persistDrafts(merged);
+        return merged;
+      });
+    },
+    [draftKey],
+  );
   // The composer grows with the draft. `max-h-32` on the textarea always encoded
   // the intent to grow, but `rows={1}` with no height handling pinned it at one
   // line: anything longer than that was typed into a 40px box that scrolled
@@ -1878,7 +1908,10 @@ export default function SuperAdminWhatsappInboxPage() {
       setReplyTo(null);
       showToast.info('No connection — queued. It will send by itself once you are back online.');
     },
-    [refreshOutbox],
+    // `setDraft` is now conversation-scoped, so it changes identity with the open
+    // thread and has to be a real dependency — omitting it would clear the draft
+    // of whichever conversation was open when this callback was created.
+    [refreshOutbox, setDraft],
   );
 
   /** Drop a queued reply the operator no longer wants sent. */
@@ -1960,12 +1993,18 @@ export default function SuperAdminWhatsappInboxPage() {
       optimistic.id = vars.optimisticId;
       optimistic.contextWamid = vars.contextWamid ?? null;
       setPendingMessages((prev) => [...prev, optimistic]);
+      // Cleared HERE, not in onSuccess. The optimistic bubble already carries the
+      // text and the FAILED-bubble retry path restores it, so nothing is lost —
+      // but leaving it in the box until the server answers meant that on a slow
+      // link the operator read a full composer as "it didn't take", pressed Enter
+      // again, and the customer received the reply twice (billed twice, with no
+      // unsend). The `isPending` guard in `submitDraft` is the other half.
+      setDraft('');
+      setReplyTo(null);
       // Replying means you've seen the thread → drop the unread divider.
       setOpenUnread({ convId: selected.id, count: 0 });
     },
     onSuccess: (res, vars) => {
-      setDraft('');
-      setReplyTo(null);
       // Merge the canonical server message into the cache FIRST so it renders in
       // place of the optimistic bubble with no gap (no refetch, no disappear/
       // reappear flicker), THEN drop the optimistic bubble.
@@ -2006,6 +2045,11 @@ export default function SuperAdminWhatsappInboxPage() {
     const trimmed = text.trim();
     if (!trimmed) return;
     if (!selectedId) return;
+    // A send is already in flight. The textarea has no disabled state and calls
+    // this directly on keydown, bypassing the submit Button whose isLoading
+    // would have stopped it — so without this a second Enter on a slow link
+    // sends the same reply twice.
+    if (sendMut.isPending) return;
     const contextWamid = replyTo?.wamid ?? undefined;
     // Known-offline: skip the request the browser would refuse to make anyway and
     // queue straight away, so the composer clears and the operator can carry on
