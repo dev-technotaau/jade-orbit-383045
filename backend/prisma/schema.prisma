@@ -533,6 +533,16 @@ model WaMessage {
   contextWamid       String? // reply-to (threading)
   errorCode          String?
   errorTitle         String?
+  /// Meta's `error_data.details` — the ACTIONABLE half of a delivery failure.
+  ///
+  /// `errorTitle` is the generic headline Meta reuses across every instance of a
+  /// code ("Message Undeliverable"); `details` is the sentence that says WHY
+  /// this particular one failed and whether anything can be done about it
+  /// ("Message failed to send because more than 24 hours have passed since the
+  /// customer last replied to this number"). It was parsed off the webhook and
+  /// thrown away, so a failed bubble showed the operator a headline they had
+  /// already seen on every other failure.
+  errorDetails       String?
   pricingCategory    String? // marketing|utility|authentication|service (from status webhook)
   /// Meta's amount ROUNDED to whole minor units, kept for the existing sums.
   ///

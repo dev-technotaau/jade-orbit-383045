@@ -711,6 +711,20 @@ function MessageBubble({
                   )}
                 >
                   {message.errorTitle}
+                  {/* Meta's specific reason, under the generic headline. The
+                      headline alone is identical on every instance of a code, so
+                      it never answered the only question the operator has: is
+                      this worth retrying? */}
+                  {message.errorDetails && message.errorDetails !== message.errorTitle && (
+                    <span
+                      className={cn(
+                        'mt-0.5 block font-normal opacity-90',
+                        outbound ? 'text-red-100' : 'text-[var(--text-muted)]',
+                      )}
+                    >
+                      {message.errorDetails}
+                    </span>
+                  )}
                 </p>
               )}
               {outbound && <MessageProvenance message={message} />}

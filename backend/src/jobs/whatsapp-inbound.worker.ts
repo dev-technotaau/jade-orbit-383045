@@ -1057,6 +1057,26 @@ const RECIPIENT_WAMID_RACE_MS = 10 * 60 * 1000;
  * whose recipient row has not been given its wamid yet — the caller leaves the
  * event unprocessed so it is replayed.
  */
+/**
+ * The most specific human sentence Meta gave us for a failed send.
+ *
+ * `title` is the generic headline shared by every instance of a code; the
+ * operator has seen it before and it never says whether the failure is
+ * retryable. `error_data.details` is the one that does. Returns null rather
+ * than echoing the title back, so the UI can tell "no extra detail" from
+ * "detail that repeats the headline".
+ */
+function errorDetailsOf(err: any): string | null {
+  const candidates = [err?.error_data?.details, err?.details, err?.message];
+  const title = typeof err?.title === 'string' ? err.title.trim() : '';
+  for (const c of candidates) {
+    if (typeof c !== 'string') continue;
+    const v = c.trim();
+    if (v && v !== title) return v.slice(0, 1000);
+  }
+  return null;
+}
+
 async function processStatuses(value: any): Promise<boolean> {
   // Meta batches every status callback it is holding for the account into one
   // POST, so this array routinely carries hundreds of rows. Settling them one
@@ -1158,6 +1178,7 @@ async function processStatuses(value: any): Promise<boolean> {
     campaignId: string | null;
     errorCode: string | null;
     errorTitle: string | null;
+    errorDetails: string | null;
     pricing: {
       category: string | null;
       billable: boolean | null;
@@ -1250,6 +1271,12 @@ async function processStatuses(value: any): Promise<boolean> {
     if (status === 'FAILED') {
       patch.errorCode = err?.code != null ? String(err.code) : undefined;
       patch.errorTitle = err?.title ?? err?.message;
+      // The sentence that distinguishes THIS failure from every other instance
+      // of the same code. Meta puts it under `error_data.details`; older
+      // payloads spell it `error_data.messaging_product`-style flat, and some
+      // codes carry only `message`. Take the first that says something the
+      // title does not already say.
+      patch.errorDetails = errorDetailsOf(err);
     }
 
     // Actual cost (task 5): persist the full pricing breakdown from the status
@@ -1299,6 +1326,9 @@ async function processStatuses(value: any): Promise<boolean> {
       campaignId: msg.campaignId,
       errorCode: err?.code != null ? String(err.code) : null,
       errorTitle: err?.title ?? err?.message ?? null,
+      // Shipped to external subscribers too: a CRM deciding whether to re-queue
+      // a failed send needs the reason, not just the headline.
+      errorDetails: errorDetailsOf(err),
       // The billing facts Meta reports alongside the status. All of it was
       // persisted and shown in our own dashboard while external subscribers got
       // nothing — a CRM could not attribute spend to the record that caused it.

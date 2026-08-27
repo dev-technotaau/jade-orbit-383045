@@ -805,6 +805,7 @@ export const exportTranscript = async (
           'status',
           'errorCode',
           'error',
+          'errorDetails',
           'mediaId',
           'mediaUrl',
           'deletedAt',
@@ -827,6 +828,10 @@ export const exportTranscript = async (
               m.status,
               m.errorCode ?? '',
               m.errorTitle ?? '',
+              // The specific reason, not just the code's generic headline —
+              // an export used to reconcile a failed batch needs to separate
+              // "this number cannot receive it" from "the window had closed".
+              m.errorDetails ?? '',
               m.mediaId ?? '',
               // The archived copy in our own storage; Meta's media ids expire in
               // ~30 days, so the id alone is not a durable reference to the

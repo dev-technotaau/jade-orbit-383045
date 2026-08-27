@@ -144,6 +144,13 @@ export interface WaMessage {
   contextWamid: string | null;
   errorCode: string | null;
   errorTitle: string | null;
+  /**
+   * Meta's `error_data.details` — why THIS send failed.
+   *
+   * `errorTitle` is the headline shared by every instance of a code; this is the
+   * sentence that says whether anything can be done about it.
+   */
+  errorDetails?: string | null;
   sentByUserId: string | null;
   campaignId: string | null;
   sentAt: string | null;
