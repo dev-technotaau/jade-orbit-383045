@@ -32,6 +32,7 @@ import { emitWa } from '../utils/whatsapp-realtime';
 import {
   waMessagesTotal,
   waAccountAlertsTotal,
+  waWebhookUnhandledTotal,
   captureWaException,
 } from '../utils/whatsapp-metrics';
 import { addWhatsappMediaJob } from './whatsapp-media.queue';
@@ -1457,6 +1458,50 @@ async function processStatuses(value: any): Promise<boolean> {
  * Every field above must also be SUBSCRIBED in the Meta app or these are dead
  * code — see the table in README.md ("Meta setup").
  */
+/**
+ * Fields we receive and deliberately do nothing with.
+ *
+ * Separated from the genuinely unknown so the warning below stays meaningful:
+ * a log line that fires for `smb_message_echoes` on every outbound message is a
+ * log line everybody filters out, and then the one that matters is filtered out
+ * with it.
+ */
+const IGNORED_CHANGE_FIELDS = new Set([
+  // Our own sends echoed back when a number is shared with the WhatsApp Business
+  // app. We already hold every outbound we made.
+  'smb_message_echoes',
+  'smb_app_state_sync',
+  // Handover-protocol notices for numbers shared with another app. This build is
+  // the only handler on its numbers.
+  'messaging_handovers',
+]);
+
+/** Fields already reported this process, so a repeat is counted but not logged. */
+const reportedUnhandledFields = new Set<string>();
+
+/**
+ * Record a change field this build has no branch for.
+ *
+ * Previously a bare `break`: Meta got its 200, the WaWebhookEvent row was the
+ * only trace, and that row is pruned after 14 days. Subscribing to a new field
+ * in the Meta app therefore looked exactly like subscribing to nothing — the
+ * discovery path was someone noticing a feature silently not working.
+ *
+ * Logged ONCE per field per process (a restart re-arms it), counted every time.
+ * The counter is what an alert should watch; the log line is what tells a human
+ * which field to go and implement.
+ */
+function noteUnhandledField(field: string, value: any): void {
+  if (IGNORED_CHANGE_FIELDS.has(field)) return;
+  waWebhookUnhandledTotal.inc({ field });
+  if (reportedUnhandledFields.has(field)) return;
+  reportedUnhandledFields.add(field);
+  logger.warn(
+    `WhatsApp webhook: no handler for change field "${field}" — acknowledged and dropped. ` +
+      `Sample: ${JSON.stringify(value ?? {}).slice(0, 500)}`
+  );
+}
+
 async function processChangeField(field: string, value: any): Promise<void> {
   try {
     switch (field) {
@@ -1668,7 +1713,7 @@ async function processChangeField(field: string, value: any): Promise<void> {
         break;
       }
       default:
-        // Unhandled field — leave the audit row (WaWebhookEvent) as the record.
+        noteUnhandledField(field, value);
         break;
     }
   } catch (e: any) {

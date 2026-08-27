@@ -295,6 +295,21 @@ export const waAccountAlertsTotal = new client.Counter({
 });
 
 /**
+ * `wa_webhook_unhandled_total` — change fields this build has no branch for.
+ *
+ * An unhandled field used to be acknowledged with a 200 and dropped: the only
+ * trace was the WaWebhookEvent row, which is pruned after 14 days. So enabling a
+ * new subscription in the Meta app — or Meta introducing a field — produced
+ * silence indistinguishable from "nothing is being sent", and the way anyone
+ * found out was a feature quietly not working.
+ */
+export const waWebhookUnhandledTotal = new client.Counter({
+  name: 'wa_webhook_unhandled_total',
+  help: 'WhatsApp webhook change fields with no handler in this build',
+  labelNames: ['field'] as const,
+});
+
+/**
  * `wa_channel_quality` — the channel's Meta quality rating as a number:
  * 0 unknown, 1 green, 2 yellow, 3 red. Drives the quality-red alert.
  */
