@@ -1,32 +1,52 @@
 /**
  * Best-effort new-message notifications for the WhatsApp inbox: a short beep
- * (tiny embedded WAV) plus a clickable browser Notification that opens the
+ * plus a clickable browser Notification that opens the
  * conversation it is about. Everything here is guarded and swallows failures —
  * sound/notifications are nice-to-have, never required.
  */
 
 import { OPEN_CONV_PARAM, setOpenConv } from '@/lib/wa-open-conv';
 
-// A very short, quiet sine-ish blip encoded as a base64 WAV data URI. Kept
-// tiny on purpose so it ships inline without a network/asset dependency.
-const BEEP_DATA_URI =
-  'data:audio/wav;base64,UklGRl9vT19XQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQ' +
-  'AAAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIB/f3' +
-  '9/f39/f39/f39/f39/f39/f39/f39/f39/f3+AgICAgICAgICAgICAgICAgICAgICAgIA=';
+/*
+ * The beep is SYNTHESISED, not decoded from an embedded asset.
+ *
+ * What was here before could not have made a sound. Its RIFF header declared a
+ * chunk size of 1,599,041,375 bytes for a 143-byte file and a `data` length of
+ * 0 for the 99 bytes that followed it, so a strict decoder rejects it outright;
+ * and the samples themselves alternated between 128 and 127 — a single LSB of
+ * 8-bit PCM, about -48 dBFS — so a lenient decoder played silence. Every
+ * failure path in this file is a silent catch, so the inbox has been notifying
+ * operators with nothing at all, and the settings screen's "Test sound" button
+ * confirmed it by also doing nothing.
+ *
+ * Two short sine tones cost nothing, are correct by construction, and cannot
+ * rot the way a hand-pasted blob did. Where Web Audio is missing, `playAudio`
+ * no-ops exactly as the old code did.
+ */
+const BEEP_TONES = [
+  { freq: 880, start: 0, duration: 0.09 },
+  { freq: 1174.7, start: 0.085, duration: 0.13 },
+];
+const BEEP_GAIN = 0.14;
 
-let cachedAudio: HTMLAudioElement | null = null;
+let cachedCtx: AudioContext | null = null;
 
-function getAudio(): HTMLAudioElement | null {
-  if (typeof Audio === 'undefined') return null;
-  if (!cachedAudio) {
+function getContext(): AudioContext | null {
+  if (typeof window === 'undefined') return null;
+  const Ctor =
+    window.AudioContext ??
+    (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!Ctor) return null;
+  if (!cachedCtx) {
     try {
-      cachedAudio = new Audio(BEEP_DATA_URI);
-      cachedAudio.volume = 0.4;
+      // One context for the tab's lifetime. Browsers cap how many a page may
+      // create, and the inbox can beep hundreds of times in a shift.
+      cachedCtx = new Ctor();
     } catch {
       return null;
     }
   }
-  return cachedAudio;
+  return cachedCtx;
 }
 
 const SOUND_PREF_KEY = 'wa-inbox-sound-enabled';
@@ -66,11 +86,40 @@ export function setInboxSoundEnabled(enabled: boolean): void {
 }
 
 function playAudio(): void {
-  const audio = getAudio();
-  if (!audio) return;
+  const ctx = getContext();
+  if (!ctx) return;
   try {
-    audio.currentTime = 0;
-    void audio.play().catch(() => {});
+    // Autoplay policy leaves a context created before any user gesture
+    // suspended. An operator working the inbox has clicked something long
+    // before the first inbound arrives, so this resolves; it is fire-and-forget
+    // either way, exactly as the old `audio.play().catch()` was.
+    if (ctx.state === 'suspended') void ctx.resume().catch(() => {});
+    const now = ctx.currentTime;
+    for (const tone of BEEP_TONES) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = tone.freq;
+      const t0 = now + tone.start;
+      const t1 = t0 + tone.duration;
+      // An envelope, not a hard start/stop: a square-edged gate on a sine wave
+      // is an audible click, which is worse than the tone it wraps.
+      gain.gain.setValueAtTime(0, t0);
+      gain.gain.linearRampToValueAtTime(BEEP_GAIN, t0 + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t1);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(t0);
+      osc.stop(t1 + 0.02);
+      // Nodes are single-use; without this the graph grows for every beep.
+      osc.onended = () => {
+        try {
+          osc.disconnect();
+          gain.disconnect();
+        } catch {
+          /* already torn down */
+        }
+      };
+    }
   } catch {
     /* ignore */
   }
