@@ -8,6 +8,7 @@ import Button from '@/components/ui/Button';
 import Select from '@/components/ui/Select';
 import DatePicker from '@/components/ui/DatePicker';
 import Textarea from '@/components/ui/Textarea';
+import { waMediaKind } from '@/constants/config';
 import { showToast } from '@/components/ui/Toast';
 import TemplatePicker from '@/components/whatsapp/TemplatePicker';
 import { whatsappService as svc } from '@/services/whatsapp.service';
@@ -49,6 +50,19 @@ export default function ScheduleMessageModal({
   const [kind, setKind] = useState<'text' | 'template' | 'media'>('text');
   const [text, setText] = useState(initialText ?? '');
   const [file, setFile] = useState<File | null>(null);
+  /**
+   * Whether the chosen file can carry a caption at all.
+   *
+   * Same rule the send path enforces: Meta accepts no caption on a sticker or on
+   * audio, and the server drops it. This sheet offered the box for every file, so
+   * scheduling an MP3 with a note sent the file and silently discarded the note —
+   * and the operator only learned that from the customer, hours later.
+   */
+  const mediaCaptionless = useMemo(() => {
+    if (!file) return false;
+    const k = waMediaKind(file.type || 'application/octet-stream', file.size);
+    return k === 'sticker' || k === 'audio';
+  }, [file]);
   const [caption, setCaption] = useState('');
   // The picked template itself, not just its id — the picker searches the
   // catalogue server-side, so there is no local list to look the id up in.
@@ -87,7 +101,8 @@ export default function ScheduleMessageModal({
       if (kind === 'media') {
         return svc.scheduleMediaMessage(conversationId, file as File, {
           sendAt: iso,
-          caption: caption.trim() || undefined,
+          // Never send a caption the server will drop — see mediaCaptionless.
+          caption: mediaCaptionless ? undefined : caption.trim() || undefined,
         });
       }
       return svc.scheduleMessage(conversationId, { kind: 'text', text: text.trim(), sendAt: iso });
@@ -151,12 +166,19 @@ export default function ScheduleMessageModal({
                 sends inside the 24-hour reply window — schedule a template for anything later.
               </p>
             </div>
-            <Input
-              label="Caption (optional)"
-              value={caption}
-              onChange={(e) => setCaption(e.target.value)}
-              placeholder="Here's the price list you asked for"
-            />
+            {mediaCaptionless ? (
+              <p className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-2.5 text-xs text-[var(--text-muted)]">
+                WhatsApp carries no caption on this kind of file. Schedule your message as its own
+                text send if it needs to go with it.
+              </p>
+            ) : (
+              <Input
+                label="Caption (optional)"
+                value={caption}
+                onChange={(e) => setCaption(e.target.value)}
+                placeholder="Here's the price list you asked for"
+              />
+            )}
           </div>
         ) : kind === 'text' ? (
           <Textarea

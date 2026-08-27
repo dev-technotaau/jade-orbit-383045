@@ -517,7 +517,25 @@ function MessageBubble({
     () => (message.type === 'TEMPLATE' ? parseStoredTemplate(message.payload) : null),
     [message.type, message.payload],
   );
-  const canRetry = outbound && message.status === 'FAILED' && !!message.text && !!onRetry;
+  /**
+   * Retry is a TEXT-only affordance.
+   *
+   * It used to be offered on any failed outbound with `text` — but a media send
+   * stores its CAPTION in `text`, and retry re-sends that through the plain
+   * message endpoint. So a failed captioned image offered Retry and, on press,
+   * delivered the words with no attachment: a wrong send that then looked like a
+   * normal green bubble, with the operator believing the file had gone.
+   *
+   * Re-sending media means re-uploading the archived object and re-sending a
+   * template means replaying its whole parameter set; neither is wired yet, so
+   * they are not offered rather than offered wrongly.
+   */
+  const canRetry =
+    outbound &&
+    message.status === 'FAILED' &&
+    message.type === 'TEXT' &&
+    !!message.text &&
+    !!onRetry;
   // Reply is offered on any real (acked) message that has a wamid to quote.
   const canReply = !!onReply && !!message.wamid;
   return (
@@ -2212,13 +2230,17 @@ export default function SuperAdminWhatsappInboxPage() {
   };
 
   // Re-send a FAILED message: remove the failed bubble, fire a fresh send.
-  const retrySend = (text: string, failedId?: string) => {
+  const retrySend = (text: string, failedId?: string, contextWamid?: string) => {
     if (!selectedId) return;
     if (failedId) setPendingMessages((prev) => prev.filter((m) => m.id !== failedId));
     sendMut.mutate({
       conversationId: selectedId,
       text,
       optimisticId: makeOptimisticMessage('', '', text).id,
+      // Carried through, so retrying a failed reply still quotes what it replied
+      // to. The endpoint has always accepted it; retry simply never passed it, so
+      // the resent message arrived detached from its question.
+      contextWamid,
     });
   };
 
@@ -3283,7 +3305,11 @@ export default function SuperAdminWhatsappInboxPage() {
                             outboxIds.has(m.id) ? () => void discardQueued(m.id) : undefined
                           }
                           onRetry={(text) =>
-                            retrySend(text, isOptimisticId(m.id) ? m.id : undefined)
+                            retrySend(
+                              text,
+                              isOptimisticId(m.id) ? m.id : undefined,
+                              m.contextWamid ?? undefined,
+                            )
                           }
                           onReply={(msg) => setReplyTo(msg)}
                           quotedText={m.contextWamid ? wamidToText.get(m.contextWamid) : undefined}

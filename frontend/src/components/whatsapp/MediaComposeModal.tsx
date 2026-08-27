@@ -53,6 +53,15 @@ export default function MediaComposeModal({
   const kind = useMemo(() => waMediaKind(mime, file.size), [mime, file.size]);
   const ridesAsFile = kind === 'document' && (isImage || isVideo);
   const isSticker = kind === 'sticker';
+  /**
+   * Meta accepts no caption on a sticker OR on audio, and the server drops it for
+   * both — but this sheet only knew about stickers. So attaching an MP3 showed
+   * the full caption editor, prefilled with whatever was in the composer: the
+   * operator typed a message, sent, watched the composer empty, and the customer
+   * received a bare audio file. The text was not in the thread, not in the
+   * export, and not recoverable.
+   */
+  const captionless = isSticker || kind === 'audio';
   const formatLabel = (mime.split('/')[1] || 'file').split(';')[0].toUpperCase();
   const previewUrl = useMemo(
     () => (isImage || isVideo ? URL.createObjectURL(file) : null),
@@ -112,16 +121,21 @@ export default function MediaComposeModal({
             </p>
           )}
 
-          {isSticker && (
+          {captionless && (
             <p className="flex items-start gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-2.5 text-xs text-[var(--text-muted)]">
               <Sticker className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-              <span>This WEBP is sent as a sticker. Stickers carry no caption.</span>
+              <span>
+                {isSticker
+                  ? 'This WEBP is sent as a sticker. Stickers carry no caption.'
+                  : 'WhatsApp carries no caption on an audio file. Send your message as its own reply after the file.'}
+              </span>
             </p>
           )}
 
-          {/* Meta rejects a caption on a sticker, so the server drops it — offering
-              the box would promise the agent something the customer never sees. */}
-          {!isSticker && (
+          {/* Meta rejects a caption on a sticker and on audio, so the server drops
+              it — offering the box would promise the agent something the customer
+              never sees. */}
+          {!captionless && (
             <FormattedTextarea
               label="Caption (optional)"
               value={caption}
@@ -137,7 +151,16 @@ export default function MediaComposeModal({
           <Button variant="secondary" onClick={onCancel} disabled={sending}>
             Cancel
           </Button>
-          <Button onClick={() => onSend(caption.trim())} isLoading={sending} disabled={sending}>
+          <Button
+            // Empty when the kind carries no caption. The state is seeded from
+            // the composer draft even with the box hidden, so sending it would
+            // hand the caller a caption the server then drops — and the caller
+            // clears the draft when the two match, which is exactly how the
+            // operator's typed message disappeared.
+            onClick={() => onSend(captionless ? '' : caption.trim())}
+            isLoading={sending}
+            disabled={sending}
+          >
             Send
           </Button>
         </div>
