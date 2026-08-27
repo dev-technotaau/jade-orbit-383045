@@ -158,6 +158,9 @@ function ContactCard({
       qc.invalidateQueries({ queryKey: ['wa-conversations'] });
       // The contacts page lists the very row we just changed.
       qc.invalidateQueries({ queryKey: ['wa-contacts'] });
+      // A newly-created tag has to appear in the vocabulary, or the NEXT agent
+      // typing it gets no suggestion and splits it all over again.
+      qc.invalidateQueries({ queryKey: ['wa-contact-tags'] });
     },
     onError: (e) =>
       showToast.error((e as unknown as ApiError).message || 'Failed to update contact'),
@@ -190,11 +193,45 @@ function ContactCard({
   // array off `tags ?? []` from the list row would post a one-element array and
   // silently erase every tag the contact already carried, so the editor waits.
   const tags = contact.tags;
+  /**
+   * The tags already in use across the contact book.
+   *
+   * Tags are free text and the filter matches EXACTLY, so "VIP" and "vip" are
+   * two different tags: a segment built on one silently excludes everyone
+   * carrying the other, which surfaces as a campaign that reached fewer people
+   * than expected and no error anywhere.
+   */
+  const tagVocabQuery = useQuery({
+    queryKey: ['wa-contact-tags'],
+    queryFn: () => svc.listContactTags(),
+    staleTime: 5 * 60_000,
+  });
+  const tagVocab = useMemo(() => tagVocabQuery.data?.data ?? [], [tagVocabQuery.data]);
+  const tagSuggestions = tagDraft.trim()
+    ? tagVocab
+        .filter(
+          (t) =>
+            t.tag.toLowerCase().includes(tagDraft.trim().toLowerCase()) &&
+            !(tags ?? []).includes(t.tag),
+        )
+        .slice(0, 6)
+    : [];
+
   const addTag = () => {
-    const next = tagDraft.trim();
+    const typed = tagDraft.trim();
     setTagDraft('');
     setAddingTag(false);
-    if (!next || !tags || tags.includes(next)) return;
+    if (!typed || !tags) return;
+    // Snap to an existing tag that differs only in case. Without this, typing
+    // "vip" beside an established "VIP" quietly creates a second tag that every
+    // existing segment and filter will miss — and nothing in the UI would ever
+    // show the two side by side to make the split visible.
+    const existing = tagVocab.find((t) => t.tag.toLowerCase() === typed.toLowerCase());
+    const next = existing?.tag ?? typed;
+    if (existing && existing.tag !== typed) {
+      showToast.info(`Using the existing tag "${existing.tag}"`);
+    }
+    if (tags.includes(next)) return;
     updateMut.mutate({ tags: [...tags, next] });
   };
   const removeTag = (tag: string) => {
@@ -397,7 +434,39 @@ function ContactCard({
                 </span>
               ))}
               {addingTag ? (
-                <span className="flex items-center gap-1">
+                <span className="relative flex items-center gap-1">
+                  {/* The vocabulary, so an existing tag is picked rather than
+                      re-typed into a near-duplicate nothing will match. */}
+                  {tagSuggestions.length > 0 && (
+                    <div
+                      role="listbox"
+                      aria-label="Existing tags"
+                      className="absolute bottom-full left-0 z-20 mb-1 w-40 overflow-hidden rounded-lg border border-[var(--border)] bg-white shadow-lg"
+                    >
+                      {tagSuggestions.map((t) => (
+                        <button
+                          key={t.tag}
+                          type="button"
+                          role="option"
+                          aria-selected={false}
+                          onMouseDown={(ev) => ev.preventDefault()}
+                          onClick={() => {
+                            setTagDraft('');
+                            setAddingTag(false);
+                            if (tags && !tags.includes(t.tag)) {
+                              updateMut.mutate({ tags: [...tags, t.tag] });
+                            }
+                          }}
+                          className="flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-xs text-[var(--text)] hover:bg-[var(--bg-secondary)]"
+                        >
+                          <span className="truncate">{t.tag}</span>
+                          <span className="shrink-0 text-[10px] text-[var(--text-muted)]">
+                            {t.count}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   <Input
                     value={tagDraft}
                     autoFocus

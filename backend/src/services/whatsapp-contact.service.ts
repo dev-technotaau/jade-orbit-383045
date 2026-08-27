@@ -1360,6 +1360,36 @@ export async function listConsentEvents(
   };
 }
 
+/**
+ * Every tag in use, with how many contacts carry it.
+ *
+ * Tags are free text with no vocabulary, so "VIP", "vip" and "Vip" are three
+ * different tags to Postgres — and the filter matches exactly. A segment built
+ * on "VIP" silently excludes everyone an agent tagged "vip", which shows up as
+ * a campaign that reached fewer people than expected and no error anywhere.
+ *
+ * `unnest` cannot use the GIN index on `tags`: that index answers containment
+ * ("which rows have this tag?"), not enumeration ("what tags exist?"), so this
+ * is a sequential scan by construction — hence the cap, and hence the 60s memo
+ * in the controller. The same two tombstone predicates the contact list uses,
+ * so a tag surviving only on erased or merged rows is not offered as a choice.
+ */
+export async function listTagVocabulary(): Promise<Array<{ tag: string; count: number }>> {
+  const rows = await prisma.$queryRaw<Array<{ tag: string; count: bigint }>>(
+    Prisma.sql`
+      SELECT unnest("tags") AS tag, count(*)::bigint AS count
+        FROM "WaContact"
+       WHERE "mergedIntoId" IS NULL
+         AND "phone" NOT LIKE 'erased:%'
+       GROUP BY 1
+       ORDER BY 2 DESC, 1 ASC
+       LIMIT 500
+    `
+  );
+  // Prisma returns bigint for count()::bigint, which does not survive JSON.
+  return rows.map((r) => ({ tag: r.tag, count: Number(r.count) }));
+}
+
 export async function getContact(id: string) {
   const c = await prisma.waContact.findUnique({ where: { id } });
   return c ? { ...c, consentEvidence: decryptJson(c.consentEvidence) } : c;

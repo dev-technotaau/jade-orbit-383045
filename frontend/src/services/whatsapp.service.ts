@@ -891,6 +891,18 @@ export const whatsappService = {
     return res.data;
   },
 
+  /**
+   * Every tag in use, with counts — the shared vocabulary.
+   *
+   * Tags are free text and the filter matches exactly, so "VIP" and "vip" are
+   * two different tags: a segment built on one silently excludes everyone
+   * carrying the other.
+   */
+  async listContactTags(): Promise<ApiResponse<Array<{ tag: string; count: number }>>> {
+    const res = await api.get(API.SUPER_ADMIN.WA_CONTACT_TAGS);
+    return res.data;
+  },
+
   async updateContact(
     id: string,
     body: {

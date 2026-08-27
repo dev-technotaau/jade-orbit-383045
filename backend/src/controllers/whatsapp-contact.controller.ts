@@ -105,6 +105,36 @@ export const listConsentEvents = async (
   }
 };
 
+/** How long the tag vocabulary is memoised. */
+const TAG_VOCAB_TTL_S = 60;
+const TAG_VOCAB_KEY = 'wa:contact-tags';
+
+/**
+ * Every tag in use, with counts.
+ *
+ * Memoised for a minute because the query is a sequential scan by construction
+ * (see the service), and the client asks for it on every tag input focus.
+ * A Redis outage degrades to answering it live rather than failing.
+ */
+export const listTags = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    if ((redis.status as string) !== 'disabled') {
+      const cached = await redis.get(TAG_VOCAB_KEY).catch(() => null);
+      if (cached) {
+        res.json({ success: true, data: JSON.parse(cached) });
+        return;
+      }
+    }
+    const data = await contactService.listTagVocabulary();
+    if ((redis.status as string) !== 'disabled') {
+      await redis.set(TAG_VOCAB_KEY, JSON.stringify(data), 'EX', TAG_VOCAB_TTL_S).catch(() => {});
+    }
+    res.json({ success: true, data });
+  } catch (e) {
+    next(e);
+  }
+};
+
 export const updateContact = async (
   req: Request,
   res: Response,

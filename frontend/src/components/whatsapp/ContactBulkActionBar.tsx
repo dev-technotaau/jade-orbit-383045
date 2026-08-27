@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useQueryClient, useMutation } from '@tanstack/react-query';
+import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import {
   Tag,
   BellOff,
@@ -79,6 +79,26 @@ export default function ContactBulkActionBar({
   const qc = useQueryClient();
   const [tagModalOpen, setTagModalOpen] = useState(false);
   const [tagInput, setTagInput] = useState('');
+  /**
+   * The tags already in use.
+   *
+   * Tags are free text and the filter matches EXACTLY, so a bulk "vip" applied
+   * beside an established "VIP" splits the tag across thousands of contacts in
+   * one action — and every saved segment then sees only half of them, with no
+   * error to explain the shortfall.
+   */
+  const tagVocabQuery = useQuery({
+    queryKey: ['wa-contact-tags'],
+    queryFn: () => svc.listContactTags(),
+    staleTime: 5 * 60_000,
+  });
+  const tagVocab = tagVocabQuery.data?.data ?? [];
+  /** The existing tag this input differs from only in case, if any. */
+  const matchedTag = tagInput.trim()
+    ? (tagVocab.find((t) => t.tag.toLowerCase() === tagInput.trim().toLowerCase())?.tag ?? null)
+    : null;
+  /** Prefer the established spelling over what was typed. */
+  const canonicalTag = (typed: string) => matchedTag ?? typed;
   const [eraseOpen, setEraseOpen] = useState(false);
   // Bulk opt-in asserts consent on behalf of other people. Every other
   // consent-affecting action here is either reversible or confirmed; this one
@@ -117,6 +137,9 @@ export default function ContactBulkActionBar({
         showToast.error(`${failed} contact(s) could not be erased — try again for those.`);
       }
       qc.invalidateQueries({ queryKey: ['wa-contacts'] });
+      // A newly-created tag has to reach the vocabulary, or the next agent to
+      // type it gets no suggestion and splits it all over again.
+      qc.invalidateQueries({ queryKey: ['wa-contact-tags'] });
       setTagModalOpen(false);
       setTagInput('');
       setEraseOpen(false);
@@ -201,7 +224,10 @@ export default function ContactBulkActionBar({
         </button>
       </div>
 
-      {/* Tag add/remove */}
+      {/* Tag add/remove.
+          Snapped to the existing vocabulary: a bulk "vip" beside an established
+          "VIP" splits the tag across thousands of contacts at once, and the
+          exact-match filter every segment uses then sees only half of them. */}
       <Modal
         isOpen={tagModalOpen}
         onClose={() => setTagModalOpen(false)}
@@ -215,11 +241,14 @@ export default function ContactBulkActionBar({
             <Button
               variant="outline"
               disabled={!tagInput.trim() || busy}
-              onClick={() => run('untag', tagInput.trim())}
+              onClick={() => run('untag', canonicalTag(tagInput.trim()))}
             >
               Remove tag
             </Button>
-            <Button disabled={!tagInput.trim() || busy} onClick={() => run('tag', tagInput.trim())}>
+            <Button
+              disabled={!tagInput.trim() || busy}
+              onClick={() => run('tag', canonicalTag(tagInput.trim()))}
+            >
               Add tag
             </Button>
           </div>
@@ -230,8 +259,25 @@ export default function ContactBulkActionBar({
           value={tagInput}
           onChange={(e) => setTagInput(e.target.value)}
           placeholder="e.g. mumbai-leads"
+          list="wa-bulk-tag-vocab"
           autoFocus
         />
+        {/* A native datalist rather than a custom popover: this sits inside a
+            Modal, and a second floating layer over a dialog is a stacking and
+            focus-trap problem for a plain list of strings. */}
+        <datalist id="wa-bulk-tag-vocab">
+          {tagVocab.map((t) => (
+            <option key={t.tag} value={t.tag}>
+              {t.count} contact{t.count === 1 ? '' : 's'}
+            </option>
+          ))}
+        </datalist>
+        {matchedTag && matchedTag !== tagInput.trim() && (
+          <p className="mt-1 text-[11px] text-amber-700">
+            Will use the existing tag “{matchedTag}” — the filter matches exactly, so a
+            differently-cased copy would be invisible to every saved segment.
+          </p>
+        )}
       </Modal>
 
       {/* Bulk opt-in confirm — this records consent for other people */}
