@@ -80,6 +80,31 @@ export const getContact = async (
   }
 };
 
+/**
+ * One contact's consent history, newest first.
+ *
+ * The consent COLUMNS are a mutable projection — a re-opt-in nulls `optOutAt` —
+ * so they cannot answer "they have told us to stop three times", which is
+ * exactly the question a compliance review asks. The event log always could; it
+ * was only reachable by downloading the whole DSAR bundle.
+ */
+export const listConsentEvents = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const { page, limit } = req.query;
+    const data = await contactService.listConsentEvents(String(req.params.id), {
+      page: page ? parseInt(String(page), 10) : undefined,
+      limit: limit ? parseInt(String(limit), 10) : undefined,
+    });
+    res.json({ success: true, data });
+  } catch (e) {
+    next(e);
+  }
+};
+
 export const updateContact = async (
   req: Request,
   res: Response,
@@ -91,6 +116,10 @@ export const updateContact = async (
       tags: req.body.tags,
       isBlocked: req.body.isBlocked,
       optInStatus: req.body.optInStatus,
+      // The column has existed since the campaign personalisation work and only
+      // the importer and the inbound worker could write it — an agent who
+      // learned a customer's city from the conversation had nowhere to put it.
+      attributes: req.body.attributes,
     });
     res.json({ success: true, data: c });
   } catch (e) {

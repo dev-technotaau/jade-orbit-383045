@@ -158,6 +158,7 @@ export const API = {
     WA_CONV_PIN: (id: string) => `/whatsapp/conversations/${id}/pin`,
     WA_CONV_MUTE: (id: string) => `/whatsapp/conversations/${id}/mute`,
     WA_CONV_FORWARD: (id: string) => `/whatsapp/conversations/${id}/forward`,
+    WA_CONTACT_CONSENT_EVENTS: (id: string) => `/whatsapp/contacts/${id}/consent-events`,
     WA_MESSAGES_SEARCH: (id: string) => `/whatsapp/conversations/${id}/messages/search`,
     WA_MSG_STAR: (id: string, messageId: string) =>
       `/whatsapp/conversations/${id}/messages/${messageId}/star`,

@@ -1,7 +1,7 @@
 import api from '@/lib/api';
 import { API } from '@/constants/api';
 import { assertUploadSize, assertWaMediaSize, MAX_UPLOAD_BYTES } from '@/constants/config';
-import type { ApiResponse } from '@/types/api';
+import type { ApiResponse, PaginatedResponse } from '@/types/api';
 import type { TemplateSendPayload } from '@/lib/whatsapp-template-vars';
 import type { WaCampaignTemplateParams } from '@/types/whatsapp';
 import type { WaWebhookEndpoint, WaWebhookDelivery } from '@/types/whatsapp';
@@ -36,6 +36,7 @@ import type {
   WaConversationsPage,
   WaThreadSearchResult,
   WaForwardResult,
+  WaConsentEvent,
   WaKeywordRule,
   WaMatchType,
   WaBotFlow,
@@ -875,9 +876,37 @@ export const whatsappService = {
     return res.data;
   },
 
+  /**
+   * One contact's consent history, newest first.
+   *
+   * The consent COLUMNS are a mutable projection — a re-opt-in nulls the
+   * opt-out date — so they say what the status is now and nothing about how it
+   * got there.
+   */
+  async listConsentEvents(
+    id: string,
+    params?: { page?: number; limit?: number },
+  ): Promise<PaginatedResponse<WaConsentEvent>> {
+    const res = await api.get(API.SUPER_ADMIN.WA_CONTACT_CONSENT_EVENTS(id), { params });
+    return res.data;
+  },
+
   async updateContact(
     id: string,
-    body: { name?: string | null; tags?: string[]; isBlocked?: boolean; optInStatus?: string },
+    body: {
+      name?: string | null;
+      tags?: string[];
+      isBlocked?: boolean;
+      optInStatus?: string;
+      /**
+       * SPARSE patch — a key with `null` deletes it, keys absent are untouched.
+       *
+       * Never send the whole map: it would erase the `ctwa*` keys the inbound
+       * worker writes, which the editor does not show and the operator cannot
+       * know to preserve.
+       */
+      attributes?: Record<string, string | null>;
+    },
   ): Promise<ApiResponse<WaContact>> {
     const res = await api.patch(API.SUPER_ADMIN.WA_CONTACT(id), body);
     return res.data;

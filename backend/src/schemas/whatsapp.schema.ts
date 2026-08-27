@@ -266,12 +266,40 @@ const waContactAttributes = z
   })
   .optional();
 
+/**
+ * A SPARSE attribute patch — a key present with `null` deletes it.
+ *
+ * Deliberately not `waContactAttributes` above, which is a whole-map replace.
+ * Replacing would erase the `ctwa*` keys the inbound worker writes, which the
+ * editor never shows and the operator therefore cannot know to preserve: the
+ * click-to-WhatsApp attribution on a contact would vanish the first time
+ * anybody corrected their city.
+ *
+ * The key guard is the `{{attr.<key>}}` grammar the campaign mapper parses: a
+ * key containing `}` or `|` can be stored but never addressed from a template,
+ * which is a dead attribute that looks like a working one.
+ */
+const waContactAttributePatch = z
+  .record(
+    z
+      .string()
+      .min(1)
+      .max(60)
+      .regex(/^[^{}|]+$/, 'An attribute key cannot contain { } or |'),
+    z.string().max(500).nullable()
+  )
+  .refine((r) => Object.keys(r).length <= 30, {
+    message: 'At most 30 attributes per patch',
+  })
+  .optional();
+
 export const waUpdateContactSchema = z.object({
   body: z.object({
     name: z.string().max(120).nullable().optional(),
     tags: z.array(z.string().max(40)).max(50).optional(),
     isBlocked: z.boolean().optional(),
     optInStatus: z.nativeEnum(WaOptInStatus).optional(),
+    attributes: waContactAttributePatch,
   }),
 });
 

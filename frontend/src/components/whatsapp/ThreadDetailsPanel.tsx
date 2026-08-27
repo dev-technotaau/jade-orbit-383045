@@ -20,6 +20,7 @@ import {
   Ban,
   ShieldX,
 } from 'lucide-react';
+import ContactDetailsDrawer from '@/components/whatsapp/ContactDetailsDrawer';
 import Input from '@/components/ui/Input';
 import Textarea from '@/components/ui/Textarea';
 import Button from '@/components/ui/Button';
@@ -201,6 +202,9 @@ function ContactCard({
     updateMut.mutate({ tags: tags.filter((t) => t !== tag) });
   };
 
+  /** The full contact record, opened by id — the panel knows one either way. */
+  const [recordOpen, setRecordOpen] = useState(false);
+
   const copyPhone = () => {
     navigator.clipboard?.writeText(contact.phone).then(
       () => showToast.success('Copied to clipboard'),
@@ -328,6 +332,20 @@ function ContactCard({
             <Copy className="h-3.5 w-3.5" />
           </IconButton>
         </div>
+
+        {/* The rich record — attributes, consent history and provenance,
+            suppression membership — used to be reachable only from the contacts
+            LIST, i.e. not from the screen where an agent is actually talking to
+            the person. Answering "how did this person consent?" meant leaving
+            the conversation, finding them in another page and opening a drawer
+            there. */}
+        <button
+          type="button"
+          onClick={() => setRecordOpen(true)}
+          className="flex items-center gap-1 text-[11px] font-medium text-[var(--primary)] hover:underline"
+        >
+          <IdCard className="h-3 w-3" aria-hidden="true" /> View full contact record
+        </button>
 
         <div>
           <div className="flex flex-wrap items-center gap-1">
@@ -459,6 +477,11 @@ function ContactCard({
           </button>
         </div>
       </div>
+      {/* Opened by id — the panel knows one, and the drawer no longer needs the
+          whole list row it never had here. */}
+      {recordOpen && (
+        <ContactDetailsDrawer contactId={contact.id} onClose={() => setRecordOpen(false)} />
+      )}
     </div>
   );
 }

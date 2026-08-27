@@ -1067,7 +1067,13 @@ export default function SuperAdminWhatsappContactsPage() {
       {importing && <ImportModal onClose={() => setImporting(false)} />}
       {dedupeOpen && <DuplicatesModal onClose={() => setDedupeOpen(false)} />}
       {editing && <EditModal contact={editing} onClose={() => setEditing(null)} />}
-      {viewing && <ContactDetailsDrawer contact={viewing} onClose={() => setViewing(null)} />}
+      {viewing && (
+        <ContactDetailsDrawer
+          contactId={viewing.id}
+          seed={viewing}
+          onClose={() => setViewing(null)}
+        />
+      )}
     </DashboardLayout>
   );
 }

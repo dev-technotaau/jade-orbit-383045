@@ -466,6 +466,24 @@ export interface WaTemplatesPage {
  * or a DPDP grievance — `at` and `source` are the answer to "when, and by what
  * route?".
  */
+/**
+ * One entry in a contact's consent history.
+ *
+ * Distinct from the consent COLUMNS on the contact, which are a mutable
+ * projection — a re-opt-in nulls the opt-out date. Only the log can answer
+ * "have they asked us to stop before?".
+ */
+export interface WaConsentEvent {
+  id: string;
+  contactId: string;
+  type: string;
+  source: string | null;
+  campaignId: string | null;
+  /** Provenance, decrypted server-side. */
+  evidence?: WaConsentEvidence | null;
+  createdAt: string;
+}
+
 export type WaConsentEvidence =
   | {
       /** Click-to-WhatsApp: the customer arrived from an ad or post. */

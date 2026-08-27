@@ -1319,6 +1319,47 @@ async function syncBlockStateToMeta(contactIds: string[], blocked: boolean): Pro
   }
 }
 
+/**
+ * One contact's consent history, newest first.
+ *
+ * The consent COLUMNS are a mutable projection: a re-opt-in nulls `optOutAt`,
+ * so they can say what the contact's status is NOW and nothing about how it got
+ * there. "Have they told us to stop before?" — the question a compliance review
+ * actually asks — was answerable only by downloading the whole DSAR bundle and
+ * reading it by hand.
+ *
+ * Evidence is decrypted here, as every other read path in this file does: the
+ * column holds `iv:tag:ciphertext` and shipping it raw would show the reviewer
+ * a blob where the provenance should be.
+ */
+export async function listConsentEvents(
+  contactId: string,
+  params: { page?: number; limit?: number } = {}
+) {
+  const page = Math.max(1, params.page ?? 1);
+  const limit = Math.min(200, Math.max(1, params.limit ?? 50));
+  const where = { contactId };
+  const [rows, total] = await Promise.all([
+    prisma.waConsentEvent.findMany({
+      where,
+      // `id` as the tiebreaker: several events can share a timestamp (an import
+      // that opts in a batch), and without it their relative order — which is
+      // the whole point of a log — is undefined between pages.
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      skip: (page - 1) * limit,
+      take: limit,
+    }),
+    prisma.waConsentEvent.count({ where }),
+  ]);
+  return {
+    items: rows.map((e) => ({ ...e, evidence: decryptJson(e.evidence) })),
+    total,
+    page,
+    limit,
+    totalPages: Math.ceil(total / limit),
+  };
+}
+
 export async function getContact(id: string) {
   const c = await prisma.waContact.findUnique({ where: { id } });
   return c ? { ...c, consentEvidence: decryptJson(c.consentEvidence) } : c;
@@ -1326,12 +1367,50 @@ export async function getContact(id: string) {
 
 export async function updateContact(
   id: string,
-  data: { name?: string | null; tags?: string[]; isBlocked?: boolean; optInStatus?: WaOptInStatus }
+  data: {
+    name?: string | null;
+    tags?: string[];
+    isBlocked?: boolean;
+    optInStatus?: WaOptInStatus;
+    /**
+     * Sparse patch: a key with `null` deletes it, keys absent are untouched.
+     *
+     * A whole-map replace would erase the `ctwa*` keys the inbound worker
+     * writes — the click-to-WhatsApp attribution would disappear the first time
+     * anyone corrected the contact's city, and nothing in the editor shows those
+     * keys, so nobody could know to preserve them.
+     */
+    attributes?: Record<string, string | null>;
+  }
 ) {
   const patch: Prisma.WaContactUpdateInput = {};
   if (data.name !== undefined) patch.name = data.name;
   if (data.tags !== undefined) patch.tags = { set: data.tags };
   if (data.isBlocked !== undefined) patch.isBlocked = data.isBlocked;
+  if (data.attributes !== undefined) {
+    // Merged against the CURRENT value, so the round trip only happens when
+    // attributes are actually being patched.
+    const cur = await prisma.waContact.findUnique({
+      where: { id },
+      select: { attributes: true },
+    });
+    const merged: Record<string, unknown> = {
+      ...(((cur?.attributes as Prisma.JsonObject | null) ?? {}) as object),
+    };
+    for (const [k, v] of Object.entries(data.attributes)) {
+      if (v === null) delete merged[k];
+      else merged[k] = v;
+    }
+    if (Object.keys(merged).length > 30) {
+      throw new AppError('At most 30 attributes per contact', 400, 'WA_ATTRIBUTES_LIMIT');
+    }
+    // JsonNull, not an empty object: the erase and merge paths both write
+    // JsonNull for "no attributes", and an empty `{}` beside their null would
+    // read as two different states for the same thing.
+    patch.attributes = Object.keys(merged).length
+      ? (merged as Prisma.InputJsonValue)
+      : Prisma.JsonNull;
+  }
   let consentEvent: WaConsentEventType | null = null;
   if (data.optInStatus !== undefined) {
     patch.optInStatus = data.optInStatus;

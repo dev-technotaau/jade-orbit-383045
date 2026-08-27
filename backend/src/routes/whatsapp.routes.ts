@@ -566,6 +566,8 @@ router.get(
   audit('WA_CONTACT_EXPORT', 'WaContact', { extraDetails: dsarRef }),
   contactCtrl.exportContact
 );
+// ABOVE '/contacts/:id' — Express would otherwise match 'consent-events' as an id.
+router.get('/contacts/:id/consent-events', contactCtrl.listConsentEvents);
 router.get('/contacts/:id', contactCtrl.getContact);
 router.patch(
   '/contacts/:id',
