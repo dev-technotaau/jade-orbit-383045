@@ -63,6 +63,15 @@ import { showToast } from '@/components/ui/Toast';
 import api, { errorMessage } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { loadDrafts, persistDrafts } from '@/lib/wa-drafts';
+import {
+  DEFAULT_INBOX_FILTERS,
+  getInboxFilters,
+  hasActiveInboxFilters,
+  setInboxFilters,
+  subscribeInboxFilters,
+  type InboxScope,
+  type InboxSort,
+} from '@/lib/wa-inbox-filters';
 import { WA_FORMATS, applyWaFormat } from '@/lib/wa-format';
 import EmojiPicker from '@/components/whatsapp/EmojiPicker';
 import ForwardModal from '@/components/whatsapp/ForwardModal';
@@ -1217,35 +1226,38 @@ export default function SuperAdminWhatsappInboxPage() {
   useEffect(() => {
     restoreOpenConv();
   }, []);
-  const [search, setSearch] = useState('');
-  // Debounced search value: the input stays bound to `search` (immediate) while
-  // the React Query key/queryFn use `debouncedSearch` so we don't fire a DB
-  // query per keystroke. setState happens inside the timeout callback (not
-  // synchronously in the effect body), so this respects the react-compiler rules.
-  const [debouncedSearch, setDebouncedSearch] = useState('');
-  useEffect(() => {
-    const id = window.setTimeout(() => setDebouncedSearch(search), 300);
-    return () => window.clearTimeout(id);
-  }, [search]);
-  const [unreadOnly, setUnreadOnly] = useState(false);
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
-  const [assigneeFilter, setAssigneeFilter] = useState<AssigneeFilter>('all');
+  /**
+   * Every inbox filter, in the address bar.
+   *
+   * These were eight bare `useState`s, so the narrowed queue an operator was
+   * working had no address: it could not be bookmarked, pasted to a colleague or
+   * opened in a second tab, a reload silently returned them to the unfiltered
+   * inbox, and Back walked them off the page instead of undoing a filter.
+   */
+  const filters = useSyncExternalStore(
+    subscribeInboxFilters,
+    getInboxFilters,
+    () => DEFAULT_INBOX_FILTERS,
+  );
+  const unreadOnly = filters.unread;
+  const statusFilter = filters.status as StatusFilter;
+  const assigneeFilter = filters.assignee as AssigneeFilter;
   // Labels were write-only: LabelsEditor saved them and the thread header showed
   // them, and nothing could filter by one — so tagging a conversation "billing"
   // still meant scrolling the whole inbox to find the billing conversations.
-  const [labelFilter, setLabelFilter] = useState('');
+  const labelFilter = filters.label;
   // Which connected number to show. A WABA can carry several, each with its own
   // thread per contact, and the inbox listed them in one undifferentiated queue —
   // so a support number and a marketing number were impossible to work
   // separately. Empty = every number (and the only state a one-number install
   // ever has: the selector below hides itself).
-  const [channelFilter, setChannelFilter] = useState('');
-  const [searchMessages, setSearchMessages] = useState(false);
+  const channelFilter = filters.channel;
+  const searchMessages = filters.searchMessages;
   // Which slice of the inbox to show. Archived and snoozed used to be two
   // "include" toggles, so the only way to look at the archive was to mix it back
   // into the live queue and scroll — there was no archived-only or snoozed-only
   // view at all, and "what did I park last week?" had no answer.
-  const [scopeFilter, setScopeFilter] = useState<ScopeFilter>('active');
+  const scopeFilter = filters.scope as ScopeFilter;
   /**
    * "Still waiting on us."
    *
@@ -1254,10 +1266,10 @@ export default function SuperAdminWhatsappInboxPage() {
    * that decides which thread to open next, and the only way to answer it was to
    * open them.
    */
-  const [awaitingOnly, setAwaitingOnly] = useState(false);
+  const awaitingOnly = filters.awaiting;
   /** Inclusive YYYY-MM-DD bounds on last activity; '' = unbounded. */
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
+  const dateFrom = filters.from;
+  const dateTo = filters.to;
   /**
    * Ordering.
    *
@@ -1265,7 +1277,35 @@ export default function SuperAdminWhatsappInboxPage() {
    * and nothing else — not "what have I left longest", and not "who is still
    * waiting". Both of those are the questions asked when clearing a backlog.
    */
-  const [convSort, setConvSort] = useState<'recent' | 'oldest' | 'waiting'>('recent');
+  const convSort = filters.sort;
+
+  // The search INPUT stays local so typing is not a URL write per keystroke;
+  // the debounce below publishes it. `debouncedSearch` is now simply the URL's
+  // value, which is what makes a shared link carry the search term.
+  const debouncedSearch = filters.q;
+  const [search, setSearch] = useState('');
+  /**
+   * Adopt a search term that changed in the URL rather than in this box —
+   * Back/Forward, or a shared link opened in place.
+   *
+   * A render-time adjustment (the pattern React documents for exactly this, and
+   * the one `convPageKey` below already uses) rather than an effect: an effect
+   * that calls setState to mirror a prop is what `set-state-in-effect` forbids,
+   * and it would also render one frame with the stale term.
+   */
+  const [adoptedQ, setAdoptedQ] = useState('');
+  if (filters.q !== adoptedQ) {
+    setAdoptedQ(filters.q);
+    setSearch(filters.q);
+  }
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      // `replace`, not push: one history entry per keystroke would make Back
+      // useless. Discrete controls below push, so Back steps through those.
+      if (search !== getInboxFilters().q) setInboxFilters({ q: search }, { replace: true });
+    }, 300);
+    return () => window.clearTimeout(id);
+  }, [search]);
   const includeArchived = scopeFilter === 'all' || scopeFilter === 'archived';
   const archivedOnly = scopeFilter === 'archived';
   // The archive shows everything filed away, snoozed or not; the snoozed scope
@@ -3162,7 +3202,7 @@ export default function SuperAdminWhatsappInboxPage() {
             <div className="mt-2 flex flex-wrap items-center gap-1.5">
               <button
                 type="button"
-                onClick={() => setUnreadOnly((v) => !v)}
+                onClick={() => setInboxFilters({ unread: !unreadOnly })}
                 aria-pressed={unreadOnly}
                 className={cn(
                   'rounded-full px-3 py-1 text-xs font-medium transition-colors',
@@ -3176,7 +3216,7 @@ export default function SuperAdminWhatsappInboxPage() {
               <Tooltip content="Also match message text when searching">
                 <button
                   type="button"
-                  onClick={() => setSearchMessages((v) => !v)}
+                  onClick={() => setInboxFilters({ searchMessages: !searchMessages })}
                   aria-pressed={searchMessages}
                   className={cn(
                     'rounded-full px-3 py-1 text-xs font-medium transition-colors',
@@ -3191,7 +3231,7 @@ export default function SuperAdminWhatsappInboxPage() {
               <Tooltip content="Threads where the customer is still waiting on a reply from us">
                 <button
                   type="button"
-                  onClick={() => setAwaitingOnly((v) => !v)}
+                  onClick={() => setInboxFilters({ awaiting: !awaitingOnly })}
                   aria-pressed={awaitingOnly}
                   className={cn(
                     'rounded-full px-3 py-1 text-xs font-medium transition-colors',
@@ -3203,6 +3243,18 @@ export default function SuperAdminWhatsappInboxPage() {
                   Awaiting reply
                 </button>
               </Tooltip>
+              {/* Now that filters live in the URL they survive a reload, which
+                  makes "why is my inbox empty?" a real way to lose an afternoon.
+                  One control that returns to the unfiltered queue. */}
+              {hasActiveInboxFilters(filters) && (
+                <button
+                  type="button"
+                  onClick={() => setInboxFilters(DEFAULT_INBOX_FILTERS)}
+                  className="ml-auto rounded-full px-2 py-1 text-xs font-medium text-[var(--text-muted)] underline hover:text-[var(--text)]"
+                >
+                  Clear filters
+                </button>
+              )}
               {/* Distinct from "Unread only": a thread an agent has READ and not
                   yet answered is the one most likely to be forgotten, and it is
                   invisible to every other filter here. */}
@@ -3220,7 +3272,7 @@ export default function SuperAdminWhatsappInboxPage() {
                   size="sm"
                   clearable={false}
                   value={convSort}
-                  onChange={(v) => setConvSort(v as 'recent' | 'oldest' | 'waiting')}
+                  onChange={(v) => setInboxFilters({ sort: v as InboxSort })}
                   options={[
                     { value: 'recent', label: 'Newest first' },
                     { value: 'oldest', label: 'Oldest first' },
@@ -3237,7 +3289,7 @@ export default function SuperAdminWhatsappInboxPage() {
                     type="date"
                     value={dateFrom}
                     max={dateTo || undefined}
-                    onChange={(e) => setDateFrom(e.target.value)}
+                    onChange={(e) => setInboxFilters({ from: e.target.value })}
                     aria-label="Active from"
                     className="w-full min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg)] px-1.5 py-1 text-[11px] text-[var(--text)] outline-none focus:border-[var(--primary)]"
                   />
@@ -3245,7 +3297,7 @@ export default function SuperAdminWhatsappInboxPage() {
                     type="date"
                     value={dateTo}
                     min={dateFrom || undefined}
-                    onChange={(e) => setDateTo(e.target.value)}
+                    onChange={(e) => setInboxFilters({ to: e.target.value })}
                     aria-label="Active until"
                     className="w-full min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg)] px-1.5 py-1 text-[11px] text-[var(--text)] outline-none focus:border-[var(--primary)]"
                   />
@@ -3261,7 +3313,7 @@ export default function SuperAdminWhatsappInboxPage() {
                 size="sm"
                 clearable={false}
                 value={scopeFilter}
-                onChange={(v) => setScopeFilter(v as ScopeFilter)}
+                onChange={(v) => setInboxFilters({ scope: v as InboxScope })}
                 options={[
                   { value: 'active', label: 'Active' },
                   { value: 'snoozed', label: 'Snoozed' },
@@ -3273,7 +3325,7 @@ export default function SuperAdminWhatsappInboxPage() {
                 size="sm"
                 clearable={false}
                 value={statusFilter}
-                onChange={(v) => setStatusFilter(v as StatusFilter)}
+                onChange={(v) => setInboxFilters({ status: v as string })}
                 options={[
                   { value: 'all', label: 'All status' },
                   { value: 'OPEN', label: 'Open' },
@@ -3285,7 +3337,7 @@ export default function SuperAdminWhatsappInboxPage() {
                 size="sm"
                 clearable={false}
                 value={assigneeFilter}
-                onChange={(v) => setAssigneeFilter(v as AssigneeFilter)}
+                onChange={(v) => setInboxFilters({ assignee: v as string })}
                 options={[
                   { value: 'all', label: 'Anyone' },
                   { value: 'me', label: 'Assigned to me' },
@@ -3295,7 +3347,7 @@ export default function SuperAdminWhatsappInboxPage() {
               <Select
                 size="sm"
                 value={labelFilter}
-                onChange={setLabelFilter}
+                onChange={(v) => setInboxFilters({ label: v ?? '' })}
                 options={[
                   { value: '', label: 'All labels' },
                   ...knownLabels.map((l) => ({ value: l, label: l })),
@@ -3310,7 +3362,7 @@ export default function SuperAdminWhatsappInboxPage() {
                   size="sm"
                   clearable={false}
                   value={channelFilter}
-                  onChange={setChannelFilter}
+                  onChange={(v) => setInboxFilters({ channel: v ?? '' })}
                   options={[
                     { value: '', label: 'All numbers' },
                     ...channels.map((c) => ({
