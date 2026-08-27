@@ -23,6 +23,7 @@ import {
 import { emitWaEvent } from '../services/whatsapp-events.service';
 import type { R2ObjectPage } from '../services/storage.service';
 import { deleteFileFromR2, listObjectKeys, isR2Configured } from '../services/storage.service';
+import { META_MEDIA_TTL_MS } from '../services/whatsapp-media.service';
 import { requeueWhatsappInboundJob } from './whatsapp-inbound.queue';
 import { whatsappCampaignQueue } from './whatsapp-campaign.queue';
 import { getWebhookHealth } from '../services/whatsapp-webhook.service';
@@ -712,10 +713,118 @@ async function sweepScheduledMedia(
   return { scanned, orphaned, deleted, budgetExhausted: false };
 }
 
+/**
+ * How long a PENDING archive may sit before it is treated as lost.
+ *
+ * The archive queue retries a failing job for roughly 17 hours, so anything
+ * shorter would re-enqueue work that is still legitimately in flight.
+ */
+const MEDIA_PENDING_STALE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Re-queue inbound media whose archival never finished, and give up on the ones
+ * Meta can no longer serve.
+ *
+ * PENDING was a terminal state in practice. The row is stamped inside the
+ * inbound transaction and the job is enqueued after it commits, so anything that
+ * killed the process in between — a deploy, an OOM, a Redis flush, a drained
+ * queue — left a row claiming an archive was on its way that nothing would ever
+ * pick up. FAILED had a list, a metric and a retry button; PENDING had none of
+ * the three, because it was never meant to be a resting place.
+ *
+ * The cost is silent and delayed: the file lives only inside Meta's ~30-day
+ * window, and the day it is asked for is usually well past that.
+ *
+ * Past the window a retry cannot succeed, so those are moved to FAILED instead —
+ * which is not a downgrade but the truth, and puts them on the failed-archives
+ * list where an operator can at least see what was lost rather than waiting on a
+ * PENDING that will never resolve.
+ */
+async function sweepStalePendingArchives(): Promise<void> {
+  const stale = new Date(Date.now() - MEDIA_PENDING_STALE_MS);
+
+  // The bytes landed but the stamp did not — a crash between the R2 write and
+  // the status update. Nothing needs downloading again; the row is simply
+  // telling the inbox a lie about a file it already has.
+  const settled = await prisma.waMessage.updateMany({
+    where: {
+      mediaArchiveStatus: 'PENDING',
+      mediaUrl: { not: null },
+      createdAt: { lt: stale },
+    },
+    data: { mediaArchiveStatus: 'OK' },
+  });
+  if (settled.count > 0) {
+    logger.info(
+      `WhatsApp media sweep: ${settled.count} archive(s) were already stored but still ` +
+        'marked PENDING — corrected to OK'
+    );
+  }
+
+  const rows = await prisma.waMessage.findMany({
+    where: {
+      mediaArchiveStatus: 'PENDING',
+      mediaId: { not: null },
+      // Already archived by a job that died before it could stamp the row —
+      // the bytes are safe, only the bookkeeping is wrong.
+      mediaUrl: null,
+      createdAt: { lt: stale },
+    },
+    select: { id: true, mediaId: true, mediaMime: true, createdAt: true },
+    orderBy: { createdAt: 'asc' },
+    take: 500,
+  });
+  if (rows.length === 0) return;
+
+  const expiredBefore = Date.now() - META_MEDIA_TTL_MS;
+  const expired = rows.filter((r) => r.createdAt.getTime() <= expiredBefore);
+  const retryable = rows.filter((r) => r.createdAt.getTime() > expiredBefore);
+
+  if (expired.length > 0) {
+    await prisma.waMessage.updateMany({
+      where: { id: { in: expired.map((r) => r.id) } },
+      data: { mediaArchiveStatus: 'FAILED' },
+    });
+  }
+
+  let requeued = 0;
+  if (retryable.length > 0) {
+    const { addWhatsappMediaJob } = await import('./whatsapp-media.queue');
+    for (const r of retryable) {
+      try {
+        await addWhatsappMediaJob({
+          messageId: r.id,
+          mediaId: r.mediaId as string,
+          mime: r.mediaMime ?? 'application/octet-stream',
+        });
+        requeued++;
+      } catch (e) {
+        // One un-enqueueable row must not abort the sweep; the next run retries
+        // it, and it is still inside Meta's window until it is not.
+        logger.warn(`WhatsApp media sweep could not re-queue ${r.id}: ${(e as Error).message}`);
+      }
+    }
+  }
+
+  logger.warn(
+    `WhatsApp media sweep: ${rows.length} archive(s) stuck PENDING for over ` +
+      `${MEDIA_PENDING_STALE_MS / (60 * 60 * 1000)}h — ${requeued} re-queued, ` +
+      `${expired.length} past Meta's ${META_MEDIA_TTL_MS / (24 * 60 * 60 * 1000)}-day ` +
+      'window and marked FAILED'
+  );
+}
+
 export async function handleWaMediaReconcile(): Promise<void> {
   // No bucket, nothing archived, nothing to sweep. A deployment without R2 is
   // supported, and must not log an error every night for it.
   if (!isR2Configured()) return;
+
+  // Rows whose archive job was lost, before the object sweep — a re-queued
+  // archive writes a NEW object, and doing this first means that object is
+  // referenced by the time anything looks for orphans.
+  await sweepStalePendingArchives().catch((e) =>
+    logger.warn(`WhatsApp stale-PENDING archive sweep failed: ${(e as Error).message}`)
+  );
 
   const cutoff = new Date(Date.now() - MEDIA_RECONCILE_GRACE_MS);
   const deadline = Date.now() + MEDIA_RECONCILE_BUDGET_MS;

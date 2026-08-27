@@ -199,8 +199,14 @@ export async function listFailedMediaArchives(limit = 50) {
   }));
 }
 
-/** How long Meta keeps inbound media available for download. */
-const META_MEDIA_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+/**
+ * How long Meta keeps inbound media available for download.
+ *
+ * Exported because the cron sweep decides the same question — is a retry still
+ * capable of succeeding? — and two copies of this number drifting apart would
+ * have the sweep re-queueing work the list has already written off.
+ */
+export const META_MEDIA_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
  * Put one failed archive back on the queue.
