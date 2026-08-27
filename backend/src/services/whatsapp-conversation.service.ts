@@ -888,7 +888,33 @@ export async function getById(id: string) {
   return prisma.waConversation.findUnique({
     where: { id },
     include: {
-      contact: true,
+      // An explicit select, NOT `contact: true`.
+      //
+      // The bare include shipped `consentEvidence` as raw `iv:tag:ciphertext` —
+      // only `getContact` decrypts it. Nothing renders it from this payload
+      // today, which is exactly why it is worth fixing now: the first screen to
+      // show consent provenance from the thread would display a blob, and the
+      // bug would look like a rendering fault rather than a leak of an encrypted
+      // column into a route that has no business carrying it.
+      contact: {
+        select: {
+          ...CONVERSATION_CONTACT_SELECT,
+          // The panel's own extras, none of which the list row needs.
+          tags: true,
+          attributes: true,
+          optInAt: true,
+          optOutAt: true,
+          optInSource: true,
+          optOutSource: true,
+          ctwaSourceId: true,
+          ctwaSourceType: true,
+          ctwaHeadline: true,
+          ctwaClid: true,
+          ctwaFirstClickAt: true,
+          ctwaLastClickAt: true,
+          createdAt: true,
+        },
+      },
       channel: { select: { id: true, displayPhone: true } },
     },
   });

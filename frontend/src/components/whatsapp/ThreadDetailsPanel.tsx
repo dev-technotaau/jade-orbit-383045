@@ -365,9 +365,18 @@ function ContactCard({
 
         <div className="flex items-center gap-1">
           <Phone className="h-3 w-3 shrink-0 text-[var(--text-muted)]" />
-          <span className="min-w-0 flex-1 truncate text-[11px] text-[var(--text-secondary)]">
+          {/* A `tel:` link, not plain text.
+              Half the reason an agent looks at this row is to ring the customer,
+              and the only affordance was Copy — so calling meant copy, switch
+              app, paste. On a desktop with a softphone or a handset this is one
+              tap. The number is E.164 and already dialable as-is. */}
+          <a
+            href={`tel:${contact.phone}`}
+            className="min-w-0 flex-1 truncate text-[11px] text-[var(--text-secondary)] hover:text-[var(--primary)] hover:underline"
+            title={`Call ${contact.phone}`}
+          >
             {contact.phone}
-          </span>
+          </a>
           <IconButton onClick={copyPhone} label="Copy phone number">
             <Copy className="h-3.5 w-3.5" />
           </IconButton>

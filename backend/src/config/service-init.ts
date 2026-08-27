@@ -28,6 +28,13 @@ import {
  * the Prisma schema and will drop indexes the schema does not declare, so these
  * have to be able to come back on their own after a deploy.
  */
+/**
+ * Indexes created at runtime rather than declared in `schema.prisma`.
+ *
+ * NOTE the name: these are not all trigram search indexes any more. The label
+ * one is here for a different reason — see its own comment — but the mechanism
+ * is the same, and so is the reason it has to be re-checked on every boot.
+ */
 const SEARCH_INDEXES: Array<{ name: string; ddl: string }> = [
   {
     name: 'wa_message_text_trgm',
@@ -40,6 +47,24 @@ const SEARCH_INDEXES: Array<{ name: string; ddl: string }> = [
   {
     name: 'wa_contact_phone_trgm',
     ddl: 'CREATE INDEX CONCURRENTLY IF NOT EXISTS "wa_contact_phone_trgm" ON "WaContact" USING gin ("phone" gin_trgm_ops)',
+  },
+  {
+    /**
+     * Label filtering on the inbox list (`labels: { hasSome: [...] }`).
+     *
+     * The ORDERED page is fine without it — `@@index([archivedAt, lastMessageAt
+     * DESC])` serves the LIMIT 50. What degrades is the companion `count()` over
+     * the whole filtered set, which has no such shortcut and re-runs on every
+     * socket invalidation and every 60s poll while a label filter is active.
+     *
+     * Created here rather than as `@@index([labels], type: Gin)` for the same
+     * reason as the three above: `db push` would build it holding an ACCESS
+     * EXCLUSIVE lock on WaConversation, parking the whole inbox behind it.
+     * `WaContact.tags` has the same GIN index, declared in the schema, from
+     * before that lesson.
+     */
+    name: 'wa_conversation_labels_gin',
+    ddl: 'CREATE INDEX CONCURRENTLY IF NOT EXISTS "wa_conversation_labels_gin" ON "WaConversation" USING gin ("labels")',
   },
 ];
 

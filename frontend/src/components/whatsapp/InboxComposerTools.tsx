@@ -8,6 +8,7 @@ import Input from '@/components/ui/Input';
 import Textarea from '@/components/ui/Textarea';
 import FormattedTextarea from '@/components/whatsapp/FormattedTextarea';
 import { cn } from '@/lib/utils';
+import { resolveContactTokens, type TokenContact } from '@/lib/wa-contact-tokens';
 import Button from '@/components/ui/Button';
 import Select from '@/components/ui/Select';
 import Tooltip from '@/components/ui/Tooltip';
@@ -30,11 +31,17 @@ function CannedPopover({
   containerRef,
   onClose,
   onInsert,
+  contact,
 }: {
   /** Trigger + popover wrapper; anything outside it dismisses the popover. */
   containerRef: RefObject<HTMLDivElement | null>;
   onClose: () => void;
   onInsert: (t: string) => void;
+  /**
+   * The open thread's contact, so a saved reply's `{{name}}` is expanded at
+   * insert time — while the operator can still see and edit the result.
+   */
+  contact?: TokenContact | null;
 }) {
   const qc = useQueryClient();
   const { data } = useQuery({ queryKey: ['wa-canned'], queryFn: () => svc.listCannedReplies() });
@@ -135,7 +142,7 @@ function CannedPopover({
         // Enter would otherwise SEND the composer's draft — the popover is open
         // over a form whose Enter is bound to submit.
         e.stopPropagation();
-        onInsert(pick.text);
+        onInsert(resolveContactTokens(pick.text, contact ?? null));
         onClose();
       }
     };
@@ -203,7 +210,7 @@ function CannedPopover({
             <button
               type="button"
               onClick={() => {
-                onInsert(r.text);
+                onInsert(resolveContactTokens(r.text, contact ?? null));
                 onClose();
               }}
               onMouseEnter={() => setCursor(i)}
@@ -879,10 +886,13 @@ function InteractiveModal({
 export default function InboxComposerTools({
   conversationId,
   contextWamid,
+  contact,
   onInsert,
   onSent,
 }: {
   conversationId: string;
+  /** The open thread's contact, for canned-reply token expansion. */
+  contact?: TokenContact | null;
   /** WAMID the open reply banner points at, forwarded to the interactive send. */
   contextWamid?: string;
   onInsert: (text: string) => void;
@@ -911,6 +921,7 @@ export default function InboxComposerTools({
         {cannedOpen && (
           <CannedPopover
             containerRef={cannedRef}
+            contact={contact}
             onClose={() => setCannedOpen(false)}
             onInsert={(t) => {
               onInsert(t);

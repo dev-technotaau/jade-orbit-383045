@@ -21,8 +21,32 @@ import {
   entryStep,
   stepChoices,
 } from './whatsapp-botflow.service';
+import { hasContactTokens, resolveContactTokens } from '../utils/wa-contact-tokens';
 import type { WaFlowState } from './whatsapp-botflow.service';
 import type { WaBotFlow, WaBotStep } from '@prisma/client';
+
+/**
+ * Expand `{{name}}`-style tokens in a keyword rule's reply.
+ *
+ * The rule's text was sent verbatim, so a reply written as "Hi {{name}}, your
+ * order is on the way" reached the customer with the braces intact — the
+ * operator's own personalisation rendered to them as markup.
+ *
+ * The contact is fetched only when the text actually carries a token, so the
+ * overwhelmingly common plain reply costs no extra round trip.
+ */
+async function expandRuleText(text: string, conversationId: string): Promise<string> {
+  if (!hasContactTokens(text)) return text;
+  const conv = await prisma.waConversation
+    .findUnique({
+      where: { id: conversationId },
+      select: {
+        contact: { select: { name: true, profileName: true, phone: true, attributes: true } },
+      },
+    })
+    .catch(() => null);
+  return resolveContactTokens(text, conv?.contact ?? null);
+}
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -1072,7 +1096,7 @@ export async function handleInboundAutoReply(opts: {
             if (rule.replyText) {
               const sent = await sendSessionMessage(opts.conversationId, null as any, {
                 type: 'text',
-                text: rule.replyText,
+                text: await expandRuleText(rule.replyText, opts.conversationId),
               });
               assertDelivered(`WhatsApp keyword rule ${rule.id}`, sent);
             }
@@ -1096,7 +1120,7 @@ export async function handleInboundAutoReply(opts: {
           } else if (rule.replyText) {
             const sent = await sendSessionMessage(opts.conversationId, null as any, {
               type: 'text',
-              text: rule.replyText,
+              text: await expandRuleText(rule.replyText, opts.conversationId),
             });
             assertDelivered(`WhatsApp keyword rule ${rule.id}`, sent);
           }

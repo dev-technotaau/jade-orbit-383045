@@ -75,6 +75,7 @@ import {
   type InboxSort,
 } from '@/lib/wa-inbox-filters';
 import { WA_FORMATS, applyWaFormat } from '@/lib/wa-format';
+import Skeleton from '@/components/ui/Skeleton';
 import EmojiPicker from '@/components/whatsapp/EmojiPicker';
 import ForwardModal from '@/components/whatsapp/ForwardModal';
 import RealtimeStatus from '@/components/whatsapp/RealtimeStatus';
@@ -3491,7 +3492,24 @@ export default function SuperAdminWhatsappInboxPage() {
           />
           <div ref={convScrollRef} onScroll={syncConvWindow} className="flex-1 overflow-y-auto">
             {(convQuery.isLoading || awaitingOperatorLabel) && (
-              <p className="p-4 text-center text-sm text-[var(--text-muted)]">Loading…</p>
+              // Rows of the list's own height, so the scroll position does not
+              // jump when the real ones arrive. `Skeleton` shipped with six
+              // variants and zero importers anywhere in the app.
+              <div aria-busy="true" aria-label="Loading conversations">
+                {Array.from({ length: 8 }).map((_, i) => (
+                  <div
+                    key={i}
+                    style={{ height: CONV_ROW_H }}
+                    className="flex items-center gap-3 border-b border-[var(--border)] px-3"
+                  >
+                    <Skeleton variant="circle" width={40} height={40} />
+                    <div className="min-w-0 flex-1 space-y-2">
+                      <Skeleton variant="line" width="45%" height={10} />
+                      <Skeleton variant="line" width="75%" height={8} />
+                    </div>
+                  </div>
+                ))}
+              </div>
             )}
             {convQuery.isError && (
               <div className="p-4 text-center">
@@ -3508,11 +3526,44 @@ export default function SuperAdminWhatsappInboxPage() {
             {!convQuery.isLoading &&
               !awaitingOperatorLabel &&
               !convQuery.isError &&
-              conversations.length === 0 && (
+              conversations.length === 0 &&
+              // Two different situations that looked identical.
+              //
+              // "No conversations yet" was shown whether the inbox was genuinely
+              // empty or the operator had simply filtered everything out — so a
+              // stale label filter read as a broken product, and now that
+              // filters survive a reload it would read that way tomorrow too.
+              (hasActiveInboxFilters(filters) ? (
+                <div className="space-y-2 p-6 text-center">
+                  <p className="text-sm text-[var(--text-muted)]">
+                    No conversations match the current filters.
+                  </p>
+                  {/* The most common near-miss: a query that would have matched
+                      a message body rather than a name or number. */}
+                  {filters.q && !filters.searchMessages && (
+                    <button
+                      type="button"
+                      onClick={() => setInboxFilters({ searchMessages: true })}
+                      className="text-xs font-medium text-[var(--primary)] hover:underline"
+                    >
+                      Search message text too
+                    </button>
+                  )}
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => setInboxFilters(DEFAULT_INBOX_FILTERS)}
+                      className="text-xs font-medium text-[var(--primary)] hover:underline"
+                    >
+                      Clear filters
+                    </button>
+                  </div>
+                </div>
+              ) : (
                 <p className="p-6 text-center text-sm text-[var(--text-muted)]">
                   No conversations yet. They appear here when someone messages your WhatsApp number.
                 </p>
-              )}
+              ))}
             {/* Only the slice around the viewport is mounted; the two spacers
                 stand in for the rows above and below it (see CONV_ROW_H). */}
             <div
@@ -4223,9 +4274,23 @@ export default function SuperAdminWhatsappInboxPage() {
                     className="sr-only"
                   />
                   {msgQuery.isLoading && !msgQuery.isError && (
-                    <p className="text-center text-sm text-[var(--text-muted)]">
-                      Loading messages…
-                    </p>
+                    // Alternating sides, so the shape reads as a conversation
+                    // rather than a generic spinner block.
+                    <div aria-busy="true" aria-label="Loading messages" className="space-y-3">
+                      {[68, 45, 80, 38, 60, 50].map((w, i) => (
+                        <div
+                          key={i}
+                          className={cn('flex', i % 2 === 0 ? 'justify-start' : 'justify-end')}
+                        >
+                          <Skeleton
+                            variant="rect"
+                            width={`${w}%`}
+                            height={i % 3 === 0 ? 56 : 34}
+                            className="rounded-2xl"
+                          />
+                        </div>
+                      ))}
+                    </div>
                   )}
                   {msgQuery.isError && (
                     <div className="flex flex-col items-center gap-2 py-6 text-center">
@@ -4554,6 +4619,9 @@ export default function SuperAdminWhatsappInboxPage() {
                     <InboxComposerTools
                       conversationId={selected.id}
                       contextWamid={replyTo?.wamid ?? undefined}
+                      // So a saved reply's `{{name}}` is expanded as it is
+                      // inserted, while the operator can still edit the result.
+                      contact={selected.contact}
                       onInsert={(t) => setDraft((d) => (d ? `${d}\n${t}` : t))}
                       onSent={() => {
                         qc.invalidateQueries({ queryKey: ['wa-messages', selected.id] });
