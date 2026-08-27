@@ -87,7 +87,7 @@ export function waMediaLimit(kind: WaMediaKind): number {
  * mp4/3gpp as a `video`; everything else Meta will not take natively is sent as
  * a document.
  */
-export function waMediaKind(mime: string, size?: number): WaMediaKind {
+export function waMediaKind(mime: string, size?: number, animated?: boolean): WaMediaKind {
   if (mime === 'video/mp4' || mime === 'video/3gpp') return 'video';
   if (mime === 'image/jpeg' || mime === 'image/png') return 'image';
   // WEBP goes out as a STICKER, which is how Meta classifies it — the picker
@@ -96,7 +96,13 @@ export function waMediaKind(mime: string, size?: number): WaMediaKind {
   // Over that ceiling it cannot be a sticker at all, so it keeps the old
   // document behaviour instead of becoming unsendable.
   if (mime === 'image/webp') {
-    return size !== undefined && size > waMediaLimit('sticker') ? 'document' : 'sticker';
+    // `animated` comes from the file's own RIFF header when the caller has read
+    // it (see lib/wa-webp). Without it this keeps the permissive animated
+    // ceiling, which is the old courtesy behaviour — but with it, a 300 KB
+    // STATIC webp resolves to `document` here exactly as it does on the server,
+    // instead of being announced as a sticker and then delivered as a file card.
+    const ceiling = animated === false ? WA_MEDIA_LIMITS.sticker : WA_ANIMATED_STICKER_LIMIT;
+    return size !== undefined && size > ceiling ? 'document' : 'sticker';
   }
   if (mime.startsWith('audio/')) return 'audio';
   return 'document';

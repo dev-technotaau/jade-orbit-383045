@@ -363,17 +363,77 @@ const STATUS_LABEL: Record<WaMessageStatus, string> = {
 // sent/delivered/queued match the adjacent timestamp's `text-white/70` (the old
 // muted-gray was illegible on green). Read stays blue for the universal "seen"
 // signal but is lightened to sky-300 so it has real contrast against the green.
-function StatusTick({ status }: { status: WaMessageStatus }) {
+/**
+ * The delivery tick, with the timestamps behind it.
+ *
+ * `sentAt`, `deliveredAt` and `readAt` are written by the status webhook, ride
+ * to the browser on every message (getThread selects the whole row) and were
+ * rendered by absolutely nothing — so "did they see it, and when?", the question
+ * WhatsApp's own Message info screen exists to answer, was unanswerable here
+ * even though the answer was already in the cache.
+ *
+ * Put on the tick's tooltip rather than in a new panel: it is the element the
+ * operator already looks at to ask exactly this.
+ */
+/** Carries the tooltip: a lucide icon takes no `title`, and `aria-label` alone
+ *  is invisible to a sighted operator hovering the tick. */
+function Tick({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <span title={title} aria-label={title} role="img" className="inline-flex">
+      {children}
+    </span>
+  );
+}
+
+function StatusTick({
+  status,
+  sentAt,
+  deliveredAt,
+  readAt,
+}: {
+  status: WaMessageStatus;
+  sentAt?: string | null;
+  deliveredAt?: string | null;
+  readAt?: string | null;
+}) {
   const label = STATUS_LABEL[status];
+  const when = [
+    sentAt ? `Sent ${fmtTime(sentAt)}` : null,
+    deliveredAt ? `Delivered ${fmtTime(deliveredAt)}` : null,
+    readAt ? `Read ${fmtTime(readAt)}` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  const title = when ? `${label} — ${when}` : label;
   if (status === 'FAILED')
-    return <AlertCircle className="h-3.5 w-3.5 text-red-100" aria-label={label} role="img" />;
+    return (
+      <Tick title={title}>
+        <AlertCircle className="h-3.5 w-3.5 text-red-100" />
+      </Tick>
+    );
   if (status === 'READ')
-    return <CheckCheck className="h-3.5 w-3.5 text-sky-300" aria-label={label} role="img" />;
+    return (
+      <Tick title={title}>
+        <CheckCheck className="h-3.5 w-3.5 text-sky-300" />
+      </Tick>
+    );
   if (status === 'DELIVERED')
-    return <CheckCheck className="h-3.5 w-3.5 text-white/70" aria-label={label} role="img" />;
+    return (
+      <Tick title={title}>
+        <CheckCheck className="h-3.5 w-3.5 text-white/70" />
+      </Tick>
+    );
   if (status === 'SENT')
-    return <Check className="h-3.5 w-3.5 text-white/70" aria-label={label} role="img" />;
-  return <Loader2 className="h-3 w-3 animate-spin text-white/70" aria-label={label} role="img" />;
+    return (
+      <Tick title={title}>
+        <Check className="h-3.5 w-3.5 text-white/70" />
+      </Tick>
+    );
+  return (
+    <Tick title={title}>
+      <Loader2 className="h-3 w-3 animate-spin text-white/70" />
+    </Tick>
+  );
 }
 
 /**
@@ -683,7 +743,14 @@ function MessageBubble({
                     <span>Waiting to send</span>
                   </span>
                 ) : (
-                  outbound && <StatusTick status={message.status} />
+                  outbound && (
+                    <StatusTick
+                      status={message.status}
+                      sentAt={message.sentAt}
+                      deliveredAt={message.deliveredAt}
+                      readAt={message.readAt}
+                    />
+                  )
                 )}
               </div>
             </div>

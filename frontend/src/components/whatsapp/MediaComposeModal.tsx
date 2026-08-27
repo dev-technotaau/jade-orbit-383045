@@ -6,6 +6,7 @@ import DialogShell from '@/components/ui/DialogShell';
 import Button from '@/components/ui/Button';
 import FormattedTextarea from '@/components/whatsapp/FormattedTextarea';
 import { waMediaKind } from '@/constants/config';
+import { isAnimatedWebpFile } from '@/lib/wa-webp';
 
 /** Meta caps a media caption at 1024 characters. */
 const MAX_CAPTION = 1024;
@@ -50,7 +51,32 @@ export default function MediaComposeModal({
   // the browser, so nothing on this sheet used to hint that the Cloud API takes
   // only JPEG/PNG and MP4/3GPP inline and that everything else is delivered as a
   // downloadable file card — the agent found out from the customer.
-  const kind = useMemo(() => waMediaKind(mime, file.size), [mime, file.size]);
+  /**
+   * Whether a picked WEBP animates, read from its own RIFF header.
+   *
+   * `null` until the read resolves, which keeps the permissive ceiling for that
+   * first frame — the same courtesy behaviour as before — and then narrows to
+   * the real one. Without it a 300 KB STATIC webp was announced here as a
+   * sticker (caption box hidden on that basis) and delivered by the server as a
+   * document file card, with the operator's context lost.
+   */
+  const [webpAnimated, setWebpAnimated] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (mime !== 'image/webp') return;
+    let cancelled = false;
+    // Async, so this is not a synchronous setState in an effect body.
+    void isAnimatedWebpFile(file).then((animated) => {
+      if (!cancelled) setWebpAnimated(animated);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [file, mime]);
+
+  const kind = useMemo(
+    () => waMediaKind(mime, file.size, webpAnimated ?? undefined),
+    [mime, file.size, webpAnimated],
+  );
   const ridesAsFile = kind === 'document' && (isImage || isVideo);
   const isSticker = kind === 'sticker';
   /**
