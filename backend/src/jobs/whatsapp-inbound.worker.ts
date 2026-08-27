@@ -751,6 +751,11 @@ async function processMessages(value: any): Promise<MessagesOutcome> {
           // not be answered by any query — an operator paying for click-to-WhatsApp
           // ads had the join key (ctwa_clid) in the database and no way to group on
           // it or export it back to Ads Manager.
+          //
+          // FIRST touch: how this person entered the database. The encrypted
+          // evidence blob is a consent record, so a later click must not
+          // overwrite it — that would rewrite the provenance of a consent given
+          // months earlier.
           ...(isNewContact && referral
             ? {
                 consentEvidence: encryptJson({
@@ -758,10 +763,28 @@ async function processMessages(value: any): Promise<MessagesOutcome> {
                   referral,
                   at: createdAt,
                 }),
+                ctwaFirstClickAt: createdAt,
+              }
+            : {}),
+          //
+          // LAST touch: the denormalised columns, written on EVERY referral.
+          //
+          // Gating these on `isNewContact` meant an imported or returning
+          // customer who clicked a paid ad carried no `ctwa_clid` at all — so
+          // their eventual sale could never be uploaded to Ads Manager as an
+          // offline conversion, which is the entire reason the join key is
+          // stored. And a repeat clicker kept the FIRST ad's headline forever,
+          // crediting a campaign that had nothing to do with the visit.
+          //
+          // `ctwaFirstClickAt` above is what keeps the acquisition date from
+          // being destroyed by that overwrite.
+          ...(referral
+            ? {
                 ctwaSourceId: referral.source_id ? String(referral.source_id) : null,
                 ctwaSourceType: referral.source_type ? String(referral.source_type) : null,
                 ctwaHeadline: referral.headline ? String(referral.headline) : null,
                 ctwaClid: referral.ctwa_clid ? String(referral.ctwa_clid) : null,
+                ctwaLastClickAt: createdAt,
                 attributes: {
                   ...((contact.attributes as Record<string, any> | null) ?? {}),
                   ctwaSource: referral.source_type ?? referral.source_id ?? 'ctwa',

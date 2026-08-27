@@ -1585,7 +1585,20 @@ export async function getCtwaContacts(days = 30, limit = 5000) {
   const n = clampDays(days);
   const since = new Date(Date.now() - n * 24 * 60 * 60 * 1000);
   return prisma.waContact.findMany({
-    where: { createdAt: { gte: since }, ctwaClid: { not: null } },
+    where: {
+      ctwaClid: { not: null },
+      // Windowed on the CLICK, not on when the contact row was created.
+      //
+      // Attribution is last-touch now, so a customer acquired last year who
+      // clicked a paid ad this week carries this week's clid — and a
+      // `createdAt` window excluded exactly that cohort, which is the one an
+      // offline-conversion upload is for. `createdAt` remains the fallback for
+      // rows written before the click dates existed.
+      OR: [
+        { ctwaLastClickAt: { gte: since } },
+        { ctwaLastClickAt: null, createdAt: { gte: since } },
+      ],
+    },
     select: {
       id: true,
       phone: true,
@@ -1594,6 +1607,8 @@ export async function getCtwaContacts(days = 30, limit = 5000) {
       ctwaSourceType: true,
       ctwaHeadline: true,
       ctwaClid: true,
+      ctwaFirstClickAt: true,
+      ctwaLastClickAt: true,
       createdAt: true,
     },
     orderBy: { createdAt: 'desc' },

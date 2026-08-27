@@ -296,6 +296,15 @@ model WaContact {
   ctwaSourceType       String? // ad | post
   ctwaHeadline         String?
   /// Meta's click id — the join key for offline conversion upload to Ads Manager.
+  /// When this contact FIRST arrived from a click-to-WhatsApp ad.
+  ///
+  /// The four `ctwa*` columns below are LAST-touch — a returning clicker's
+  /// newest ad overwrites them, which is what an offline-conversion upload
+  /// needs. Without this column that overwrite would destroy the acquisition
+  /// date, and "which ad first brought them in?" would have no answer at all.
+  ctwaFirstClickAt   DateTime?
+  /// The most recent click-to-WhatsApp arrival.
+  ctwaLastClickAt    DateTime?
   ctwaClid             String?
   isBlocked            Boolean       @default(false)
   /// When Meta last CONFIRMED this contact's block state through

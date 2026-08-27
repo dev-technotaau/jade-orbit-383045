@@ -333,7 +333,19 @@ export const exportCtwa = async (
   try {
     const rows = await getCtwaContacts(parseDays(req.query.days));
     const csv = [
-      ['phone', 'name', 'ctwaClid', 'sourceId', 'sourceType', 'headline', 'createdAt']
+      [
+        'phone',
+        'name',
+        'ctwaClid',
+        'sourceId',
+        'sourceType',
+        'headline',
+        // Both dates, because they answer different questions: which ad first
+        // brought them in, and which ad this clid belongs to.
+        'firstClickAt',
+        'lastClickAt',
+        'createdAt',
+      ]
         .map(csvCell)
         .join(','),
       ...rows.map((r) =>
@@ -344,6 +356,8 @@ export const exportCtwa = async (
           r.ctwaSourceId,
           r.ctwaSourceType,
           r.ctwaHeadline,
+          r.ctwaFirstClickAt ? r.ctwaFirstClickAt.toISOString() : '',
+          r.ctwaLastClickAt ? r.ctwaLastClickAt.toISOString() : '',
           r.createdAt.toISOString(),
         ]
           .map(csvCell)
