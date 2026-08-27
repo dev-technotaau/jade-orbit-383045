@@ -581,6 +581,25 @@ export const markRead = async (req: Request, res: Response, next: NextFunction):
 };
 
 /**
+ * POST /conversations/:id/unread — put a triaged thread back in the queue.
+ *
+ * Local state only: the Cloud API has no un-read call and a sent read receipt
+ * cannot be withdrawn.
+ */
+export const markUnread = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const conv = await conversationService.markUnread(String(req.params.id));
+    res.json({ success: true, data: conv });
+  } catch (e) {
+    next(e);
+  }
+};
+
+/**
  * POST /conversations/:id/typing — show the customer a "typing…" bubble.
  *
  * Fired from the composer on a throttle, so it is deliberately cheap and

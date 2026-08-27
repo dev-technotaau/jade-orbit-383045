@@ -32,6 +32,7 @@ import {
   X,
   CalendarClock,
   FileText,
+  MailQuestionMark,
   Download,
   Archive,
   ArchiveRestore,
@@ -2550,6 +2551,29 @@ export default function SuperAdminWhatsappInboxPage() {
   };
 
   // Archive / unarchive the open conversation.
+  /**
+   * Put the open thread back in the unread queue.
+   *
+   * Opening a thread to triage it costs its bold row, its badge and its place in
+   * the Unread filter, with no way back — and the customer has already been
+   * blue-ticked either way. The alternatives all say something different to the
+   * team: PENDING means "in progress", a snooze means "not until later".
+   *
+   * Deliberately NOT presented as undoing the read receipt, because it cannot:
+   * Meta has no un-read call and a sent receipt cannot be withdrawn.
+   */
+  const markUnreadMut = useMutation({
+    mutationFn: () => svc.markUnread(selectedId as string),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['wa-conversations'] });
+      qc.invalidateQueries({ queryKey: ['wa-inbox-unread-total'] });
+      // Drop the open-thread unread snapshot so the divider recomputes.
+      setOpenUnread(null);
+      showToast.success('Marked unread — the customer still sees it as read');
+    },
+    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Could not mark unread'),
+  });
+
   const archiveMut = useMutation({
     mutationFn: (archived: boolean) => svc.archiveConversation(selectedId as string, archived),
     onSuccess: (_res, archived) => {
@@ -3134,6 +3158,17 @@ export default function SuperAdminWhatsappInboxPage() {
                       ) : (
                         <Download className="h-4 w-4" />
                       )}
+                    </button>
+                  </Tooltip>
+                  <Tooltip content="Mark unread">
+                    <button
+                      type="button"
+                      onClick={() => markUnreadMut.mutate()}
+                      disabled={markUnreadMut.isPending}
+                      aria-label="Mark conversation unread"
+                      className="rounded-md border border-[var(--border)] px-2 py-1 text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] disabled:opacity-60"
+                    >
+                      <MailQuestionMark className="h-4 w-4" />
                     </button>
                   </Tooltip>
                   <Tooltip content={selected.archivedAt ? 'Unarchive' : 'Archive'}>

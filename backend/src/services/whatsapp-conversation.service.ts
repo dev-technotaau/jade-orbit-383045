@@ -799,6 +799,53 @@ async function countUnreadSince(conversationId: string, lastReadAt: Date | null)
   });
 }
 
+/**
+ * Put a thread back in the unread queue.
+ *
+ * An operator who opens a thread to triage it and cannot deal with it now loses
+ * its bold row, its badge and its place in the Unread filter — with no way back.
+ * The workarounds all mean something else to the team: PENDING says "in
+ * progress", a snooze says "not until later".
+ *
+ * The read marker is moved to just BEFORE the newest inbound rather than
+ * cleared: nulling it would resurrect every inbound the thread has ever carried,
+ * so a year-old conversation would come back claiming hundreds unread. One
+ * message unread is what "mark unread" means everywhere else.
+ *
+ * LOCAL STATE ONLY — and deliberately so. There is no un-read call in the Cloud
+ * API and a read receipt, once sent, cannot be withdrawn: the customer has
+ * already seen the blue ticks. This restores OUR queue, not their view of it,
+ * and the UI must not imply otherwise.
+ */
+export async function markUnread(conversationId: string) {
+  const lastInbound = await prisma.waMessage.findFirst({
+    where: { conversationId, direction: 'INBOUND', deletedAt: null },
+    orderBy: { createdAt: 'desc' },
+    select: { createdAt: true },
+  });
+  // Nothing inbound to be unread about — a thread we started and they never
+  // answered. Leave it exactly as it is rather than inventing a badge.
+  if (!lastInbound) {
+    const unchanged = await prisma.waConversation.findUnique({ where: { id: conversationId } });
+    if (!unchanged) throw new AppError('Conversation not found', 404, 'WA_CONVERSATION_NOT_FOUND');
+    return unchanged;
+  }
+  const readAt = new Date(lastInbound.createdAt.getTime() - 1);
+  await prisma.waConversation.update({
+    where: { id: conversationId },
+    data: { lastReadAt: readAt },
+  });
+  // Recounted with the same helper markRead uses, so the two can never disagree
+  // about what "unread" means.
+  const unreadCount = await countUnreadSince(conversationId, readAt);
+  const conv = await prisma.waConversation.update({
+    where: { id: conversationId },
+    data: { unreadCount },
+  });
+  emitWa('wa:conversation', { conversationId, conversation: conv }, conversationId);
+  return conv;
+}
+
 export async function markRead(conversationId: string) {
   // Stamp the read marker first, then recompute unread from messages that exist
   // after it. A message arriving between the stamp and recount is counted by the

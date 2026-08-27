@@ -657,6 +657,13 @@ router.post(
   ctrl.sendMedia
 );
 router.post('/conversations/:id/read', audit('WA_MARK_READ', 'WaConversation'), ctrl.markRead);
+// The inverse. Local only — Meta has no un-read call and a sent read receipt
+// cannot be withdrawn, so this restores OUR queue, not the customer's view.
+router.post(
+  '/conversations/:id/unread',
+  audit('WA_MARK_UNREAD', 'WaConversation'),
+  ctrl.markUnread
+);
 // Cosmetic "typing…" signal to the customer. Rate-limited (it is keystroke-
 // driven) and deliberately unaudited — see the controller.
 router.post('/conversations/:id/typing', waTypingLimiter, ctrl.sendTyping);

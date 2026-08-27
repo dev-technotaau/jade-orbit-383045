@@ -20,6 +20,8 @@ export const API = {
     WA_MESSAGES: (id: string) => `/whatsapp/conversations/${id}/messages`,
     WA_MESSAGES_DELETE: (id: string) => `/whatsapp/conversations/${id}/messages/delete`,
     WA_READ: (id: string) => `/whatsapp/conversations/${id}/read`,
+    /** Put a triaged thread back in the unread queue. Local state only. */
+    WA_UNREAD: (id: string) => `/whatsapp/conversations/${id}/unread`,
     // "typing…" on the customer's phone while an agent composes a reply.
     WA_TYPING: (id: string) => `/whatsapp/conversations/${id}/typing`,
     // Dismiss Meta's "this customer's identity changed" warning on a thread.

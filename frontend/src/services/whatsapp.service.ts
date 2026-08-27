@@ -291,6 +291,18 @@ export const whatsappService = {
   },
 
   /**
+   * Put a triaged thread back in the unread queue.
+   *
+   * Local state only: the Cloud API has no un-read call and a read receipt, once
+   * sent, cannot be withdrawn — the customer has already seen the blue ticks.
+   * This restores our own queue position, nothing more.
+   */
+  async markUnread(id: string): Promise<ApiResponse<WaConversation>> {
+    const res = await api.post(API.SUPER_ADMIN.WA_UNREAD(id));
+    return res.data;
+  },
+
+  /**
    * Show the customer a "typing…" bubble.
    *
    * Purely cosmetic and fire-and-forget: Meta displays it for up to 25s or until
