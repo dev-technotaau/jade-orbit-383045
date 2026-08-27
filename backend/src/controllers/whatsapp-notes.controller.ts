@@ -12,6 +12,11 @@ export const list = async (req: Request, res: Response, next: NextFunction): Pro
       success: true,
       data: await listNotes(String(req.params.id), {
         limit: Number.isFinite(parsedLimit) ? parsedLimit : undefined,
+        // `?scope=contact` widens to every thread with the same person — a
+        // contact can hold one per connected number, and the note an agent
+        // wrote on the support number is exactly the history the marketing
+        // number's thread needs.
+        scope: req.query.scope === 'contact' ? 'contact' : 'conversation',
         before:
           before && !Number.isNaN(before.getTime())
             ? { at: before, id: String(req.query.beforeId ?? '') }

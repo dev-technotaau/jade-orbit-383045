@@ -347,6 +347,7 @@ model WaContact {
   campaignRecipients WaCampaignRecipient[]
   conversions        WaConversion[]
   consentEvents      WaConsentEvent[]
+  notes              WaConversationNote[]
   linkClicks         WaLinkClick[]
   // `name` and `phone` additionally carry pg_trgm GIN indexes
   // (wa_contact_name_trgm / wa_contact_phone_trgm), created outside Prisma by
@@ -1059,6 +1060,17 @@ model WaConversationNote {
   conversationId String
   conversation   WaConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   authorId       String? // operator label (free text)
+  /// The contact this note is about, denormalised from the conversation.
+  ///
+  /// Notes are keyed to a CONVERSATION, and a contact can have one thread per
+  /// connected number — so the history an agent wrote on the support number was
+  /// invisible from the marketing number's thread with the same person. The
+  /// column carries what the join cannot do cheaply on an encrypted body.
+  ///
+  /// Nullable for rows written before it existed; the read falls back to the
+  /// conversation scope, so an un-backfilled note is never lost, only unlinked.
+  contactId      String?
+  contact        WaContact?     @relation(fields: [contactId], references: [id], onDelete: Cascade)
   body           String
   /// Operator labels named with @ in this note.
   ///
@@ -1074,6 +1086,7 @@ model WaConversationNote {
   createdAt      DateTime       @default(now())
 
   @@index([conversationId])
+  @@index([contactId, createdAt])
 }
 
 /// Keyword auto-responder rule evaluated against inbound text / button replies.

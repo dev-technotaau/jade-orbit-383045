@@ -1683,8 +1683,27 @@ export const whatsappService = {
   },
 
   // ── Conversation notes ──
-  async listNotes(conversationId: string): Promise<ApiResponse<WaNote[]>> {
-    const res = await api.get(API.SUPER_ADMIN.WA_NOTES(conversationId));
+  /**
+   * @param opts.before / opts.beforeId Keyset position of the OLDEST note
+   *   already shown. The server has supported this from the start and the
+   *   client never sent it, so the panel showed the newest 200 and the rest of
+   *   a long relationship's history was simply unreachable.
+   * @param opts.scope `'contact'` widens to every thread with the same person.
+   *   A contact can hold one per connected number, so a note written on the
+   *   support number was invisible from the marketing number's thread.
+   */
+  async listNotes(
+    conversationId: string,
+    opts?: { limit?: number; before?: string; beforeId?: string; scope?: 'contact' },
+  ): Promise<ApiResponse<WaNote[]>> {
+    const res = await api.get(API.SUPER_ADMIN.WA_NOTES(conversationId), {
+      params: {
+        limit: opts?.limit,
+        before: opts?.before,
+        beforeId: opts?.beforeId,
+        scope: opts?.scope,
+      },
+    });
     return res.data;
   },
   async createNote(conversationId: string, body: string): Promise<ApiResponse<WaNote>> {

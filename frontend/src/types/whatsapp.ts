@@ -1202,8 +1202,12 @@ export interface WaKeywordRule {
 export interface WaNote {
   id: string;
   conversationId: string;
+  /** The contact this note is about; null on rows written before the column. */
+  contactId?: string | null;
   authorId: string | null;
   body: string;
+  /** Operator labels named with @ in the body, resolved against the roster. */
+  mentions?: string[];
   createdAt: string;
 }
 

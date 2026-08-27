@@ -36,6 +36,7 @@ import type {
   WaContact,
   WaContactLite,
   WaConversation,
+  WaNote,
   WaOptInStatus,
 } from '@/types/whatsapp';
 import type { ApiError } from '@/types/api';
@@ -990,11 +991,60 @@ function SnoozeControl({ conversation }: { conversation: WaConversation }) {
 /** Internal notes list + add/delete. */
 function NotesPanel({ conversationId }: { conversationId: string }) {
   const qc = useQueryClient();
+  /**
+   * Notes about the PERSON, paged.
+   *
+   * Two things the panel got wrong. It asked for the default page and never for
+   * another, so on a long relationship everything past the newest 200 was
+   * unreachable even though the server has supported keyset paging from the
+   * start. And it asked per CONVERSATION, so on a multi-number install the
+   * history an agent wrote on the support number's thread was invisible from
+   * the marketing number's thread with the same customer.
+   */
+  const [notePages, setNotePages] = useState<WaNote[]>([]);
+  const NOTES_PAGE = 50;
   const notesQuery = useQuery({
     queryKey: ['wa-notes', conversationId],
-    queryFn: () => svc.listNotes(conversationId),
+    queryFn: () => svc.listNotes(conversationId, { limit: NOTES_PAGE, scope: 'contact' }),
   });
-  const notes = notesQuery.data?.data ?? [];
+  const firstNotes = useMemo(() => notesQuery.data?.data ?? [], [notesQuery.data]);
+  // Appended pages are dropped whenever the first page reloads, so a note added
+  // or deleted elsewhere cannot leave a stale copy below the fold.
+  const [notesKey, setNotesKey] = useState<number | undefined>(undefined);
+  if (notesQuery.dataUpdatedAt !== notesKey) {
+    setNotesKey(notesQuery.dataUpdatedAt);
+    setNotePages([]);
+  }
+  const notes = useMemo(() => {
+    const seen = new Set<string>();
+    return [...firstNotes, ...notePages].filter((n) => {
+      if (seen.has(n.id)) return false;
+      seen.add(n.id);
+      return true;
+    });
+  }, [firstNotes, notePages]);
+  const [loadingOlderNotes, setLoadingOlderNotes] = useState(false);
+  const [noMoreNotes, setNoMoreNotes] = useState(false);
+  const loadOlderNotes = async () => {
+    const oldest = notes[notes.length - 1];
+    if (!oldest) return;
+    setLoadingOlderNotes(true);
+    try {
+      const res = await svc.listNotes(conversationId, {
+        limit: NOTES_PAGE,
+        before: oldest.createdAt,
+        beforeId: oldest.id,
+        scope: 'contact',
+      });
+      const page = res.data ?? [];
+      setNotePages((prev) => [...prev, ...page]);
+      if (page.length < NOTES_PAGE) setNoMoreNotes(true);
+    } catch (e) {
+      showToast.error(errorMessage(e, 'Could not load older notes'));
+    } finally {
+      setLoadingOlderNotes(false);
+    }
+  };
   const [body, setBody] = useState('');
   /**
    * @-mention autocomplete.
@@ -1145,6 +1195,14 @@ function NotesPanel({ conversationId }: { conversationId: string }) {
                 <p className="mt-0.5 text-[10px] text-[var(--text-muted)]">
                   {note.authorId ? `${note.authorId} · ` : ''}
                   {fmtDateTime(note.createdAt)}
+                  {/* Written on this contact's thread on ANOTHER of our numbers.
+                      Shown, because it is history about the same person — but
+                      marked, or it reads as something said in this thread. */}
+                  {note.conversationId !== conversationId && (
+                    <span className="ml-1 rounded bg-[var(--bg)] px-1 text-[9px] text-[var(--text-muted)]">
+                      another thread
+                    </span>
+                  )}
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-1.5 opacity-100 transition-opacity lg:opacity-0 lg:group-focus-within:opacity-100 lg:group-hover:opacity-100">
@@ -1170,6 +1228,19 @@ function NotesPanel({ conversationId }: { conversationId: string }) {
               </div>
             </div>
           ),
+        )}
+        {/* The server has supported keyset paging from the start and the client
+            never asked for it, so on a long relationship everything past the
+            first page was unreachable. */}
+        {notes.length >= NOTES_PAGE && !noMoreNotes && (
+          <button
+            type="button"
+            onClick={() => void loadOlderNotes()}
+            disabled={loadingOlderNotes}
+            className="mt-1 w-full rounded-md border border-[var(--border)] py-1 text-[11px] font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] disabled:opacity-60"
+          >
+            {loadingOlderNotes ? 'Loading…' : 'Load older notes'}
+          </button>
         )}
       </div>
       <div className="relative mt-2 space-y-1.5">

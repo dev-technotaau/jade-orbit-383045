@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { prisma } from '../config/prisma';
 import { AppError } from '../middleware/error';
 import { encryptField, decryptField, warnIfEncryptionDisabled } from '../utils/encryption';
@@ -56,13 +57,30 @@ const NOTES_PAGE_MAX = 500;
  */
 export async function listNotes(
   conversationId: string,
-  opts: { limit?: number; before?: { at: Date; id: string } } = {}
+  opts: { limit?: number; before?: { at: Date; id: string }; scope?: 'conversation' | 'contact' } = {}
 ) {
   const take = Math.min(Math.max(opts.limit ?? NOTES_PAGE_SIZE, 1), NOTES_PAGE_MAX);
   const before = opts.before;
+  // A contact can hold one thread per connected number, so notes written on the
+  // support number's thread were invisible from the marketing number's thread
+  // with the same person — the history an agent needs is about the PERSON.
+  //
+  // The conversation is still included explicitly: rows written before
+  // `contactId` existed carry null, and scoping purely by contact would hide
+  // this very thread's own history.
+  let where: Prisma.WaConversationNoteWhereInput = { conversationId };
+  if (opts.scope === 'contact') {
+    const conv = await prisma.waConversation.findUnique({
+      where: { id: conversationId },
+      select: { contactId: true },
+    });
+    if (conv?.contactId) {
+      where = { OR: [{ contactId: conv.contactId }, { conversationId }] };
+    }
+  }
   const notes = await prisma.waConversationNote.findMany({
     where: {
-      conversationId,
+      ...where,
       ...(before
         ? {
             OR: [
@@ -101,10 +119,23 @@ export async function createNote(conversationId: string, authorId: string | null
   warnIfEncryptionDisabled('conversation note');
   // Parsed BEFORE the body is encrypted — afterwards there is nothing to parse.
   const mentions = parseMentions(body, authorId);
+  // Denormalised at write time. Resolving it on READ would mean a join per note
+  // page against a body nothing can be searched on anyway; resolving it here
+  // costs one lookup per note written.
+  const conv = await prisma.waConversation.findUnique({
+    where: { id: conversationId },
+    select: { contactId: true },
+  });
   const note = await prisma.waConversationNote.create({
     // Operator free-text about a customer. Warn (once) if it is going in
     // unencrypted rather than letting the fallback pass silently.
-    data: { conversationId, authorId, body: encryptField(body), mentions },
+    data: {
+      conversationId,
+      contactId: conv?.contactId ?? null,
+      authorId,
+      body: encryptField(body),
+      mentions,
+    },
   });
   // One directed frame per named colleague. Writing "@ravi can you take this?"
   // used to reach Ravi only if Ravi happened to open that thread — which is to
