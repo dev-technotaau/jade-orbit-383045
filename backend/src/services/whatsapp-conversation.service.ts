@@ -3,7 +3,7 @@ import { env } from '../config/env';
 import type { WaMessage } from '@prisma/client';
 import { AppError } from '../middleware/error';
 import { listOperators } from '../middleware/app-password';
-import { emitWa } from '../utils/whatsapp-realtime';
+import { emitWa, emitWaToOperator } from '../utils/whatsapp-realtime';
 import { sendReadReceipt, sendTypingIndicator } from './whatsapp.service';
 import { getChannelPhoneNumberId, getDefaultChannel } from './whatsapp-channel.service';
 import { normalizeWaPhone } from './whatsapp-contact.service';
@@ -1262,11 +1262,33 @@ export async function assign(conversationId: string, userId: string | null) {
   // `assignedTo` is a free-text operator label now — there is no user table to
   // validate against, and no roles to check. Any label (or null) is accepted;
   // listAssignableAgents publishes the ones the console offers.
+  //
+  // Read first so the notification below can tell an assignment from a re-save.
+  const before = await prisma.waConversation.findUnique({
+    where: { id: conversationId },
+    select: { assignedTo: true, contact: { select: { name: true, profileName: true, phone: true } } },
+  });
   const conv = await prisma.waConversation.update({
     where: { id: conversationId },
     data: { assignedTo: userId },
   });
   emitWa('wa:conversation', { conversationId, conversation: conv }, conversationId);
+  // Tell the person, not the room.
+  //
+  // Assigning a thread was a silent database write: the assignee found out by
+  // noticing their own name on a row, which for a queue they are not currently
+  // looking at means never. Only on an actual CHANGE — re-saving the same
+  // assignee, which the bulk bar does routinely, must not re-notify.
+  if (userId && before?.assignedTo !== userId) {
+    emitWaToOperator(userId, 'wa:assigned', {
+      conversationId,
+      contactName:
+        before?.contact?.name?.trim() ||
+        before?.contact?.profileName?.trim() ||
+        before?.contact?.phone ||
+        'a conversation',
+    });
+  }
   return conv;
 }
 

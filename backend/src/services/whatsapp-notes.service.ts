@@ -1,6 +1,35 @@
 import { prisma } from '../config/prisma';
 import { AppError } from '../middleware/error';
 import { encryptField, decryptField, warnIfEncryptionDisabled } from '../utils/encryption';
+import { listOperators } from '../middleware/app-password';
+import { emitWaToOperator } from '../utils/whatsapp-realtime';
+
+/** `@handle` — the character class a label can legitimately contain. */
+const MENTION_RE = /@([A-Za-z0-9._-]{1,120})/g;
+/** A note naming more than this is a broadcast, not a mention. */
+const MAX_MENTIONS = 10;
+
+/**
+ * Operator labels named in `body`, resolved against the real roster.
+ *
+ * An `@handle` matching nobody is NOT stored. Storing it would put a mention on
+ * the note that points at no reachable socket — the author would see their
+ * colleague tagged and reasonably assume they had been told, when nothing was
+ * ever sent. Matching is case-insensitive but the CANONICAL label is stored, so
+ * `@Ravi` and `@ravi` resolve to one person rather than two.
+ *
+ * The author is excluded: nobody needs to be notified of their own note.
+ */
+function parseMentions(body: string, authorId: string | null): string[] {
+  const roster = new Map(listOperators().map((o) => [o.toLowerCase(), o]));
+  const out = new Set<string>();
+  for (const m of body.matchAll(MENTION_RE)) {
+    const hit = roster.get(m[1].toLowerCase());
+    if (hit && hit !== authorId) out.add(hit);
+    if (out.size >= MAX_MENTIONS) break;
+  }
+  return [...out];
+}
 
 // Internal notes are private agent commentary (never sent to Meta) — the most
 // candid free-text in the system. They're encrypted at rest (AES-256-GCM) and
@@ -70,11 +99,27 @@ export async function* streamNotes(conversationId: string, pageSize = NOTES_PAGE
 
 export async function createNote(conversationId: string, authorId: string | null, body: string) {
   warnIfEncryptionDisabled('conversation note');
+  // Parsed BEFORE the body is encrypted — afterwards there is nothing to parse.
+  const mentions = parseMentions(body, authorId);
   const note = await prisma.waConversationNote.create({
     // Operator free-text about a customer. Warn (once) if it is going in
     // unencrypted rather than letting the fallback pass silently.
-    data: { conversationId, authorId, body: encryptField(body) },
+    data: { conversationId, authorId, body: encryptField(body), mentions },
   });
+  // One directed frame per named colleague. Writing "@ravi can you take this?"
+  // used to reach Ravi only if Ravi happened to open that thread — which is to
+  // say, a hand-off mechanism that did not hand anything off.
+  //
+  // The preview is plaintext on purpose: the frame goes to that operator's own
+  // room, and notes are agent-only commentary they are already entitled to read.
+  for (const label of mentions) {
+    emitWaToOperator(label, 'wa:mention', {
+      conversationId,
+      noteId: note.id,
+      author: authorId,
+      preview: body.slice(0, 140),
+    });
+  }
   return { ...note, body }; // return the plaintext to the caller (don't leak ciphertext)
 }
 

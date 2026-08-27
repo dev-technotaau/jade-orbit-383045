@@ -97,6 +97,37 @@ export default function WaNotificationsProvider() {
     };
   }, [socket]);
 
+  /**
+   * Directed frames: a colleague named you in a note, or handed you a thread.
+   *
+   * These arrive on `user:<label>` rather than the shared inbox room, so this
+   * listener only ever fires for the operator they are about. Both were silent
+   * database writes before: "@ravi can you take this?" reached Ravi only if Ravi
+   * happened to open that thread, and an assignment was discovered by noticing
+   * one's own name on a row — which, for a queue nobody is currently looking at,
+   * means never.
+   *
+   * A toast rather than a browser notification: the recipient is by definition
+   * already in the app, since the frame is delivered over their live socket.
+   */
+  useEffect(() => {
+    if (!socket) return;
+    const onMention = (p: { conversationId: string; author?: string | null; preview?: string }) => {
+      showToast.info(
+        `${p.author || 'A colleague'} mentioned you: ${(p.preview || '').slice(0, 90)}`,
+      );
+    };
+    const onAssigned = (p: { conversationId: string; contactName?: string }) => {
+      showToast.info(`You were assigned ${p.contactName || 'a conversation'}`);
+    };
+    socket.on('wa:mention', onMention);
+    socket.on('wa:assigned', onAssigned);
+    return () => {
+      socket.off('wa:mention', onMention);
+      socket.off('wa:assigned', onAssigned);
+    };
+  }, [socket]);
+
   // Campaign completion. The backend fans the final frame out from
   // completeCampaign, so it arrives for a run the worker drained, one the
   // recovery cron finished and a retired drip sequence alike — and it arrives on

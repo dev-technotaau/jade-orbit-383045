@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   X,
@@ -769,6 +769,55 @@ function NotesPanel({ conversationId }: { conversationId: string }) {
   });
   const notes = notesQuery.data?.data ?? [];
   const [body, setBody] = useState('');
+  /**
+   * @-mention autocomplete.
+   *
+   * The roster is the same one the assign dropdown uses. Suggesting only real
+   * operators is the point: the server stores a mention ONLY for a label it
+   * recognises, so a free-typed `@dave` that matches nobody notifies nobody —
+   * and the author would have no way to tell.
+   */
+  const mentionAgentsQuery = useQuery({
+    queryKey: ['wa-agents'],
+    queryFn: () => svc.listAgents(),
+  });
+  const mentionAgents = useMemo(
+    () => mentionAgentsQuery.data?.data ?? [],
+    [mentionAgentsQuery.data],
+  );
+  const noteRef = useRef<HTMLTextAreaElement>(null);
+  /** The partial handle being typed, or null when the caret is not in one. */
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const mentionMatches =
+    mentionQuery === null
+      ? []
+      : mentionAgents
+          .filter((a) => agentLabel(a).toLowerCase().includes(mentionQuery.toLowerCase()))
+          .slice(0, 6);
+
+  /** Track whether the caret sits inside an `@handle` being typed. */
+  const syncMentionQuery = (value: string, caret: number) => {
+    const upto = value.slice(0, caret);
+    const m = /(?:^|\s)@([A-Za-z0-9._-]*)$/.exec(upto);
+    setMentionQuery(m ? m[1] : null);
+  };
+
+  /** Replace the partial handle at the caret with a real operator label. */
+  const insertMention = (agentName: string) => {
+    const el = noteRef.current;
+    const caret = el ? el.selectionStart : body.length;
+    const upto = body.slice(0, caret);
+    const replaced = upto.replace(/@([A-Za-z0-9._-]*)$/, `@${agentName} `);
+    const next = replaced + body.slice(caret);
+    setBody(next);
+    setMentionQuery(null);
+    requestAnimationFrame(() => {
+      el?.focus();
+      const at = replaced.length;
+      el?.setSelectionRange(at, at);
+    });
+  };
+
   // Which note is open for editing, and its working copy.
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editBody, setEditBody] = useState('');
@@ -896,19 +945,53 @@ function NotesPanel({ conversationId }: { conversationId: string }) {
           ),
         )}
       </div>
-      <div className="mt-2 space-y-1.5">
+      <div className="relative mt-2 space-y-1.5">
         <Textarea
+          ref={noteRef}
           value={body}
-          onChange={(e) => setBody(e.target.value)}
+          onChange={(e) => {
+            setBody(e.target.value);
+            syncMentionQuery(e.target.value, e.target.selectionStart ?? e.target.value.length);
+          }}
           onKeyDown={(e) => {
+            // Escape dismisses the suggestion list before it dismisses anything
+            // else, so a stray keypress does not discard a half-typed note.
+            if (e.key === 'Escape' && mentionQuery !== null) {
+              e.preventDefault();
+              setMentionQuery(null);
+              return;
+            }
             if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
               e.preventDefault();
               submit();
             }
           }}
           rows={2}
-          placeholder="Add an internal note…"
+          placeholder="Add an internal note… use @ to notify a colleague"
         />
+        {mentionMatches.length > 0 && (
+          <div
+            role="listbox"
+            aria-label="Mention a colleague"
+            className="absolute bottom-full left-0 z-20 mb-1 w-56 overflow-hidden rounded-lg border border-[var(--border)] bg-white shadow-lg"
+          >
+            {mentionMatches.map((a) => (
+              <button
+                key={a.id}
+                type="button"
+                role="option"
+                aria-selected={false}
+                // Keeps the caret in the textarea; a plain click would blur it
+                // first and the handle to replace would be gone.
+                onMouseDown={(ev) => ev.preventDefault()}
+                onClick={() => insertMention(agentLabel(a))}
+                className="block w-full px-3 py-1.5 text-left text-xs text-[var(--text)] hover:bg-[var(--bg-secondary)]"
+              >
+                {agentLabel(a)}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="flex justify-end">
           <Button
             size="sm"

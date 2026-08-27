@@ -8,6 +8,22 @@ import { getIO } from '../socket';
 const INBOX_ROOM = 'wa:inbox';
 const convRoom = (id: string) => `wa:conv:${id}`;
 
+/**
+ * Fan out to ONE operator's own sockets.
+ *
+ * `socket.ts` joins every connection to `user:<operator label>`. `emitWa` below
+ * broadcasts to the whole inbox room, which is right for a message but wrong for
+ * a mention: showing "@ravi, can you take this?" to the entire team turns a
+ * private nudge into a public one.
+ */
+export function emitWaToOperator(operator: string, event: string, payload: unknown): void {
+  try {
+    getIO().to(`user:${operator}`).emit(event, payload);
+  } catch {
+    /* socket not initialised yet — non-critical */
+  }
+}
+
 export function emitWa(event: string, payload: unknown, conversationId?: string): void {
   try {
     const io = getIO();

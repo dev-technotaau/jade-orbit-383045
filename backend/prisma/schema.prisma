@@ -1051,6 +1051,17 @@ model WaConversationNote {
   conversation   WaConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   authorId       String? // operator label (free text)
   body           String
+  /// Operator labels named with @ in this note.
+  ///
+  /// Parsed ONCE at write time and stored, because the body is AES-encrypted at
+  /// rest: a mention can never be found by querying the text, so a note that
+  /// only carried the raw body could not answer "was I mentioned?" without
+  /// decrypting every note in the system.
+  ///
+  /// Only labels this deployment actually recognises are stored — an @handle
+  /// matching nobody would claim a colleague had been notified when nothing was
+  /// ever sent.
+  mentions       String[]       @default([])
   createdAt      DateTime       @default(now())
 
   @@index([conversationId])
