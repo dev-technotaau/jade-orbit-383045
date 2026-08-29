@@ -12,6 +12,7 @@ import {
   UserCircle2,
   Images,
   BotOff,
+  Globe,
   IdCard,
   Megaphone,
   Phone,
@@ -22,6 +23,8 @@ import {
   ShieldX,
 } from 'lucide-react';
 import ContactDetailsDrawer from '@/components/whatsapp/ContactDetailsDrawer';
+import { isUnsociableHour, localTimeFor, phoneRegion } from '@/lib/wa-phone-region';
+import { LIFECYCLE_KEY, LIFECYCLE_STAGES, lifecycleOf, lifecycleStage } from '@/lib/wa-lifecycle';
 import Input from '@/components/ui/Input';
 import Textarea from '@/components/ui/Textarea';
 import Button from '@/components/ui/Button';
@@ -80,7 +83,16 @@ type ThreadContact = WaContactLite &
   Partial<
     Pick<
       WaContact,
-      'tags' | 'optInAt' | 'optInSource' | 'optOutAt' | 'lastOutboundAt' | 'createdAt'
+      // `attributes` arrives now that `getById` selects it explicitly — the
+      // change that also stopped that route shipping `consentEvidence` as
+      // ciphertext. It carries the reserved `lifecycle` key.
+      | 'tags'
+      | 'attributes'
+      | 'optInAt'
+      | 'optInSource'
+      | 'optOutAt'
+      | 'lastOutboundAt'
+      | 'createdAt'
     >
   >;
 
@@ -245,6 +257,49 @@ function ContactCard({
   /** The full contact record, opened by id — the panel knows one either way. */
   const [recordOpen, setRecordOpen] = useState(false);
 
+  /**
+   * What the phone number can honestly tell us.
+   *
+   * Meta supplies no timezone, country or language for a contact, so an agent
+   * had no way to know they were about to message someone at 3am — a quality
+   * risk as much as a rudeness. The calling code is the only signal, and a
+   * country spanning several zones deliberately yields NO clock: a confident
+   * wrong time is worse than none, because an agent will act on it.
+   */
+  const region = phoneRegion(contact.phone);
+  // Recomputed on the same 60s tick the window countdown uses, so the clock is
+  // live rather than frozen at whenever the panel mounted.
+  const [clockTick, setClockTick] = useState(0);
+  useEffect(() => {
+    const iv = window.setInterval(() => setClockTick((n) => n + 1), 60_000);
+    return () => window.clearInterval(iv);
+  }, []);
+  const localTime = useMemo(
+    // `clockTick` is the dependency that makes this re-run; the value is unused.
+    () => localTimeFor(region, new Date()),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [region, clockTick],
+  );
+  const unsociable = useMemo(
+    () => isUnsociableHour(region, new Date()),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [region, clockTick],
+  );
+
+  const lifecycle = lifecycleOf(contact.attributes);
+  const lifecycleMut = useMutation({
+    // Through the same sparse attribute patch P2 added — so a stage is a normal
+    // attribute, targetable by every saved segment and readable from a campaign
+    // template as {{attr.lifecycle}} with no extra plumbing.
+    mutationFn: (value: string | null) =>
+      svc.updateContact(contact.id, { attributes: { [LIFECYCLE_KEY]: value } }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['wa-conversation', conversationId] });
+      qc.invalidateQueries({ queryKey: ['wa-contacts'] });
+    },
+    onError: (e) => showToast.error(errorMessage(e, 'Could not set the lifecycle stage')),
+  });
+
   const copyPhone = () => {
     navigator.clipboard?.writeText(contact.phone).then(
       () => showToast.success('Copied to clipboard'),
@@ -380,6 +435,78 @@ function ContactCard({
           <IconButton onClick={copyPhone} label="Copy phone number">
             <Copy className="h-3.5 w-3.5" />
           </IconButton>
+        </div>
+
+        {/* Where they are, and what time it is there.
+            Estimated from the calling code and LABELLED as such — the number can
+            be roaming, ported, or virtual. A multi-zone country shows the
+            country alone: a confident wrong clock is worse than none. */}
+        {region && (
+          <div className="flex items-center gap-1.5">
+            <Globe className="h-3 w-3 shrink-0 text-[var(--text-muted)]" />
+            <span
+              className="min-w-0 flex-1 truncate text-[11px] text-[var(--text-secondary)]"
+              title={
+                region.multiZone
+                  ? `${region.country} spans several time zones — no local time can be inferred from the number alone`
+                  : `Estimated from the +${region.code} calling code; the number may be roaming or ported`
+              }
+            >
+              {region.country}
+              {localTime && (
+                <>
+                  {' · '}
+                  <span className={cn(unsociable && 'font-medium text-amber-700')}>
+                    {localTime} local
+                  </span>
+                </>
+              )}
+              {region.languages.length > 0 && (
+                <span className="text-[var(--text-muted)]">
+                  {' · '}
+                  {region.languages.join('/').toUpperCase()}
+                </span>
+              )}
+            </span>
+          </div>
+        )}
+        {/* Advisory, never a block: a customer who wrote to US first is owed a
+            reply whatever the hour. This warns before an UNPROMPTED send. */}
+        {unsociable && (
+          <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-900">
+            It is likely outside waking hours for this contact. A reply inside their open window is
+            fine; think twice before starting a new conversation.
+          </p>
+        )}
+
+        {/* Lifecycle stage — a reserved attribute, so every saved segment can
+            already target it and a template can read {{attr.lifecycle}}. */}
+        <div className="flex items-center gap-1.5">
+          <label
+            htmlFor="wa-lifecycle"
+            className="shrink-0 text-[10px] font-medium tracking-wide text-[var(--text-muted)] uppercase"
+          >
+            Stage
+          </label>
+          <select
+            id="wa-lifecycle"
+            value={lifecycle ?? ''}
+            disabled={lifecycleMut.isPending}
+            onChange={(e) => lifecycleMut.mutate(e.target.value || null)}
+            className="min-w-0 flex-1 rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 py-0.5 text-[11px] text-[var(--text)] outline-none focus:border-[var(--primary)] disabled:opacity-60"
+          >
+            <option value="">Not set</option>
+            {LIFECYCLE_STAGES.map((st) => (
+              <option key={st.value} value={st.value}>
+                {st.label}
+              </option>
+            ))}
+            {/* An import can write its own vocabulary. Showing it beats
+                silently displaying "Not set" over a value that exists. */}
+            {lifecycle && !lifecycleStage(lifecycle) && (
+              <option value={lifecycle}>{lifecycle}</option>
+            )}
+          </select>
         </div>
 
         {/* The rich record — attributes, consent history and provenance,
