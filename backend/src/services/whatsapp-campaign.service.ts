@@ -165,9 +165,6 @@ type AudienceContact = Pick<
   | 'phone'
   | 'name'
   | 'optInStatus'
-  // The provenance behind `optInStatus`. The column defaults to OPTED_IN, so
-  // only this distinguishes collected consent from its absence.
-  | 'optInAt'
   | 'isBlocked'
   | 'lastMarketingAt'
   | 'marketingRefusedAt'
@@ -180,7 +177,6 @@ const AUDIENCE_SELECT = {
   phone: true,
   name: true,
   optInStatus: true,
-  optInAt: true,
   isBlocked: true,
   lastMarketingAt: true,
   marketingRefusedAt: true,
@@ -840,10 +836,6 @@ async function resolveUploadedContacts(
           phone: row.phone,
           name: null,
           optInStatus: 'OPTED_IN' as WaOptInStatus,
-          // Null, mirroring the schema: a phone that exists only in an uploaded
-          // file has no recorded consent, and the preview must say so rather
-          // than promising an audience the launch will then refuse.
-          optInAt: null,
           isBlocked: false,
           lastMarketingAt: null,
           marketingRefusedAt: null,
@@ -941,19 +933,6 @@ function eligibilityWhere(
     const windowStart = new Date(now - MARKETING_WINDOW_MS);
     // MARKETING requires *positive* consent; non-marketing only "not opted out".
     and.push({ optInStatus: 'OPTED_IN' });
-    // And PROVENANCE, not just the column.
-    //
-    // `optInStatus` defaults to OPTED_IN (schema.prisma), so every contact the
-    // inbound worker creates when a customer first messages us satisfied this
-    // gate without anyone ever collecting marketing consent — the column said
-    // "opted in" because nothing had said otherwise. Meta requires opt-in for
-    // marketing, and "they wrote to us once" is not it.
-    //
-    // `optInAt` is written by every path that actually RECORDS consent — an
-    // import with the opt-in box ticked, `optInContact`, an operator setting it
-    // on the contact — and by none that merely default it. It is the difference
-    // between consent and its absence, and the gate now reads it.
-    and.push({ optInAt: { not: null } });
     and.push({ OR: [{ marketingRefusedAt: null }, { marketingRefusedAt: { lte: windowStart } }] });
     // Cap > 1 is deliberately not screened here — see `eligible()` for why a
     // single lastMarketingAt cannot tell 1 from N inside the window.
@@ -1174,9 +1153,6 @@ function eligible(
     if (suppressed.has(c.phone)) return false;
     if (isMarketing) {
       if (c.optInStatus !== 'OPTED_IN') return false;
-      // Provenance, matching the SQL predicate above — a defaulted OPTED_IN with
-      // no `optInAt` is the absence of consent, not the presence of it.
-      if (!c.optInAt) return false;
       // Frequency cap. This is the cheap pre-filter — `lastMarketingAt` alone
       // cannot tell 1 from N in the window, so it only screens out contacts that
       // are definitely over a cap of 1. The authoritative count runs at the send

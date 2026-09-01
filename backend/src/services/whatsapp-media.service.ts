@@ -18,16 +18,6 @@ import { AppError } from '../middleware/error';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-/**
- * Largest attachment this worker will pull into memory to archive.
- *
- * Meta's own ceiling is 100 MB (video/document), and this runs at concurrency 4
- * with a second transient copy for the thumbnail. Above this the file stays on
- * Meta's copy for its ~30-day window and the row records why, which is a better
- * outcome than the pod being OOM-killed mid-campaign.
- */
-const ARCHIVE_MAX_BYTES = 25 * 1024 * 1024;
-
 /** Resolve a Meta media id to its short-lived download URL + mime type. */
 async function getMediaMeta(mediaId: string): Promise<{ url: string; mime: string } | null> {
   const token = env.META_WHATSAPP_TOKEN;
@@ -70,12 +60,6 @@ export type ArchiveResult =
    */
   | { ok: true; key: string; thumbKey: string | null; size: number }
   | { ok: false; reason: 'r2-unconfigured' }
-  /**
-   * Above the in-memory archival ceiling. PERMANENT, not transient: the file
-   * will be exactly as large on every retry, so the job must complete rather
-   * than spend its whole backoff schedule proving it.
-   */
-  | { ok: false; reason: 'too-large' }
   | { ok: false; reason: 'transient' };
 
 /**
@@ -158,21 +142,6 @@ export async function archiveInboundMedia(
     // eslint-disable-next-line n/no-unsupported-features/node-builtins
     const media = await fetch(meta.url, { headers: { Authorization: `Bearer ${token}` } });
     if (!media.ok) return { ok: false, reason: 'transient' };
-    // Checked BEFORE buffering.
-    //
-    // `arrayBuffer()` pulls the whole attachment into memory, and this worker
-    // runs at concurrency 4 — so four 100 MB videos (Meta's own ceiling) is
-    // 400 MB transient, plus a second copy while the thumbnail is derived, on a
-    // container sized for none of that. A permanent SKIP rather than a retry:
-    // the file will be exactly as large next time.
-    const declared = Number(media.headers.get('content-length') ?? 0);
-    if (declared > ARCHIVE_MAX_BYTES) {
-      logger.warn(
-        `WhatsApp media ${mediaId} is ${Math.round(declared / 1024 / 1024)}MB — above the ` +
-          `${ARCHIVE_MAX_BYTES / 1024 / 1024}MB archival ceiling; left on Meta's copy only`
-      );
-      return { ok: false, reason: 'too-large' };
-    }
     const buf = Buffer.from(await media.arrayBuffer());
     const mime = meta.mime || fallbackMime || 'application/octet-stream';
     // Random key, NOT one derived from the Meta media id.

@@ -116,15 +116,6 @@ export function createWhatsappMediaWorker(): Worker<WhatsappMediaJobData> {
             // queued when the configuration changed.
             return { archived: false, skipped: 'r2-unconfigured' };
           }
-          if (result.reason === 'too-large') {
-            // Permanent, so complete rather than retry — the file is the same
-            // size every time. The row records SKIPPED, which the inbox already
-            // renders as "not archived" rather than "still downloading", so the
-            // operator is told the truth: Meta's ~30-day copy is the only one.
-            waMediaArchiveTotal.inc({ result: 'skipped' });
-            await stampArchiveStatus(messageId, 'SKIPPED');
-            return { archived: false, skipped: 'too-large' };
-          }
           // Transient (Meta CDN blip, credential rotation, bucket quota). Throw so
           // BullMQ retries within Meta's ~30-day media availability window.
           waMediaArchiveTotal.inc({ result: 'transient' });

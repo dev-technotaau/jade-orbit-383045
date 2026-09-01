@@ -703,10 +703,7 @@ function buildTemplateMessagePayload(
  * the same template a second time.
  */
 export async function assertSendAllowed(p: {
-  contact: Pick<
-    WaContact,
-    'id' | 'optInStatus' | 'optInAt' | 'marketingRefusedAt' | 'marketingRefusedCode'
-  >;
+  contact: Pick<WaContact, 'id' | 'optInStatus' | 'marketingRefusedAt' | 'marketingRefusedCode'>;
   category?: WaTemplateCategory | null;
   templateName?: string | null;
   templateLanguage?: string | null;
@@ -726,24 +723,6 @@ export async function assertSendAllowed(p: {
 
   if (p.contact.optInStatus === 'OPTED_OUT') {
     throw new AppError('Contact has opted out of marketing messages', 409, 'WA_OPTED_OUT');
-  }
-
-  // Provenance, not just the column.
-  //
-  // `optInStatus` defaults to OPTED_IN, so a contact created when a customer
-  // first messaged us satisfied this gate with nobody having collected
-  // marketing consent. `optInAt` is written by every path that actually records
-  // it and by none that merely default it — this is the difference between
-  // consent and its absence, and Meta requires the former for MARKETING.
-  //
-  // The campaign audience filter enforces the same predicate; this catches the
-  // paths that never go through it (manual template sends, drips, send-later).
-  if (p.contact.optInAt == null) {
-    throw new AppError(
-      'No recorded marketing opt-in for this contact — record consent before sending a marketing template.',
-      409,
-      'WA_NO_OPT_IN_RECORD'
-    );
   }
 
   // Refusal cooldown -- deliberately NOT part of the numeric cap.

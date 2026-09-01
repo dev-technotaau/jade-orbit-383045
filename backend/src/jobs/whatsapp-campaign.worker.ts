@@ -20,7 +20,6 @@ import {
   isAccountBlockingCode,
 } from '../services/whatsapp-error-codes';
 import { withinBusinessHours } from '../utils/whatsapp-business-hours';
-import { isUnsociableHour, phoneRegion } from '../utils/wa-phone-region';
 import { appendRecipientToken, getCampaignLinkCodes } from '../services/whatsapp-shortlink.service';
 import { emitWa } from '../utils/whatsapp-realtime';
 import { AuditService } from '../services/audit.service';
@@ -42,11 +41,6 @@ interface CampaignBatchResult {
   skippedCount?: number;
   /** The batch stopped (or never started) because the daily messaging tier is spent. */
   tierExhausted?: boolean;
-  /**
-   * Recipients left PENDING because it is the middle of the night WHERE THEY
-   * ARE — estimated from the calling code. They go out on a later batch.
-   */
-  heldForLocalHours?: number;
   /** The batch was held because the campaign only sends inside business hours. */
   outsideBusinessHours?: boolean;
   /** The batch stopped early because Meta rejected the channel's access token. */
@@ -258,7 +252,7 @@ export async function processCampaignBatch(
   // recipient go out exactly once.
   const recipients = await prisma.waCampaignRecipient.findMany({
     where: { id: { in: data.recipientIds } },
-    include: { contact: { select: { isBlocked: true, optInStatus: true, phone: true } } },
+    include: { contact: { select: { isBlocked: true, optInStatus: true } } },
   });
 
   /** Set when the whole batch must stop: pause/cancel, shutdown, tier, token. */
@@ -271,9 +265,6 @@ export async function processCampaignBatch(
    * length of the backoff and roll their recipients back for nothing.
    */
   let throttledUntil = 0;
-
-  /** Recipients deferred because it is the middle of the night where they are. */
-  let heldForLocalHours = 0;
 
   const sendOne = async (recipient: (typeof recipients)[number]): Promise<void> => {
     // Honor pause/cancel issued mid-batch.
@@ -298,25 +289,6 @@ export async function processCampaignBatch(
         data: { status: 'SKIPPED' },
       });
       return;
-    }
-
-    // "Respect business hours", evaluated where the CUSTOMER is.
-    //
-    // The batch-level gate above tests the BUSINESS's clock, which is the right
-    // question for a domestic audience and the wrong one for the case the flag
-    // was written for: a campaign sent at 10am IST reaches a customer in São
-    // Paulo at 01:30. The estimate comes from the calling code, so a country
-    // spanning several zones yields no opinion and falls through to the business
-    // grid — a confident wrong hour would be worse than deferring to it.
-    //
-    // LEFT PENDING, not skipped: the recovery cron re-batches them, so the
-    // message goes out when it is a reasonable hour there rather than never.
-    if (campaign.respectBusinessHours) {
-      const region = phoneRegion(recipient.contact.phone);
-      if (region?.timezone && isUnsociableHour(region)) {
-        heldForLocalHours++;
-        return;
-      }
     }
     // Re-validate consent at send time (the audience may be stale): a
     // MARKETING send needs an active opt-in, and ANY category must skip a
@@ -696,9 +668,6 @@ export async function processCampaignBatch(
     skippedCount: progress?.skippedCount ?? 0,
     ...(tierExhausted ? { tierExhausted: true } : {}),
     ...(tokenRejected ? { tokenRejected: true } : {}),
-    // Reported, so a batch that appears to have done nothing has a reason
-    // attached rather than looking stalled.
-    ...(heldForLocalHours ? { heldForLocalHours } : {}),
   };
 }
 
