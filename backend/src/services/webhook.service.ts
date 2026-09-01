@@ -51,6 +51,20 @@ export const webhookService = {
         // the operator's side the toggle simply did not work.
         ...(data.isActive === true ? { failureCount: 0 } : {}),
       },
+      // Same field list as the read above, and for the same reason: an update
+      // with no `select` returns the whole row, so editing a description handed
+      // back the signing secret.
+      select: {
+        id: true,
+        url: true,
+        events: true,
+        isActive: true,
+        description: true,
+        failureCount: true,
+        lastTriggeredAt: true,
+        createdAt: true,
+        updatedAt: true,
+      },
     });
   },
 
@@ -102,7 +116,12 @@ export const webhookService = {
       select: {
         id: true,
         url: true,
-        secret: true,
+        // NOT `secret`. The contract this file states is that the signing
+        // secret is shown once, on create — but GET returned it on every read,
+        // so it sat in the browser cache, in any HAR capture, and in the console
+        // of anyone who opened the endpoint detail. `register` stays the sole
+        // emitter; recovering a lost one is a rotation, which is a new secret
+        // and an audit row rather than a quiet re-read.
         events: true,
         isActive: true,
         description: true,

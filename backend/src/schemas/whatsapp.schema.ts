@@ -1479,6 +1479,10 @@ export function webhookHostIssue(hostname: string): string | null {
 
   // IPv6 loopback / unspecified.
   if (host === '::1' || host === '::') return 'Host is loopback';
+  // IPv6 unique-local (fc00::/7) and link-local (fe80::/10). The IPv4 blocks
+  // below say nothing about either, and a dual-stack host resolves to both.
+  if (/^f[cd]/i.test(host)) return 'Host is a unique-local IPv6 address';
+  if (/^fe[89ab]/i.test(host)) return 'Host is a link-local IPv6 address';
   // IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1) — pull out the trailing dotted quad.
   const mapped = host.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
   const ipv4 = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host) ? host : (mapped?.[1] ?? null);
@@ -1493,6 +1497,10 @@ export function webhookHostIssue(hostname: string): string | null {
     if (o[0] === 192 && o[1] === 168) return 'Host is a private address'; // 192.168.0.0/16
     if (o[0] === 172 && o[1] >= 16 && o[1] <= 31) return 'Host is a private address'; // 172.16.0.0/12
     if (o[0] === 169 && o[1] === 254) return 'Host is link-local (cloud metadata)'; // 169.254.0.0/16
+    // 100.64.0.0/10 — carrier-grade NAT, and the range Kubernetes and several
+    // clouds hand to internal service meshes. Reachable from a pod and not
+    // covered by any of the RFC-1918 blocks above.
+    if (o[0] === 100 && o[1] >= 64 && o[1] <= 127) return 'Host is a carrier-grade NAT address';
   }
   return null;
 }

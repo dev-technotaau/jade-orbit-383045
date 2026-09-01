@@ -144,7 +144,15 @@ async function alreadyRecorded(
 export const audit = (action: string, entity: string, options: AuditOptions = {}) => {
   return async (req: Request, res: Response, next: NextFunction) => {
     if (req.user) {
-      const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+      // `req.ip`, NOT the raw header.
+      //
+      // `x-forwarded-for` is caller-controlled: anyone who can reach the API can
+      // set it, so every audit row's `ipAddress` was whatever the actor chose to
+      // put there — in the one table whose entire purpose is attributing an
+      // action to someone. Express derives `req.ip` from the same header but
+      // only as far as the configured `trust proxy` depth (app.ts), which is
+      // what makes it the hop we actually trust.
+      const ip = req.ip ?? req.socket.remoteAddress;
       const userAgent = req.get('User-Agent');
       // `req.body` can be undefined on POSTs sent with no body / no JSON
       // Content-Type (e.g. action routes like `/templates/sync`), so guard it —
@@ -225,9 +233,16 @@ export const audit = (action: string, entity: string, options: AuditOptions = {}
               body: redactedBody,
               status: res.statusCode,
               success: ok,
+              // The raw chain, kept for diagnostics but under a name that says
+              // it is untrusted — the same separation `/unlock/whoami` makes
+              // between `ip` and `xForwardedFor`. `ipAddress` above is the
+              // derived, trust-proxy-bounded value.
+              ...(req.headers['x-forwarded-for']
+                ? { xForwardedFor: String(req.headers['x-forwarded-for']) }
+                : {}),
               ...extraDetails,
             },
-            ipAddress: Array.isArray(ip) ? ip[0] : ip,
+            ipAddress: ip,
             userAgent,
           });
         })();

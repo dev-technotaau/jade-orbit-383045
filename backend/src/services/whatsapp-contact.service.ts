@@ -1740,7 +1740,17 @@ export async function importContacts(
           ...(row.attributes && Object.keys(row.attributes).length
             ? { attributes: row.attributes }
             : {}),
-          ...optInData,
+          // A SUPPRESSED number is never created as opted in, whatever the
+          // import asserts.
+          //
+          // The number is on the do-not-contact list — because they typed STOP,
+          // or because their data was erased on request and the suppression
+          // entry is the only thing that survived the row being destroyed. An
+          // import is an assertion by the operator and does not outrank either.
+          // Creating the row OPTED_IN with a `suppressedAt` flag beside it left
+          // a record that reads as consented, and only the send-time
+          // suppression check stood between that and marketing them again.
+          ...(alreadySuppressed.has(row.phone) ? { optInStatus: 'UNKNOWN' as const } : optInData),
         });
         continue;
       }
@@ -2033,14 +2043,22 @@ export async function eraseContactData(
   let mediaDeleted = 0;
   let mediaAfter: string | null = null;
   for (;;) {
-    const mediaRows: Array<{ id: string; mediaUrl: string | null }> =
+    // BOTH R2 keys. A photo archived from this contact produces two objects: the
+    // original under `mediaUrl` and a 320px derivative under `mediaThumbUrl`,
+    // written by the media worker for every ordinary image mime. Only the first
+    // was ever deleted, so an erasure left a readable copy of every photo the
+    // data subject sent sitting in the bucket — and because the row went on
+    // NAMING it, the nightly orphan reaper counted it as live and could never
+    // reclaim it either. The retention prune has always deleted both; that
+    // reasoning was simply never carried into the erasure path.
+    const mediaRows: Array<{ id: string; mediaUrl: string | null; mediaThumbUrl: string | null }> =
       await prisma.waMessage.findMany({
         where: {
           contactId,
-          mediaUrl: { not: null },
+          OR: [{ mediaUrl: { not: null } }, { mediaThumbUrl: { not: null } }],
           ...(mediaAfter ? { id: { gt: mediaAfter } } : {}),
         },
-        select: { id: true, mediaUrl: true },
+        select: { id: true, mediaUrl: true, mediaThumbUrl: true },
         // Keyed on the primary key, not createdAt: the scrub below clears
         // `mediaUrl`, so a time-ordered walk would be paging a predicate its own
         // side effects are emptying underneath it.
@@ -2049,12 +2067,14 @@ export async function eraseContactData(
       });
     if (mediaRows.length === 0) break;
     for (const row of mediaRows) {
-      if (!row.mediaUrl) continue;
-      try {
-        await deleteFileFromR2(row.mediaUrl);
-        mediaDeleted++;
-      } catch {
-        // R2 not configured or object already gone — keep scrubbing the DB.
+      for (const key of [row.mediaUrl, row.mediaThumbUrl]) {
+        if (!key) continue;
+        try {
+          await deleteFileFromR2(key);
+          mediaDeleted++;
+        } catch {
+          // R2 not configured or object already gone — keep scrubbing the DB.
+        }
       }
     }
     if (mediaRows.length < ERASE_MEDIA_PAGE_SIZE) break;
@@ -2068,6 +2088,10 @@ export async function eraseContactData(
       text: null,
       payload: Prisma.JsonNull,
       mediaUrl: null,
+      // Cleared with the rest, or the row goes on naming an object that has just
+      // been deleted — which is also what made the orphan reaper treat the
+      // thumbnail as live and refuse to reclaim it.
+      mediaThumbUrl: null,
       mediaId: null,
     },
   });
@@ -2102,6 +2126,37 @@ export async function eraseContactData(
       phone: `erased:${contactId}`,
     },
   });
+
+  // (d1) A do-not-contact record that OUTLIVES the contact row.
+  //
+  // Erasure destroys everything that identified this person, including the
+  // consent state — so the next CSV import carrying their number recreated them
+  // as a fresh contact, opted in by column default, and the erasure was undone
+  // by an operator who had no way to know. Retaining a suppression entry after
+  // an erasure request is the standard DPDP/GDPR exception precisely because it
+  // is the only mechanism that can survive the record being destroyed.
+  //
+  // Written from `before.phone`, captured at the top of this function for the
+  // same reason: `phone` has just become the erased sentinel.
+  if (before?.phone && !before.phone.startsWith('erased:')) {
+    await prisma.waSuppression
+      .upsert({
+        where: { phone: before.phone },
+        create: {
+          phone: before.phone,
+          createdBy: 'erasure',
+          reason: 'Right-to-erasure request — do not re-import or contact',
+        },
+        // An existing entry already blocks them; only the provenance is worth
+        // correcting, so a STOP that predates the erasure is not overwritten
+        // with a weaker reason.
+        update: { createdBy: 'erasure' },
+      })
+      .catch(() => {
+        // Never fail the erasure over the tombstone: the destruction is the
+        // legal obligation, this is the belt-and-braces on top of it.
+      });
+  }
 
   // (d2) Consent history. The EVENTS stay — they are the audit trail that proves
   // the erasure happened and keep the aggregate opt-out trend honest — but their

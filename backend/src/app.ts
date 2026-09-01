@@ -53,7 +53,6 @@ const apiV1Router = Router();
  */
 app.set('trust proxy', parseInt(env.TRUST_PROXY_HOPS, 10));
 
-
 import { xssSanitize } from './middleware/xss-sanitize';
 import { enforceContentType } from './middleware/content-type';
 import { ddosProtection } from './middleware/ddos-protection';
@@ -280,22 +279,53 @@ app.get('/api/v1/webhooks/whatsapp', webhookLimiter, verifyWhatsappWebhook);
 // Responses are base64 ciphertext with a text/plain content type - Meta rejects
 // a JSON-wrapped reply.
 // ----------------------------------------------------------
-app.post('/api/v1/webhooks/flows-data', webhookLimiter, async (req: Request, res: Response) => {
-  try {
-    const { request, aesKey, iv } = decryptFlowRequest(req.body);
-    const response = await handleFlowRequest(request);
-    res
-      .status(200)
-      .type('text/plain')
-      .send(encryptFlowResponse(response, aesKey, iv));
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    logger.error('WhatsApp Flow data-exchange failed', { err: message });
-    // 421 is what Meta documents for "cannot decrypt" - it tells the client to
-    // refresh the public key rather than showing the customer a dead end.
-    res.status(421).json({ error: message });
+app.post(
+  '/api/v1/webhooks/flows-data',
+  webhookLimiter,
+  // A body parser, which this route never had.
+  //
+  // It is mounted outside the global `express.json()` (it answers `text/plain`
+  // and needs its own limit), so `req.body` was `undefined` on every request and
+  // `decryptFlowRequest` threw a TypeError before it could decrypt anything —
+  // reflected verbatim to an unauthenticated caller by the handler below. The
+  // 256kb cap matches the other public ingest routes; a Flow exchange is a few
+  // hundred bytes of ciphertext.
+  express.json({ limit: '256kb' }),
+  async (req: Request, res: Response) => {
+    try {
+      // Shape-checked BEFORE decrypting, so a missing or malformed body is a 400
+      // the caller can act on rather than an exception thrown from inside the
+      // crypto path.
+      const b = req.body as Record<string, unknown> | undefined;
+      if (
+        !b ||
+        typeof b.encrypted_flow_data !== 'string' ||
+        typeof b.encrypted_aes_key !== 'string' ||
+        typeof b.initial_vector !== 'string'
+      ) {
+        res.status(400).json({ error: 'Malformed Flow request' });
+        return;
+      }
+      const { request, aesKey, iv } = decryptFlowRequest(req.body);
+      const response = await handleFlowRequest(request);
+      res
+        .status(200)
+        .type('text/plain')
+        .send(encryptFlowResponse(response, aesKey, iv));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error('WhatsApp Flow data-exchange failed', { err: message });
+      // 421 is what Meta documents for "cannot decrypt" - it tells the client to
+      // refresh the public key rather than showing the customer a dead end.
+      //
+      // A FIXED string, not the exception text. This endpoint is public and
+      // unauthenticated, and `message` here is whatever the crypto layer threw —
+      // key material state, buffer lengths, internal paths. Meta acts on the 421
+      // alone; the detail belongs in the log line above, which has the request id.
+      res.status(421).json({ error: 'Could not decrypt request' });
+    }
   }
-});
+);
 
 app.post(
   '/api/v1/webhooks/whatsapp',

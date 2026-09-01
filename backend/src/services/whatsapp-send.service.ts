@@ -1227,6 +1227,10 @@ function isSafePublicMediaUrl(link: string): boolean {
 
   // IPv6 loopback / unspecified.
   if (host === '::1' || host === '::') return false;
+  // IPv6 unique-local (fc00::/7) and link-local (fe80::/10) — neither is covered
+  // by the IPv4 blocks below, and a dual-stack host resolves to both.
+  if (/^f[cd]/i.test(host)) return false;
+  if (/^fe[89ab]/i.test(host)) return false;
   // IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1) — pull out the trailing dotted quad.
   const mapped = host.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
   const ipv4 = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host) ? host : (mapped?.[1] ?? null);
@@ -1239,6 +1243,10 @@ function isSafePublicMediaUrl(link: string): boolean {
     if (o[0] === 192 && o[1] === 168) return false; // 192.168.0.0/16
     if (o[0] === 172 && o[1] >= 16 && o[1] <= 31) return false; // 172.16.0.0/12
     if (o[0] === 169 && o[1] === 254) return false; // 169.254.0.0/16 link-local / metadata
+    // 100.64.0.0/10 — carrier-grade NAT, and what Kubernetes and several clouds
+    // use for internal service ranges. Reachable from a pod, covered by none of
+    // the RFC-1918 blocks above.
+    if (o[0] === 100 && o[1] >= 64 && o[1] <= 127) return false;
   }
   return true;
 }

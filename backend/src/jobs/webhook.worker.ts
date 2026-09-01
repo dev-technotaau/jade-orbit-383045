@@ -166,12 +166,33 @@ export function createWebhookWorker(): Worker<WebhookJobData> {
                 'x-webhook-delivery': job.id || '',
               },
               body,
+              // The SSRF check above validates the URL the operator REGISTERED.
+              // Following a redirect would hand the destination back to whoever
+              // controls that endpoint: one 302 to 169.254.169.254 and the
+              // allowlist is bypassed — with the response body then stored on
+              // the delivery row and served back through the console, which
+              // turns the bypass into a read primitive against cloud metadata.
+              //
+              // A subscriber has no legitimate reason to redirect a signed POST:
+              // the signature is over the body, and a redirect that drops or
+              // replays it is a broken integration either way.
+              redirect: 'manual',
               signal: AbortSignal.timeout(10000),
             });
 
             statusCode = response.status;
             responseBody = await response.text().catch(() => '');
-            success = response.ok;
+            // A 3xx is a FAILED delivery, not a success. `response.ok` is false
+            // for 3xx already, but the reason has to say why or the operator
+            // reads it as an outage at their end.
+            if (statusCode >= 300 && statusCode < 400) {
+              error =
+                `Endpoint redirected (${statusCode}) — redirects are not followed. ` +
+                'Register the final URL directly.';
+              success = false;
+            } else {
+              success = response.ok;
+            }
 
             if (!response.ok) {
               error = `HTTP ${response.status}: ${responseBody?.substring(0, 500)}`;
