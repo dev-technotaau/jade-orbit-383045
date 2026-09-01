@@ -33,6 +33,7 @@ import Select from '@/components/ui/Select';
 import Textarea from '@/components/ui/Textarea';
 import PhoneInput from '@/components/ui/PhoneInput';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { useClickOutside } from '@/hooks/use-click-outside';
 import { whatsappService as svc } from '@/services/whatsapp.service';
@@ -41,7 +42,6 @@ import MarketingTemplateAddOns, {
   useMarketingAddOnState,
   buildMarketingAddOnComponents,
 } from '@/components/whatsapp/MarketingTemplateAddOns';
-import type { ApiError } from '@/types/api';
 
 const CATEGORY_OPTIONS = [
   { value: 'UTILITY', label: 'Utility (transactional)' },
@@ -761,7 +761,7 @@ export default function TemplateBuilder({ onClose, template, cloneFrom }: Templa
         return file.type.startsWith('image/') ? URL.createObjectURL(file) : '';
       });
     } catch (err) {
-      showToast.error((err as unknown as ApiError).message || 'Failed to upload sample');
+      showToast.error(errorMessage(err, 'Failed to upload sample'));
     } finally {
       setUploadingHeader(false);
     }
@@ -882,7 +882,7 @@ export default function TemplateBuilder({ onClose, template, cloneFrom }: Templa
       );
     } catch (err) {
       updateCard(key, { uploading: false });
-      showToast.error((err as unknown as ApiError).message || 'Failed to upload the card sample');
+      showToast.error(errorMessage(err, 'Failed to upload the card sample'));
     }
   };
 
@@ -1429,8 +1429,7 @@ export default function TemplateBuilder({ onClose, template, cloneFrom }: Templa
       qc.invalidateQueries({ queryKey: ['wa-templates'] });
       onClose();
     },
-    onError: (e) =>
-      showToast.error((e as unknown as ApiError).message || 'Failed to create template'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to create template')),
   });
 
   /**
@@ -1454,7 +1453,7 @@ export default function TemplateBuilder({ onClose, template, cloneFrom }: Templa
       qc.invalidateQueries({ queryKey: ['wa-templates'] });
       onClose();
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Failed to save draft'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to save draft')),
   });
 
   /**

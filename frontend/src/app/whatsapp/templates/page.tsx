@@ -25,6 +25,7 @@ import Input from '@/components/ui/Input';
 import Button from '@/components/ui/Button';
 import Select from '@/components/ui/Select';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import Tooltip from '@/components/ui/Tooltip';
 import { cn } from '@/lib/utils';
 import { whatsappService as svc } from '@/services/whatsapp.service';
@@ -39,7 +40,6 @@ import type {
   WaTemplateQuality,
   WaTemplateStatus,
 } from '@/types/whatsapp';
-import type { ApiError } from '@/types/api';
 
 const CATEGORY_OPTIONS = [
   { value: 'UTILITY', label: 'Utility (transactional)' },
@@ -449,7 +449,7 @@ function TemplateRow({
     <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2 border-b border-[var(--border)] px-4 py-3">
       {/* Capped rather than free-growing: on a wide screen the body text ran all
           the way to the action buttons, which reads as one unbroken line. */}
-      <div className="min-w-0 max-w-3xl flex-1">
+      <div className="max-w-3xl min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
           {/* Opens the preview: the row shows only the body text, so a media
               header, a footer or the buttons were invisible before sending. */}
@@ -510,88 +510,88 @@ function TemplateRow({
         {/* Actions flow as a wrapping row. Stacked in a column they made every
             row as tall as the number of buttons it happened to have. */}
         <div className="flex flex-wrap items-center justify-end gap-1.5">
-        <button
-          onClick={() => onPreview(t)}
-          className="flex items-center gap-1 rounded-md border border-[var(--border)] px-2 py-1 text-[11px] font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-secondary)]"
-        >
-          <Eye className="h-3.5 w-3.5" /> Preview
-        </button>
-        <button
-          onClick={() => onEdit(t)}
-          className="flex items-center gap-1 rounded-md border border-[var(--border)] px-2 py-1 text-[11px] font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-secondary)]"
-        >
-          <Pencil className="h-3.5 w-3.5" /> {isDraft ? 'Continue' : 'Edit'}
-        </button>
-        {/* A draft has never been submitted, so this is the call that spends the
-            template name at Meta — it is deliberately its own action. */}
-        {isDraft && (
           <button
-            onClick={() => onSubmitDraft(t)}
-            disabled={submitting}
-            className="flex items-center gap-1 rounded-md border border-emerald-300 px-2 py-1 text-[11px] font-medium text-emerald-700 transition-colors hover:bg-emerald-50 disabled:opacity-50"
-          >
-            <Send className="h-3.5 w-3.5" /> Submit for review
-          </button>
-        )}
-        {/* Rolling a template out to another language used to mean re-authoring
-            it from scratch, header sample upload included. */}
-        <button
-          onClick={() => onAddLanguage(t)}
-          title={`Copy "${t.name}" into a new template in another language — at Meta a template is name + language, so this creates a sibling rather than changing this one`}
-          className="flex items-center gap-1 rounded-md border border-[var(--border)] px-2 py-1 text-[11px] font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-secondary)]"
-        >
-          <Languages className="h-3.5 w-3.5" /> New language
-        </button>
-        {/* Per-row status re-check. Submitting a template used to mean waiting up
-            to six hours for the cron, or re-pulling the entire WABA, to find out
-            whether this one row had been approved. */}
-        {t.metaId && (
-          <button
-            onClick={() => onRefresh(t)}
-            disabled={refreshing}
-            title="Re-check this template's status at Meta"
-            className="flex items-center gap-1 rounded-md border border-[var(--border)] px-2 py-1 text-[11px] font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-secondary)] disabled:opacity-50"
-          >
-            {refreshing ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <RefreshCw className="h-3.5 w-3.5" />
-            )}{' '}
-            Refresh status
-          </button>
-        )}
-        {!isDraft && (
-          <button
-            onClick={() => onAnalytics(t)}
+            onClick={() => onPreview(t)}
             className="flex items-center gap-1 rounded-md border border-[var(--border)] px-2 py-1 text-[11px] font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-secondary)]"
           >
-            <BarChart3 className="h-3.5 w-3.5" /> Analytics
+            <Eye className="h-3.5 w-3.5" /> Preview
           </button>
-        )}
-        {/* Meta publishes no appeal endpoint — appeals are raised in Business
+          <button
+            onClick={() => onEdit(t)}
+            className="flex items-center gap-1 rounded-md border border-[var(--border)] px-2 py-1 text-[11px] font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-secondary)]"
+          >
+            <Pencil className="h-3.5 w-3.5" /> {isDraft ? 'Continue' : 'Edit'}
+          </button>
+          {/* A draft has never been submitted, so this is the call that spends the
+            template name at Meta — it is deliberately its own action. */}
+          {isDraft && (
+            <button
+              onClick={() => onSubmitDraft(t)}
+              disabled={submitting}
+              className="flex items-center gap-1 rounded-md border border-emerald-300 px-2 py-1 text-[11px] font-medium text-emerald-700 transition-colors hover:bg-emerald-50 disabled:opacity-50"
+            >
+              <Send className="h-3.5 w-3.5" /> Submit for review
+            </button>
+          )}
+          {/* Rolling a template out to another language used to mean re-authoring
+            it from scratch, header sample upload included. */}
+          <button
+            onClick={() => onAddLanguage(t)}
+            title={`Copy "${t.name}" into a new template in another language — at Meta a template is name + language, so this creates a sibling rather than changing this one`}
+            className="flex items-center gap-1 rounded-md border border-[var(--border)] px-2 py-1 text-[11px] font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-secondary)]"
+          >
+            <Languages className="h-3.5 w-3.5" /> New language
+          </button>
+          {/* Per-row status re-check. Submitting a template used to mean waiting up
+            to six hours for the cron, or re-pulling the entire WABA, to find out
+            whether this one row had been approved. */}
+          {t.metaId && (
+            <button
+              onClick={() => onRefresh(t)}
+              disabled={refreshing}
+              title="Re-check this template's status at Meta"
+              className="flex items-center gap-1 rounded-md border border-[var(--border)] px-2 py-1 text-[11px] font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-secondary)] disabled:opacity-50"
+            >
+              {refreshing ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="h-3.5 w-3.5" />
+              )}{' '}
+              Refresh status
+            </button>
+          )}
+          {!isDraft && (
+            <button
+              onClick={() => onAnalytics(t)}
+              className="flex items-center gap-1 rounded-md border border-[var(--border)] px-2 py-1 text-[11px] font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-secondary)]"
+            >
+              <BarChart3 className="h-3.5 w-3.5" /> Analytics
+            </button>
+          )}
+          {/* Meta publishes no appeal endpoint — appeals are raised in Business
             Manager. Editing and resubmitting is usually the faster fix, but when
             the rejection is wrong an appeal is the only route, and it was
             unreachable from here. */}
-        {APPEALABLE.includes(t.status) && !isDraft && (
-          <a
-            href={templateManagerUrl(wabaId)}
-            target="_blank"
-            rel="noopener noreferrer"
-            title="Appeals are raised in Meta’s WhatsApp Manager — Meta exposes no API for them."
-            className="flex items-center gap-1 rounded-md border border-[var(--border)] px-2 py-1 text-[11px] font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-secondary)]"
-          >
-            <ExternalLink className="h-3.5 w-3.5" /> Appeal at Meta
-          </a>
-        )}
-        {/* A template name is claimed permanently at Meta, so without a delete a
+          {APPEALABLE.includes(t.status) && !isDraft && (
+            <a
+              href={templateManagerUrl(wabaId)}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Appeals are raised in Meta’s WhatsApp Manager — Meta exposes no API for them."
+              className="flex items-center gap-1 rounded-md border border-[var(--border)] px-2 py-1 text-[11px] font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-secondary)]"
+            >
+              <ExternalLink className="h-3.5 w-3.5" /> Appeal at Meta
+            </a>
+          )}
+          {/* A template name is claimed permanently at Meta, so without a delete a
             typo'd or obsolete template sat in every picker forever. */}
-        <button
-          onClick={() => onDelete(t)}
-          disabled={deleting}
-          className="flex items-center gap-1 rounded-md border border-[var(--border)] px-2 py-1 text-[11px] font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50"
-        >
-          <Trash2 className="h-3.5 w-3.5" /> Delete
-        </button>
+          <button
+            onClick={() => onDelete(t)}
+            disabled={deleting}
+            className="flex items-center gap-1 rounded-md border border-[var(--border)] px-2 py-1 text-[11px] font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50"
+          >
+            <Trash2 className="h-3.5 w-3.5" /> Delete
+          </button>
         </div>
       </div>
     </div>
@@ -687,7 +687,7 @@ export default function SuperAdminWhatsappTemplatesPage() {
     },
     // The 409 names the campaign / rule still holding the template, which is the
     // only actionable part of the failure.
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Delete failed'),
+    onError: (e) => showToast.error(errorMessage(e, 'Delete failed')),
   });
 
   const submitDraftMut = useMutation({
@@ -698,7 +698,7 @@ export default function SuperAdminWhatsappTemplatesPage() {
     },
     // The 400 names the structural problem the draft was allowed to be saved
     // with — a missing example, a gap in the placeholder numbering.
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Submit failed'),
+    onError: (e) => showToast.error(errorMessage(e, 'Submit failed')),
   });
 
   /**
@@ -719,7 +719,7 @@ export default function SuperAdminWhatsappTemplatesPage() {
       qc.invalidateQueries({ queryKey: ['wa-templates'] });
       if (tpl) qc.invalidateQueries({ queryKey: ['wa-template', tpl.id] });
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Refresh failed'),
+    onError: (e) => showToast.error(errorMessage(e, 'Refresh failed')),
   });
 
   const syncMut = useMutation({
@@ -732,7 +732,7 @@ export default function SuperAdminWhatsappTemplatesPage() {
       );
       qc.invalidateQueries({ queryKey: ['wa-templates'] });
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Sync failed'),
+    onError: (e) => showToast.error(errorMessage(e, 'Sync failed')),
   });
 
   return (

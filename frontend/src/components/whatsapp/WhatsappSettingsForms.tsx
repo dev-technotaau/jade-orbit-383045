@@ -12,9 +12,9 @@ import FormattedTextarea from '@/components/whatsapp/FormattedTextarea';
 import { confirmDialog } from '@/components/ui/dialog-service';
 import { cn } from '@/lib/utils';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import { whatsappService as svc } from '@/services/whatsapp.service';
 import type { WaSettings } from '@/types/whatsapp';
-import type { ApiError } from '@/types/api';
 
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -300,8 +300,7 @@ export default function WhatsappSettingsForms() {
       showToast.success('Settings saved');
       qc.invalidateQueries({ queryKey: ['wa-settings'] });
     },
-    onError: (e) =>
-      showToast.error((e as unknown as ApiError).message || 'Failed to save settings'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to save settings')),
   });
 
   if (isLoading) {

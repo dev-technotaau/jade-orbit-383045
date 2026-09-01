@@ -9,8 +9,8 @@ import Input from '@/components/ui/Input';
 import Button from '@/components/ui/Button';
 import PhoneInput from '@/components/ui/PhoneInput';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import { whatsappService as svc } from '@/services/whatsapp.service';
-import type { ApiError } from '@/types/api';
 
 /** Shape of the WhatsApp contacts payload entry we POST to the Cloud API. */
 interface WaContactPayload {
@@ -79,7 +79,7 @@ export default function ContactComposeModal({
       onSent();
       onClose();
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Failed to send contact'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to send contact')),
   });
 
   const submit = () => {

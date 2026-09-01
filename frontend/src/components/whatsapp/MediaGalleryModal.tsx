@@ -6,10 +6,10 @@ import { Loader2, Download, FileText, Music, Video as VideoIcon, ImageIcon } fro
 import Modal from '@/components/ui/Modal';
 import Tooltip from '@/components/ui/Tooltip';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { API } from '@/constants/api';
 import { whatsappService as svc } from '@/services/whatsapp.service';
-import type { ApiError } from '@/types/api';
 import type { WaConversationMedia, WaMessageType } from '@/types/whatsapp';
 
 function typeIcon(type: WaMessageType) {
@@ -151,7 +151,7 @@ export default function MediaGalleryModal({
       setOlder((prev) => [...prev, ...(res.data?.items ?? [])]);
       setHasMore(!!res.data?.hasMore);
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Failed to load media'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to load media')),
   });
 
   return (

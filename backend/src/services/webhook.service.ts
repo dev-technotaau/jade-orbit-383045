@@ -242,6 +242,18 @@ export const webhookService = {
       throw new AppError('Webhook not found', 404, 'WEBHOOK_NOT_FOUND');
     }
 
+    // The worker silently drops a job for an inactive endpoint, so a replay
+    // reported success and delivered nothing — and an auto-disabled endpoint,
+    // reached after ten consecutive failures, is exactly the state an operator
+    // replays FROM. Refusing here says what to do instead.
+    if (!webhook.isActive) {
+      throw new AppError(
+        'This endpoint is disabled — re-enable it before replaying.',
+        409,
+        'WEBHOOK_DISABLED'
+      );
+    }
+
     const delivery = await prisma.webhookDelivery.findFirst({
       where: { id: deliveryId, webhookId },
     });

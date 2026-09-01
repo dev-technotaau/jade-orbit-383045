@@ -7,9 +7,9 @@ import Dropdown from '@/components/ui/Dropdown';
 import Modal from '@/components/ui/Modal';
 import Button from '@/components/ui/Button';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import { whatsappService as svc } from '@/services/whatsapp.service';
 import type { WaContact } from '@/types/whatsapp';
-import type { ApiError } from '@/types/api';
 
 /**
  * Per-row DPDP (Digital Personal Data Protection) actions for a WhatsApp contact:
@@ -28,7 +28,7 @@ export default function ContactDpdpActions({ contact }: { contact: WaContact }) 
       await svc.exportContactData(contact.id);
       showToast.success('Data export downloaded');
     } catch (e) {
-      showToast.error((e as unknown as ApiError).message || 'Export failed');
+      showToast.error(errorMessage(e, 'Export failed'));
     } finally {
       setExporting(false);
     }
@@ -41,7 +41,7 @@ export default function ContactDpdpActions({ contact }: { contact: WaContact }) 
       qc.invalidateQueries({ queryKey: ['wa-contacts'] });
       setConfirmErase(false);
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Erasure failed'),
+    onError: (e) => showToast.error(errorMessage(e, 'Erasure failed')),
   });
 
   const label = contact.name || contact.phone;

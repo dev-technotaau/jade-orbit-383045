@@ -13,6 +13,7 @@ import Select from '@/components/ui/Select';
 import Switch from '@/components/ui/Switch';
 import Pagination from '@/components/ui/Pagination';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import { confirmDialog } from '@/components/ui/dialog-service';
 import { useSocket } from '@/hooks/use-socket';
 import { cn } from '@/lib/utils';
@@ -20,7 +21,6 @@ import { ROUTES } from '@/constants/routes';
 import { whatsappService as svc } from '@/services/whatsapp.service';
 import { CAMPAIGN_STATUS_STYLE } from '@/components/whatsapp/campaign-status-style';
 import type { WaCampaign } from '@/types/whatsapp';
-import type { ApiError } from '@/types/api';
 
 // Build marker: WhatsApp release image rebuild (2026-06-29)
 
@@ -99,7 +99,7 @@ export default function SuperAdminWhatsappCampaignsPage() {
       showToast.success(res.data?.archived ? 'Campaign archived' : 'Campaign deleted');
       qc.invalidateQueries({ queryKey: ['wa-campaigns'] });
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Could not remove'),
+    onError: (e) => showToast.error(errorMessage(e, 'Could not remove')),
   });
 
   const confirmRemove = async (c: WaCampaign) => {

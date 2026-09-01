@@ -6,10 +6,10 @@ import { Loader2, Pencil, Plus, Power, Trash2 } from 'lucide-react';
 import Button from '@/components/ui/Button';
 import Badge from '@/components/ui/Badge';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import { confirmDialog } from '@/components/ui/dialog-service';
 import { whatsappService as svc } from '@/services/whatsapp.service';
 import type { WaKeywordRule } from '@/types/whatsapp';
-import type { ApiError } from '@/types/api';
 import KeywordRuleModal from './KeywordRuleModal';
 import { useTemplatesByIds } from './TemplatePicker';
 
@@ -64,7 +64,7 @@ export default function KeywordRulesManager() {
       showToast.success('Rule updated');
       qc.invalidateQueries({ queryKey: ['wa-keyword-rules'] });
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Failed to update rule'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to update rule')),
   });
 
   const deleteMut = useMutation({
@@ -73,7 +73,7 @@ export default function KeywordRulesManager() {
       showToast.success('Rule deleted');
       qc.invalidateQueries({ queryKey: ['wa-keyword-rules'] });
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Failed to delete rule'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to delete rule')),
   });
 
   const handleDelete = async (rule: WaKeywordRule) => {

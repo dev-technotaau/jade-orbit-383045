@@ -19,12 +19,12 @@ import Select from '@/components/ui/Select';
 import Pagination from '@/components/ui/Pagination';
 import Spinner from '@/components/ui/Spinner';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import { confirmDialog } from '@/components/ui/dialog-service';
 import { cn } from '@/lib/utils';
 import { ROUTES } from '@/constants/routes';
 import { whatsappService as svc } from '@/services/whatsapp.service';
 import type { WaScheduledMessageStatus, WaScheduledMessageWithContact } from '@/types/whatsapp';
-import type { ApiError } from '@/types/api';
 
 const STATUS_OPTIONS: Array<{ value: string; label: string }> = [
   { value: '', label: 'All statuses' },
@@ -114,7 +114,7 @@ export default function WhatsappScheduledPage() {
       qc.invalidateQueries({ queryKey: ['wa-scheduled-all'] });
       qc.invalidateQueries({ queryKey: ['wa-scheduled'] });
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Could not cancel'),
+    onError: (e) => showToast.error(errorMessage(e, 'Could not cancel')),
   });
 
   const confirmCancel = async (row: WaScheduledMessageWithContact) => {

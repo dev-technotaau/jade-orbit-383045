@@ -403,7 +403,17 @@ export const whatsappService = {
   },
 
   async bulkContacts(payload: {
-    action: 'tag' | 'untag' | 'optIn' | 'optOut' | 'block' | 'unblock' | 'addSuppression' | 'erase';
+    action:
+      | 'tag'
+      | 'untag'
+      | 'optIn'
+      | 'optOut'
+      | 'block'
+      | 'unblock'
+      | 'addSuppression'
+      /** The inverse of `addSuppression`, which had none at this scale. */
+      | 'removeSuppression'
+      | 'erase';
     ids?: string[];
     allMatching?: boolean;
     filters?: Record<string, unknown>;

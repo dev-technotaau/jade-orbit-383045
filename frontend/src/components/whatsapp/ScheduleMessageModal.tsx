@@ -10,11 +10,11 @@ import DatePicker from '@/components/ui/DatePicker';
 import Textarea from '@/components/ui/Textarea';
 import { waMediaKind } from '@/constants/config';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import TemplatePicker from '@/components/whatsapp/TemplatePicker';
 import { whatsappService as svc } from '@/services/whatsapp.service';
 import { analyzeTemplate, templateParamsBeyondBody } from '@/lib/whatsapp-template-vars';
 import type { WaTemplate } from '@/types/whatsapp';
-import type { ApiError } from '@/types/api';
 
 /** Highest {{n}} placeholder index in a template's BODY component (0 = none). */
 function bodyVarCount(t: WaTemplate): number {
@@ -112,7 +112,7 @@ export default function ScheduleMessageModal({
       qc.invalidateQueries({ queryKey: ['wa-scheduled', conversationId] });
       onClose();
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Failed to schedule'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to schedule')),
   });
 
   const submit = () => {

@@ -16,6 +16,7 @@ import {
 import Button from '@/components/ui/Button';
 import Input from '@/components/ui/Input';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import { confirmDialog } from '@/components/ui/dialog-service';
 import FormattedTextarea from '@/components/whatsapp/FormattedTextarea';
 import { cn } from '@/lib/utils';
@@ -81,7 +82,7 @@ export default function FaqManager() {
       setAnswer('');
       invalidate();
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Failed to add FAQ'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to add FAQ')),
   });
 
   const updateMut = useMutation({
@@ -92,7 +93,7 @@ export default function FaqManager() {
       setEditingId(null);
       invalidate();
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Failed to update FAQ'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to update FAQ')),
   });
 
   const reorderMut = useMutation({
@@ -102,7 +103,7 @@ export default function FaqManager() {
       invalidate();
     },
     onError: (e) => {
-      showToast.error((e as unknown as ApiError).message || 'Failed to reorder FAQs');
+      showToast.error(errorMessage(e, 'Failed to reorder FAQs'));
       // The server refuses a reorder whose id set no longer matches the stored
       // one (a FAQ added or deleted in another tab). Refetch so the next attempt
       // is made against the real list rather than repeating the same stale one.
@@ -116,7 +117,7 @@ export default function FaqManager() {
       showToast.success('FAQ deleted');
       invalidate();
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Failed to delete FAQ'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to delete FAQ')),
   });
 
   const submitCreate = () => {

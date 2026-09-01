@@ -6,8 +6,8 @@ import { SmilePlus, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import Tooltip from '@/components/ui/Tooltip';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import { whatsappService as svc } from '@/services/whatsapp.service';
-import type { ApiError } from '@/types/api';
 
 const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏', '🔥', '✅'];
 
@@ -40,7 +40,7 @@ export default function ReactionPicker({
       setOpen(false);
       qc.invalidateQueries({ queryKey: ['wa-messages', conversationId] });
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Failed to react'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to react')),
   });
 
   return (

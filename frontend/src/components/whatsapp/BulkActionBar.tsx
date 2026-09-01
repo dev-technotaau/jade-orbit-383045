@@ -15,9 +15,9 @@ import {
   Loader2,
 } from 'lucide-react';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import { promptDialog } from '@/components/ui/dialog-service';
 import { whatsappService as svc } from '@/services/whatsapp.service';
-import type { ApiError } from '@/types/api';
 
 type BulkConvAction =
   | 'archive'
@@ -152,7 +152,7 @@ export default function BulkActionBar({
       }
       onDone();
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Bulk action failed'),
+    onError: (e) => showToast.error(errorMessage(e, 'Bulk action failed')),
   });
 
   const count = allMatching ? totalMatching : ids.length;

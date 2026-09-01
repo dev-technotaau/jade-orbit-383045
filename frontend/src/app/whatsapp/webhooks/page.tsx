@@ -9,9 +9,10 @@ import Input from '@/components/ui/Input';
 import Button from '@/components/ui/Button';
 import Switch from '@/components/ui/Switch';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
+import { confirmDialog } from '@/components/ui/dialog-service';
 import { whatsappService as svc } from '@/services/whatsapp.service';
 import { WA_WEBHOOK_EVENTS, type WaWebhookEndpoint } from '@/types/whatsapp';
-import type { ApiError } from '@/types/api';
 import { cn } from '@/lib/utils';
 
 /**
@@ -38,8 +39,7 @@ export default function WebhooksPage() {
   const endpoints: WaWebhookEndpoint[] = data?.data?.items ?? [];
 
   const refresh = () => void qc.invalidateQueries({ queryKey: ['wa-webhooks'] });
-  const fail = (e: unknown) =>
-    showToast.error((e as unknown as ApiError).message || 'Something went wrong');
+  const fail = (e: unknown) => showToast.error(errorMessage(e, 'Something went wrong'));
 
   const createMut = useMutation({
     mutationFn: () =>
@@ -239,7 +239,19 @@ export default function WebhooksPage() {
                       size="sm"
                       variant="ghost"
                       leftIcon={<Trash2 className="h-4 w-4" />}
-                      onClick={() => deleteMut.mutate(w.id)}
+                      // Deleting an endpoint destroys its signing secret, which
+                      // is emitted once on create and cannot be recovered — so
+                      // every subscriber has to be reconfigured. That is not a
+                      // single-click action.
+                      onClick={async () => {
+                        const ok = await confirmDialog({
+                          title: 'Delete this endpoint?',
+                          message: `Delete ${w.url}? Its signing secret cannot be recovered, so any subscriber using it will need reconfiguring from scratch.`,
+                          confirmLabel: 'Delete',
+                          variant: 'danger',
+                        });
+                        if (ok) deleteMut.mutate(w.id);
+                      }}
                       aria-label="Delete endpoint"
                     />
                   </div>
@@ -281,7 +293,12 @@ export default function WebhooksPage() {
                                 size="sm"
                                 variant="ghost"
                                 onClick={() => replayMut.mutate({ id: w.id, deliveryId: d.id })}
-                                disabled={replayMut.isPending}
+                                // The server refuses a replay to a disabled
+                                // endpoint, so offering the button would be a
+                                // lie — the same reasoning the scheduled-message
+                                // page applies to Cancel.
+                                disabled={replayMut.isPending || !w.isActive}
+                                title={w.isActive ? undefined : 'Re-enable this endpoint to replay'}
                               >
                                 Replay
                               </Button>

@@ -23,12 +23,12 @@ import Pagination from '@/components/ui/Pagination';
 import PhoneInput from '@/components/ui/PhoneInput';
 import Textarea from '@/components/ui/Textarea';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import { confirmDialog } from '@/components/ui/dialog-service';
 import { formatDate } from '@/lib/utils';
 import { parseContactsFile, parseContactsText } from '@/lib/parse-contacts';
 import { whatsappService as svc } from '@/services/whatsapp.service';
 import type { WaSuppression } from '@/types/whatsapp';
-import type { ApiError } from '@/types/api';
 
 /**
  * Bulk-load a supplied do-not-contact list.
@@ -88,7 +88,7 @@ function ImportSuppressionsModal({ onClose }: { onClose: () => void }) {
       qc.invalidateQueries({ queryKey: ['wa-suppressions'] });
       onClose();
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Import failed'),
+    onError: (e) => showToast.error(errorMessage(e, 'Import failed')),
   });
 
   return (
@@ -222,7 +222,7 @@ export default function SuppressionListManager() {
       setReason('');
       qc.invalidateQueries({ queryKey: ['wa-suppressions'] });
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Failed to add number'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to add number')),
   });
 
   const removeMut = useMutation({
@@ -231,8 +231,7 @@ export default function SuppressionListManager() {
       showToast.success('Number removed from suppression list');
       qc.invalidateQueries({ queryKey: ['wa-suppressions'] });
     },
-    onError: (e) =>
-      showToast.error((e as unknown as ApiError).message || 'Failed to remove number'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to remove number')),
   });
 
   const submit = () => {

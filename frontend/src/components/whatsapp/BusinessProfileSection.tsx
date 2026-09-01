@@ -198,7 +198,11 @@ function ProfileForm({ initial }: { initial: WaBusinessProfile }) {
       />
 
       <div className="flex justify-end">
-        <Button onClick={save} isLoading={saveMut.isPending} leftIcon={<Save className="h-4 w-4" />}>
+        <Button
+          onClick={save}
+          isLoading={saveMut.isPending}
+          leftIcon={<Save className="h-4 w-4" />}
+        >
           Save profile
         </Button>
       </div>

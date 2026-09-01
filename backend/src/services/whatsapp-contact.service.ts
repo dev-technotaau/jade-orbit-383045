@@ -998,7 +998,18 @@ async function suppressedPhonesIn(phones: string[]): Promise<Set<string>> {
 }
 
 export type BulkContactAction =
-  'tag' | 'untag' | 'optIn' | 'optOut' | 'block' | 'unblock' | 'addSuppression' | 'erase';
+  | 'tag'
+  | 'untag'
+  | 'optIn'
+  | 'optOut'
+  | 'block'
+  | 'unblock'
+  | 'addSuppression'
+  // The inverse `addSuppression` never had. A bulk suppression over "All N
+  // matching" could only be undone one contact at a time through the
+  // suppression manager — for an action that reaches thousands in one click.
+  | 'removeSuppression'
+  | 'erase';
 
 /** Cap for the heavy per-row erase action (each erase scrubs messages + R2). */
 const BULK_ERASE_MAX = 1000;
@@ -1246,6 +1257,35 @@ export async function bulkUpdateContacts(opts: {
           });
           count += res.count;
           await markContactsSuppressed(phones, true);
+        }
+        if (page.length < BULK_CHUNK) break;
+      }
+      return { count };
+    }
+    case 'removeSuppression': {
+      // Chunked like its inverse above, and for the same reason. Both sides of
+      // the mirror have to survive "select all matching" on a large book.
+      let count = 0;
+      let cursor: string | undefined;
+      for (;;) {
+        const page: Array<{ id: string; phone: string }> = await prisma.waContact.findMany({
+          where: cursor ? { AND: [where, { id: { gt: cursor } }] } : where,
+          select: { id: true, phone: true },
+          orderBy: { id: 'asc' },
+          take: BULK_CHUNK,
+        });
+        if (page.length === 0) break;
+        cursor = page[page.length - 1].id;
+        const phones = page.map((r) => r.phone).filter((ph) => !ph.startsWith('erased:'));
+        if (phones.length) {
+          // An erasure tombstone is NOT lifted here. It outlives the contact row
+          // on purpose — it is the only record that survives a right-to-erasure
+          // request, and a bulk un-suppress must not quietly undo one.
+          const res = await prisma.waSuppression.deleteMany({
+            where: { phone: { in: phones }, NOT: { createdBy: 'erasure' } },
+          });
+          count += res.count;
+          await markContactsSuppressed(phones, false);
         }
         if (page.length < BULK_CHUNK) break;
       }

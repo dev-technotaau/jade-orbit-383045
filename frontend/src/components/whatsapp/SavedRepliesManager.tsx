@@ -6,11 +6,11 @@ import { Loader2, MessageSquareText, Pencil, Plus, Trash2, X } from 'lucide-reac
 import Input from '@/components/ui/Input';
 import Button from '@/components/ui/Button';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import { confirmDialog } from '@/components/ui/dialog-service';
 import FormattedTextarea from '@/components/whatsapp/FormattedTextarea';
 import { whatsappService as svc } from '@/services/whatsapp.service';
 import type { WaCannedReply } from '@/types/whatsapp';
-import type { ApiError } from '@/types/api';
 
 /**
  * Saved (canned) replies manager — reusable message snippets agents can drop
@@ -40,8 +40,7 @@ export default function SavedRepliesManager() {
       setText('');
       qc.invalidateQueries({ queryKey: ['wa-canned'] });
     },
-    onError: (e) =>
-      showToast.error((e as unknown as ApiError).message || 'Failed to add saved reply'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to add saved reply')),
   });
 
   const updateMut = useMutation({
@@ -54,8 +53,7 @@ export default function SavedRepliesManager() {
       setEditText('');
       qc.invalidateQueries({ queryKey: ['wa-canned'] });
     },
-    onError: (e) =>
-      showToast.error((e as unknown as ApiError).message || 'Failed to update saved reply'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to update saved reply')),
   });
 
   const deleteMut = useMutation({
@@ -64,8 +62,7 @@ export default function SavedRepliesManager() {
       showToast.success('Saved reply deleted');
       qc.invalidateQueries({ queryKey: ['wa-canned'] });
     },
-    onError: (e) =>
-      showToast.error((e as unknown as ApiError).message || 'Failed to delete saved reply'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to delete saved reply')),
   });
 
   const submitCreate = () => {

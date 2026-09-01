@@ -10,10 +10,10 @@ import Select from '@/components/ui/Select';
 import FormattedTextarea from '@/components/whatsapp/FormattedTextarea';
 import TemplatePicker from '@/components/whatsapp/TemplatePicker';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import { whatsappService as svc } from '@/services/whatsapp.service';
 import { analyzeTemplate, templateParamsBeyondBody } from '@/lib/whatsapp-template-vars';
 import type { WaKeywordRule, WaMatchType, WaTemplate } from '@/types/whatsapp';
-import type { ApiError } from '@/types/api';
 
 type MatchType = WaMatchType;
 type ReplyMode = 'text' | 'template';
@@ -165,7 +165,7 @@ export default function KeywordRuleModal({
       qc.invalidateQueries({ queryKey: ['wa-keyword-rules'] });
       onClose();
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Failed to save rule'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to save rule')),
   });
 
   const submit = () => {

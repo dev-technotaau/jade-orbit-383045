@@ -9,10 +9,10 @@ import Button from '@/components/ui/Button';
 import Select from '@/components/ui/Select';
 import Textarea from '@/components/ui/Textarea';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import { whatsappService as svc } from '@/services/whatsapp.service';
 import SegmentRulesBuilder, { usableRules } from '@/components/whatsapp/SegmentRulesBuilder';
 import type { WaSegment, WaSegmentFilter, WaSegmentRule } from '@/types/whatsapp';
-import type { ApiError } from '@/types/api';
 
 type OptInStatus = 'any' | 'OPTED_IN' | 'OPTED_OUT' | 'UNKNOWN';
 
@@ -146,9 +146,7 @@ function SegmentForm({ segment, onClose }: { segment: WaSegment | null; onClose:
       onClose();
     },
     onError: (e) =>
-      showToast.error(
-        (e as unknown as ApiError).message || `Failed to ${editing ? 'update' : 'create'} segment`,
-      ),
+      showToast.error(errorMessage(e) || `Failed to ${editing ? 'update' : 'create'} segment`),
   });
 
   const submit = () => {

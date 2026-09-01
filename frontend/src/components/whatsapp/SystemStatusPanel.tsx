@@ -90,9 +90,7 @@ export default function SystemStatusPanel() {
   });
   const status = data?.data ?? null;
 
-  const busiest = status
-    ? status.queues.reduce((max, q) => Math.max(max, q.waiting), 0)
-    : 0;
+  const busiest = status ? status.queues.reduce((max, q) => Math.max(max, q.waiting), 0) : 0;
 
   return (
     <section className="space-y-3">
@@ -127,7 +125,9 @@ export default function SystemStatusPanel() {
               <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-3">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" />
                 <div className="text-xs text-red-800">
-                  <p className="font-semibold">No worker leader — nothing is draining the queues.</p>
+                  <p className="font-semibold">
+                    No worker leader — nothing is draining the queues.
+                  </p>
                   <p className="mt-0.5">
                     Inbound processing, auto-replies, campaigns and scheduled sends are all stopped
                     while the API keeps answering normally. Leadership is a Redis lock renewed every
@@ -219,10 +219,10 @@ export default function SystemStatusPanel() {
                       >
                         {q.reachable ? q.waiting : '—'}
                       </td>
-                      <td className="px-2 py-2 text-right tabular-nums text-[var(--text)]">
+                      <td className="px-2 py-2 text-right text-[var(--text)] tabular-nums">
                         {q.reachable ? q.active : '—'}
                       </td>
-                      <td className="px-2 py-2 text-right tabular-nums text-[var(--text)]">
+                      <td className="px-2 py-2 text-right text-[var(--text)] tabular-nums">
                         {q.reachable ? q.delayed : '—'}
                       </td>
                       <td

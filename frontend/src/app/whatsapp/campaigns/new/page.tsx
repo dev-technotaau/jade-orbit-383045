@@ -24,6 +24,7 @@ import DatePicker from '@/components/ui/DatePicker';
 import Button from '@/components/ui/Button';
 import Switch from '@/components/ui/Switch';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import { cn, formatFileSize } from '@/lib/utils';
 import {
   HEADER_ACCEPT,
@@ -834,8 +835,7 @@ function CampaignForm({
     },
     onError: (e) =>
       showToast.error(
-        (e as unknown as ApiError).message ||
-          (isEditing ? 'Failed to update campaign' : 'Failed to create campaign'),
+        errorMessage(e) || (isEditing ? 'Failed to update campaign' : 'Failed to create campaign'),
       ),
   });
 

@@ -11,6 +11,7 @@ import Textarea from '@/components/ui/Textarea';
 import Select from '@/components/ui/Select';
 import DatePicker from '@/components/ui/DatePicker';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import {
   describePhoneImport,
   mergePhoneLines,
@@ -24,7 +25,6 @@ import { whatsappService as svc } from '@/services/whatsapp.service';
 import TemplatePicker from '@/components/whatsapp/TemplatePicker';
 import { analyzeTemplate, type TemplateVarSpec } from '@/lib/whatsapp-template-vars';
 import type { WaCampaign, WaSegmentFilter, WaTemplate } from '@/types/whatsapp';
-import type { ApiError } from '@/types/api';
 
 /** ISO → value for an <input type="datetime-local"> (in the viewer's local tz). */
 function toLocalInput(iso: string | null | undefined): string {
@@ -316,7 +316,7 @@ export default function CampaignManageActions({
       if (newId) router.push(`/whatsapp/campaigns/${newId}`);
       onChanged?.();
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Duplicate failed'),
+    onError: (e) => showToast.error(errorMessage(e, 'Duplicate failed')),
   });
 
   /**
@@ -393,7 +393,7 @@ export default function CampaignManageActions({
       setEditOpen(false);
       onChanged?.();
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Update failed'),
+    onError: (e) => showToast.error(errorMessage(e, 'Update failed')),
   });
 
   const submitEdit = () => {
@@ -436,7 +436,7 @@ export default function CampaignManageActions({
       showToast.success('Saved as a reusable template');
       setTplOpen(false);
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Save failed'),
+    onError: (e) => showToast.error(errorMessage(e, 'Save failed')),
   });
 
   const testMut = useMutation({
@@ -450,7 +450,7 @@ export default function CampaignManageActions({
       setTestOpen(false);
       setTestPhone('');
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Test send failed'),
+    onError: (e) => showToast.error(errorMessage(e, 'Test send failed')),
   });
 
   return (

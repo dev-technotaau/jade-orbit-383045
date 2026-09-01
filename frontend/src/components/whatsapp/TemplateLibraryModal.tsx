@@ -8,11 +8,11 @@ import Input from '@/components/ui/Input';
 import Button from '@/components/ui/Button';
 import Select from '@/components/ui/Select';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { whatsappService as svc } from '@/services/whatsapp.service';
 import { LANGUAGE_OPTIONS } from '@/components/whatsapp/TemplateBuilder';
 import type { WaLibraryTemplate } from '@/types/whatsapp';
-import type { ApiError } from '@/types/api';
 
 const CATEGORY_OPTIONS = [
   { value: '', label: 'All categories' },
@@ -127,8 +127,7 @@ export default function TemplateLibraryModal({ onClose }: { onClose: () => void 
       qc.invalidateQueries({ queryKey: ['wa-templates'] });
       onClose();
     },
-    onError: (e) =>
-      showToast.error((e as unknown as ApiError).message || 'Failed to create from library'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to create from library')),
   });
 
   const submit = () => {

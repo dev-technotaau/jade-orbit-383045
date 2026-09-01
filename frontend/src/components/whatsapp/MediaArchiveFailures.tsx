@@ -4,9 +4,9 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Loader2, RefreshCw } from 'lucide-react';
 import Button from '@/components/ui/Button';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import { whatsappService as svc } from '@/services/whatsapp.service';
 import type { WaFailedMediaArchive } from '@/types/whatsapp';
-import type { ApiError } from '@/types/api';
 
 /**
  * Inbound files whose durable archive gave up.
@@ -38,7 +38,7 @@ export default function MediaArchiveFailures() {
       showToast.success('Re-queued — the file will be archived if Meta still has it');
       void qc.invalidateQueries({ queryKey: ['wa-media-failed'] });
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Retry failed'),
+    onError: (e) => showToast.error(errorMessage(e, 'Retry failed')),
   });
 
   if (isLoading || items.length === 0) return null;

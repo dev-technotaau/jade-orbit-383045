@@ -38,6 +38,7 @@ import Input from '@/components/ui/Input';
 import Select from '@/components/ui/Select';
 import Badge from '@/components/ui/Badge';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import { confirmDialog } from '@/components/ui/dialog-service';
 import { useSocket } from '@/hooks/use-socket';
 import { cn } from '@/lib/utils';
@@ -67,7 +68,6 @@ import type {
   WaCampaignVariant,
   WaTemplate,
 } from '@/types/whatsapp';
-import type { ApiError } from '@/types/api';
 
 const CONDITION_OPTIONS = [
   { value: 'any', label: 'Always send' },
@@ -287,7 +287,7 @@ export default function CampaignDetailPage() {
       qc.invalidateQueries({ queryKey: ['wa-campaign', id] });
       qc.invalidateQueries({ queryKey: ['wa-campaigns'] });
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Action failed'),
+    onError: (e) => showToast.error(errorMessage(e, 'Action failed')),
   });
 
   // An over-tier launch is not refused — the send stops at the daily allowance and
@@ -342,7 +342,7 @@ export default function CampaignDetailPage() {
       qc.invalidateQueries({ queryKey: ['wa-recipients', id] });
       qc.invalidateQueries({ queryKey: ['wa-campaigns'] });
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Retry failed'),
+    onError: (e) => showToast.error(errorMessage(e, 'Retry failed')),
   });
 
   // ── Conversions (attribution / ROI) ──
@@ -376,8 +376,7 @@ export default function CampaignDetailPage() {
       qc.invalidateQueries({ queryKey: ['wa-campaign-conversions', id] });
       qc.invalidateQueries({ queryKey: ['wa-campaign', id] });
     },
-    onError: (e) =>
-      showToast.error((e as unknown as ApiError).message || 'Failed to record conversion'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to record conversion')),
   });
 
   // A mistyped ₹ value or a double-clicked button used to be permanent, and it
@@ -389,8 +388,7 @@ export default function CampaignDetailPage() {
       qc.invalidateQueries({ queryKey: ['wa-campaign-conversions', id] });
       qc.invalidateQueries({ queryKey: ['wa-campaign', id] });
     },
-    onError: (e) =>
-      showToast.error((e as unknown as ApiError).message || 'Failed to delete conversion'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to delete conversion')),
   });
 
   // ── Sequence steps ──
@@ -460,7 +458,7 @@ export default function CampaignDetailPage() {
       qc.invalidateQueries({ queryKey: ['wa-campaign-steps', id] });
       qc.invalidateQueries({ queryKey: ['wa-campaign', id] });
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Failed to save steps'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to save steps')),
   });
 
   const saveSteps = () => {
@@ -568,8 +566,7 @@ export default function CampaignDetailPage() {
       qc.invalidateQueries({ queryKey: ['wa-campaign-variants', id] });
       qc.invalidateQueries({ queryKey: ['wa-campaign', id] });
     },
-    onError: (e) =>
-      showToast.error((e as unknown as ApiError).message || 'Failed to save variants'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to save variants')),
   });
 
   const saveVariants = () => {
@@ -632,15 +629,13 @@ export default function CampaignDetailPage() {
       showToast.success('Winner recorded');
       invalidateAb();
     },
-    onError: (e) =>
-      showToast.error((e as unknown as ApiError).message || 'Could not pick a winner'),
+    onError: (e) => showToast.error(errorMessage(e, 'Could not pick a winner')),
   });
 
   const metricMut = useMutation({
     mutationFn: (metric: WaAbMetric) => svc.updateCampaign(id, { abTestMetric: metric }),
     onSuccess: () => invalidateAb(),
-    onError: (e) =>
-      showToast.error((e as unknown as ApiError).message || 'Could not change metric'),
+    onError: (e) => showToast.error(errorMessage(e, 'Could not change metric')),
   });
 
   const remainderMut = useMutation({
@@ -652,8 +647,7 @@ export default function CampaignDetailPage() {
       invalidateAb();
       qc.invalidateQueries({ queryKey: ['wa-recipients', id] });
     },
-    onError: (e) =>
-      showToast.error((e as unknown as ApiError).message || 'Could not send the remainder'),
+    onError: (e) => showToast.error(errorMessage(e, 'Could not send the remainder')),
   });
 
   const confirmRemainder = async () => {

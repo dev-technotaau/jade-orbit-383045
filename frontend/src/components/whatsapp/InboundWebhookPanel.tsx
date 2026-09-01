@@ -7,10 +7,10 @@ import Button from '@/components/ui/Button';
 import Select from '@/components/ui/Select';
 import DialogShell from '@/components/ui/DialogShell';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { whatsappService as svc } from '@/services/whatsapp.service';
 import type { WaInboundWebhookEvent } from '@/types/whatsapp';
-import type { ApiError } from '@/types/api';
 
 /** Human "3 minutes ago" for a minute count, kept deliberately coarse. */
 function formatAge(minutes: number | null): string {
@@ -138,8 +138,7 @@ export default function InboundWebhookPanel() {
       qc.invalidateQueries({ queryKey: ['wa-webhook-events'] });
       qc.invalidateQueries({ queryKey: ['wa-webhook-health'] });
     },
-    onError: (e) =>
-      showToast.error((e as unknown as ApiError).message || 'Could not reprocess the event'),
+    onError: (e) => showToast.error(errorMessage(e, 'Could not reprocess the event')),
   });
 
   const {

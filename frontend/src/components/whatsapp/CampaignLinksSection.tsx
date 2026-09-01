@@ -6,8 +6,8 @@ import { Link2, Plus, Copy, Check, ExternalLink } from 'lucide-react';
 import Input from '@/components/ui/Input';
 import Button from '@/components/ui/Button';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import { whatsappService as svc } from '@/services/whatsapp.service';
-import type { ApiError } from '@/types/api';
 import type { WaShortLink } from '@/types/whatsapp';
 
 interface CampaignLinksSectionProps {
@@ -53,7 +53,7 @@ export default function CampaignLinksSection({ campaignId }: CampaignLinksSectio
       setTargetUrl('');
       qc.invalidateQueries({ queryKey: ['wa-campaign-links', campaignId] });
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Failed to create link'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to create link')),
   });
 
   // The API returns the absolute URL. It used to be assembled here from

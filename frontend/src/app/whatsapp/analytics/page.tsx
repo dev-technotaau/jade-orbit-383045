@@ -38,13 +38,13 @@ import DashboardLayout from '@/components/layout/DashboardLayout';
 import Button from '@/components/ui/Button';
 import Select from '@/components/ui/Select';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { whatsappService as svc } from '@/services/whatsapp.service';
 import type { WaHeatmapDirection } from '@/services/whatsapp.service';
 import MetaAnalyticsSection from '@/components/whatsapp/MetaAnalyticsSection';
 import SegmentPerformanceSection from '@/components/whatsapp/SegmentPerformanceSection';
 import CohortRetentionSection from '@/components/whatsapp/CohortRetentionSection';
-import type { ApiError } from '@/types/api';
 
 /**
  * Percentage change vs. the previous period, or null when there is nothing
@@ -227,13 +227,13 @@ export default function SuperAdminWhatsappAnalyticsPage() {
   const exportMut = useMutation({
     mutationFn: () => svc.exportAnalytics(seriesDays, 'csv'),
     onSuccess: () => showToast.success('Analytics exported'),
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Export failed'),
+    onError: (e) => showToast.error(errorMessage(e, 'Export failed')),
   });
 
   const ctwaExportMut = useMutation({
     mutationFn: () => svc.exportCtwaContacts(seriesDays),
     onSuccess: () => showToast.success('CTWA contacts exported'),
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Export failed'),
+    onError: (e) => showToast.error(errorMessage(e, 'Export failed')),
   });
 
   const syncMut = useMutation({
@@ -242,7 +242,7 @@ export default function SuperAdminWhatsappAnalyticsPage() {
       showToast.success('Channel health synced from Meta');
       qc.invalidateQueries({ queryKey: ['wa-analytics'] });
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Sync failed'),
+    onError: (e) => showToast.error(errorMessage(e, 'Sync failed')),
   });
 
   // ── Enterprise analytics: time-series, SLA, agents, cost, opt-out ──

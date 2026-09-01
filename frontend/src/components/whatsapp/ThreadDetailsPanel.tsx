@@ -42,7 +42,6 @@ import type {
   WaNote,
   WaOptInStatus,
 } from '@/types/whatsapp';
-import type { ApiError } from '@/types/api';
 import ScheduledMessagesPanel from './ScheduledMessagesPanel';
 
 function agentLabel(a: WaAgent): string {
@@ -177,8 +176,7 @@ function ContactCard({
       // typing it gets no suggestion and splits it all over again.
       qc.invalidateQueries({ queryKey: ['wa-contact-tags'] });
     },
-    onError: (e) =>
-      showToast.error((e as unknown as ApiError).message || 'Failed to update contact'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to update contact')),
   });
 
   const suppressMut = useMutation({
@@ -187,8 +185,7 @@ function ContactCard({
       showToast.success('Added to the do-not-contact list');
       qc.invalidateQueries({ queryKey: ['wa-suppressions'] });
     },
-    onError: (e) =>
-      showToast.error((e as unknown as ApiError).message || 'Failed to add to do-not-contact'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to add to do-not-contact')),
   });
 
   const busy = updateMut.isPending || suppressMut.isPending;
@@ -893,7 +890,7 @@ function AssignControl({ conversation }: { conversation: WaConversation }) {
       qc.invalidateQueries({ queryKey: ['wa-conversation', conversation.id] });
       qc.invalidateQueries({ queryKey: ['wa-conversations'] });
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Failed to assign'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to assign')),
   });
 
   const options = useMemo(
@@ -934,8 +931,7 @@ function LabelsEditor({ conversation }: { conversation: WaConversation }) {
       qc.invalidateQueries({ queryKey: ['wa-conversation', conversation.id] });
       qc.invalidateQueries({ queryKey: ['wa-conversations'] });
     },
-    onError: (e) =>
-      showToast.error((e as unknown as ApiError).message || 'Failed to update labels'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to update labels')),
   });
 
   const labels = conversation.labels ?? [];
@@ -1035,8 +1031,7 @@ function BotPauseControl({ conversation }: { conversation: WaConversation }) {
       qc.invalidateQueries({ queryKey: ['wa-conversation', conversation.id] });
       qc.invalidateQueries({ queryKey: ['wa-conversations'] });
     },
-    onError: (e) =>
-      showToast.error((e as unknown as ApiError).message || 'Failed to update automation'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to update automation')),
   });
 
   // Ticked, like SnoozeControl: the pause expires by wall-clock, so the panel has
@@ -1102,7 +1097,7 @@ function SnoozeControl({ conversation }: { conversation: WaConversation }) {
       qc.invalidateQueries({ queryKey: ['wa-conversation', conversation.id] });
       qc.invalidateQueries({ queryKey: ['wa-conversations'] });
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Failed to snooze'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to snooze')),
   });
 
   const [nowTs, setNowTs] = useState(0);
@@ -1270,7 +1265,7 @@ function NotesPanel({ conversationId }: { conversationId: string }) {
       setBody('');
       qc.invalidateQueries({ queryKey: ['wa-notes', conversationId] });
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Failed to add note'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to add note')),
   });
   // Editing used to mean delete-and-retype, which threw away the note's
   // timestamp and author along with the typo.
@@ -1282,12 +1277,12 @@ function NotesPanel({ conversationId }: { conversationId: string }) {
       setEditBody('');
       qc.invalidateQueries({ queryKey: ['wa-notes', conversationId] });
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Failed to save note'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to save note')),
   });
   const deleteMut = useMutation({
     mutationFn: (noteId: string) => svc.deleteNote(conversationId, noteId),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['wa-notes', conversationId] }),
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Failed to delete note'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to delete note')),
   });
 
   const submit = () => {
@@ -1501,7 +1496,7 @@ function ClearChatSection({
       qc.invalidateQueries({ queryKey: ['wa-conversations'] });
       onCleared?.();
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Failed to clear chat'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to clear chat')),
   });
   return (
     <div className="border-t border-[var(--border)] pt-4">

@@ -8,8 +8,8 @@ import Button from '@/components/ui/Button';
 import Modal from '@/components/ui/Modal';
 import Input from '@/components/ui/Input';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import { whatsappService as svc } from '@/services/whatsapp.service';
-import type { ApiError } from '@/types/api';
 
 /** The contact category currently selected on the contacts page. */
 export interface ContactCategory {
@@ -83,7 +83,7 @@ export default function ContactSegmentBar({
       setName('');
       qc.invalidateQueries({ queryKey: ['wa-segments'] });
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Save failed'),
+    onError: (e) => showToast.error(errorMessage(e, 'Save failed')),
   });
 
   return (

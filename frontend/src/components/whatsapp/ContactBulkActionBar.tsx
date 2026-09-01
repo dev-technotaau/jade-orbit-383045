@@ -8,6 +8,7 @@ import {
   BellRing,
   Ban,
   ShieldOff,
+  ShieldCheck,
   ShieldX,
   Download,
   Trash2,
@@ -18,11 +19,20 @@ import Modal from '@/components/ui/Modal';
 import Button from '@/components/ui/Button';
 import Input from '@/components/ui/Input';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
+import { confirmDialog } from '@/components/ui/dialog-service';
 import { whatsappService as svc } from '@/services/whatsapp.service';
-import type { ApiError } from '@/types/api';
 
 type BulkContactAction =
-  'tag' | 'untag' | 'optIn' | 'optOut' | 'block' | 'unblock' | 'addSuppression' | 'erase';
+  | 'tag'
+  | 'untag'
+  | 'optIn'
+  | 'optOut'
+  | 'block'
+  | 'unblock'
+  | 'addSuppression'
+  | 'removeSuppression'
+  | 'erase';
 
 interface ContactBulkActionBarProps {
   /** Page-selected contact ids. */
@@ -107,6 +117,28 @@ export default function ContactBulkActionBar({
 
   const count = allMatching ? totalMatching : ids.length;
 
+  /**
+   * Confirm before a consent action that cannot be undone at this scale.
+   *
+   * Bulk opt-in already asks, and it is the REVERSIBLE one. Opt-out and
+   * suppression fired straight from the click over a selection that can read
+   * "All 12,400 matching" — and neither has a bulk inverse, because bulk opt-in
+   * deliberately refuses to overturn a recorded opt-out. Undoing a mis-click
+   * therefore means the row editor, once per contact.
+   */
+  const confirmBulk = async (action: 'optOut' | 'addSuppression') => {
+    const ok = await confirmDialog({
+      title: action === 'optOut' ? `Opt out ${count} contact(s)?` : `Suppress ${count} contact(s)?`,
+      message:
+        action === 'optOut'
+          ? `${count} contact(s) will stop receiving marketing. This cannot be reversed in bulk — bulk opt-in will not overturn a recorded opt-out, so undoing it means editing each contact.`
+          : `${count} contact(s) will be added to the do-not-contact list. Nothing can be sent to them — replies, templates or campaigns — until each one is removed individually.`,
+      confirmLabel: action === 'optOut' ? 'Opt out' : 'Suppress',
+      variant: 'danger',
+    });
+    if (ok) run(action);
+  };
+
   const mut = useMutation({
     mutationFn: (payload: { action: BulkContactAction; tag?: string }) =>
       svc.bulkContacts(
@@ -146,13 +178,13 @@ export default function ContactBulkActionBar({
       setOptInOpen(false);
       onDone();
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Bulk action failed'),
+    onError: (e) => showToast.error(errorMessage(e, 'Bulk action failed')),
   });
 
   const exportMut = useMutation({
     mutationFn: () => svc.exportContacts(allMatching ? filters : { ids }),
     onSuccess: () => showToast.success('Export downloaded'),
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Export failed'),
+    onError: (e) => showToast.error(errorMessage(e, 'Export failed')),
   });
 
   if (count === 0) return null;
@@ -190,7 +222,17 @@ export default function ContactBulkActionBar({
         <button type="button" className={btn} disabled={busy} onClick={() => setOptInOpen(true)}>
           <BellRing className="h-4 w-4" /> Opt in
         </button>
-        <button type="button" className={btn} disabled={busy} onClick={() => run('optOut')}>
+        <button
+          type="button"
+          className={btn}
+          disabled={busy}
+          // Confirmed, like the opt-in beside it and for the stronger reason:
+          // this one has no inverse at this scale. Bulk opt-IN deliberately
+          // refuses to overturn a recorded opt-out, so a mis-clicked bulk
+          // opt-out over "All N selected" can only be undone one contact at a
+          // time, through the row editor.
+          onClick={() => void confirmBulk('optOut')}
+        >
           <BellOff className="h-4 w-4" /> Opt out
         </button>
         <button type="button" className={btn} disabled={busy} onClick={() => run('block')}>
@@ -199,8 +241,26 @@ export default function ContactBulkActionBar({
         <button type="button" className={btn} disabled={busy} onClick={() => run('unblock')}>
           <ShieldOff className="h-4 w-4" /> Unblock
         </button>
-        <button type="button" className={btn} disabled={busy} onClick={() => run('addSuppression')}>
+        <button
+          type="button"
+          className={btn}
+          disabled={busy}
+          onClick={() => void confirmBulk('addSuppression')}
+        >
           <ShieldX className="h-4 w-4" /> Suppress
+        </button>
+        {/* The inverse, at the same scale. A bulk suppression could previously
+            only be undone one contact at a time through the suppression
+            manager — for an action that reaches thousands in a click. An
+            erasure tombstone is deliberately not liftable this way; the server
+            excludes it. */}
+        <button
+          type="button"
+          className={btn}
+          disabled={busy}
+          onClick={() => run('removeSuppression')}
+        >
+          <ShieldCheck className="h-4 w-4" /> Un-suppress
         </button>
         <button type="button" className={btn} disabled={busy} onClick={() => exportMut.mutate()}>
           <Download className="h-4 w-4" /> Export

@@ -5,8 +5,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Layers, Play, Trash2 } from 'lucide-react';
 import Button from '@/components/ui/Button';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import { whatsappService as svc } from '@/services/whatsapp.service';
-import type { ApiError } from '@/types/api';
 
 /**
  * Saved campaign blueprints ("save as template"). Lists reusable template+
@@ -29,7 +29,7 @@ export default function CampaignTemplatesSection() {
       const newId = res.data?.id;
       if (newId) router.push(`/whatsapp/campaigns/${newId}`);
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Failed to use template'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to use template')),
   });
 
   const delMut = useMutation({
@@ -38,7 +38,7 @@ export default function CampaignTemplatesSection() {
       showToast.success('Template deleted');
       qc.invalidateQueries({ queryKey: ['wa-campaign-templates'] });
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Delete failed'),
+    onError: (e) => showToast.error(errorMessage(e, 'Delete failed')),
   });
 
   if (!isLoading && templates.length === 0) return null;

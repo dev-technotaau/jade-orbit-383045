@@ -1028,6 +1028,9 @@ export const waBulkContactsSchema = z.object({
       'block',
       'unblock',
       'addSuppression',
+      // The inverse of the line above — a bulk suppression could only be undone
+      // one contact at a time.
+      'removeSuppression',
       'erase',
     ]),
     ...bulkSelection,

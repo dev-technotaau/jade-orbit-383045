@@ -19,9 +19,10 @@ import Input from '@/components/ui/Input';
 import Button from '@/components/ui/Button';
 import Textarea from '@/components/ui/Textarea';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
+import { confirmDialog } from '@/components/ui/dialog-service';
 import { whatsappService as svc } from '@/services/whatsapp.service';
 import { WA_FLOW_CATEGORIES, type WaFlow } from '@/types/whatsapp';
-import type { ApiError } from '@/types/api';
 import { cn } from '@/lib/utils';
 
 const STATUS_STYLE: Record<string, string> = {
@@ -56,8 +57,7 @@ export default function FlowsPage() {
   });
 
   const refresh = () => void qc.invalidateQueries({ queryKey: ['wa-flows'] });
-  const fail = (e: unknown) =>
-    showToast.error((e as unknown as ApiError).message || 'Something went wrong');
+  const fail = (e: unknown) => showToast.error(errorMessage(e, 'Something went wrong'));
 
   const syncMut = useMutation({
     mutationFn: () => svc.syncFlows(),
@@ -290,7 +290,18 @@ export default function FlowsPage() {
                         <Button
                           size="sm"
                           leftIcon={<CheckCircle2 className="h-4 w-4" />}
-                          onClick={() => publishMut.mutate(f.id)}
+                          // Publishing is one-way: Meta gives no route back to
+                          // draft, so the JSON as it stands is the version
+                          // customers get for good.
+                          onClick={async () => {
+                            const ok = await confirmDialog({
+                              title: 'Publish this Flow?',
+                              message: `Publish "${f.name}"? A published Flow cannot be returned to draft — further changes need a new Flow.`,
+                              confirmLabel: 'Publish',
+                              variant: 'warning',
+                            });
+                            if (ok) publishMut.mutate(f.id);
+                          }}
                         >
                           Publish
                         </Button>
@@ -300,7 +311,17 @@ export default function FlowsPage() {
                           size="sm"
                           variant="secondary"
                           leftIcon={<Archive className="h-4 w-4" />}
-                          onClick={() => deprecateMut.mutate(f.id)}
+                          // Also one-way, and it stops the Flow being sendable
+                          // — including from templates that already reference it.
+                          onClick={async () => {
+                            const ok = await confirmDialog({
+                              title: 'Deprecate this Flow?',
+                              message: `Deprecate "${f.name}"? It stops being sendable for good, including from any template that already uses it. This cannot be undone.`,
+                              confirmLabel: 'Deprecate',
+                              variant: 'danger',
+                            });
+                            if (ok) deprecateMut.mutate(f.id);
+                          }}
                         >
                           Deprecate
                         </Button>
@@ -310,7 +331,15 @@ export default function FlowsPage() {
                           size="sm"
                           variant="ghost"
                           leftIcon={<Trash2 className="h-4 w-4" />}
-                          onClick={() => deleteMut.mutate(f.id)}
+                          onClick={async () => {
+                            const ok = await confirmDialog({
+                              title: 'Delete this Flow?',
+                              message: `Delete "${f.name}"? Any template or message referencing it will stop working.`,
+                              confirmLabel: 'Delete',
+                              variant: 'danger',
+                            });
+                            if (ok) deleteMut.mutate(f.id);
+                          }}
                           aria-label="Delete flow"
                         />
                       )}

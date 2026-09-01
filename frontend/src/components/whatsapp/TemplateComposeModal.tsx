@@ -9,6 +9,7 @@ import PhoneInput from '@/components/ui/PhoneInput';
 import Select from '@/components/ui/Select';
 import Button from '@/components/ui/Button';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import TemplatePreviewBubble from '@/components/whatsapp/TemplatePreviewBubble';
 import TemplatePicker from '@/components/whatsapp/TemplatePicker';
 import { whatsappService as svc } from '@/services/whatsapp.service';
@@ -22,7 +23,6 @@ import {
   templateExamples,
   type TemplateSendPayload,
 } from '@/lib/whatsapp-template-vars';
-import type { ApiError } from '@/types/api';
 import type { WaContactLite, WaTemplate } from '@/types/whatsapp';
 
 /**
@@ -268,7 +268,7 @@ export default function TemplateComposeModal({
         return file.type.startsWith('image/') ? URL.createObjectURL(file) : '';
       });
     } catch (err) {
-      showToast.error((err as unknown as ApiError).message || 'Failed to upload the header media');
+      showToast.error(errorMessage(err, 'Failed to upload the header media'));
     } finally {
       setUploadingHeader(false);
     }
@@ -309,7 +309,7 @@ export default function TemplateComposeModal({
       setCard(i, { mediaId, fileName: file.name, uploading: false });
     } catch (err) {
       setCard(i, { uploading: false });
-      showToast.error((err as unknown as ApiError).message || 'Failed to upload the card media');
+      showToast.error(errorMessage(err, 'Failed to upload the card media'));
     }
   };
 
@@ -534,8 +534,7 @@ export default function TemplateComposeModal({
       onSent(convId);
       onClose();
     },
-    onError: (e) =>
-      showToast.error((e as unknown as ApiError).message || 'Failed to send template'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to send template')),
   });
 
   const submit = () => {

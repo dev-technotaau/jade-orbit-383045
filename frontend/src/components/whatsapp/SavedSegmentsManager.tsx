@@ -6,10 +6,10 @@ import { Loader2, Pencil, Plus, Trash2, Users } from 'lucide-react';
 import Button from '@/components/ui/Button';
 import Badge from '@/components/ui/Badge';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import { confirmDialog } from '@/components/ui/dialog-service';
 import { whatsappService as svc } from '@/services/whatsapp.service';
 import type { WaSegment, WaSegmentFilter, WaSegmentRule } from '@/types/whatsapp';
-import type { ApiError } from '@/types/api';
 import SegmentModal from './SegmentModal';
 
 const OPT_IN_LABEL: Record<string, string> = {
@@ -148,8 +148,7 @@ export default function SavedSegmentsManager() {
       showToast.success('Segment deleted');
       qc.invalidateQueries({ queryKey: ['wa-segments'] });
     },
-    onError: (e) =>
-      showToast.error((e as unknown as ApiError).message || 'Failed to delete segment'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to delete segment')),
   });
 
   const handleDelete = async (segment: WaSegment) => {

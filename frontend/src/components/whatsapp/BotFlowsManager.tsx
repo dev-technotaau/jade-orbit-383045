@@ -9,10 +9,10 @@ import Select from '@/components/ui/Select';
 import FormattedTextarea from '@/components/whatsapp/FormattedTextarea';
 import { confirmDialog } from '@/components/ui/dialog-service';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { whatsappService as svc } from '@/services/whatsapp.service';
 import type { WaBotFlow, WaBotStep, WaBotStepKind, WaBotChoice } from '@/types/whatsapp';
-import type { ApiError } from '@/types/api';
 
 /**
  * Conversational bot flows.
@@ -91,7 +91,7 @@ export default function BotFlowsManager() {
   const flows: WaBotFlow[] = data?.data ?? [];
 
   const refresh = () => void qc.invalidateQueries({ queryKey: ['wa-bot-flows'] });
-  const fail = (e: unknown) => showToast.error((e as unknown as ApiError).message || 'Failed');
+  const fail = (e: unknown) => showToast.error(errorMessage(e, 'Failed'));
 
   const createMut = useMutation({
     mutationFn: (name: string) => svc.createBotFlow({ name }),
@@ -228,7 +228,7 @@ function FlowEditor({ flow, onChanged }: { flow: WaBotFlow; onChanged: () => voi
   const [entryStepKey, setEntryStepKey] = useState(flow.entryStepKey ?? '');
   const [newStepKey, setNewStepKey] = useState('');
 
-  const fail = (e: unknown) => showToast.error((e as unknown as ApiError).message || 'Failed');
+  const fail = (e: unknown) => showToast.error(errorMessage(e, 'Failed'));
 
   const saveMut = useMutation({
     mutationFn: () =>
@@ -394,7 +394,7 @@ function StepEditor({
   const [handoffAssignee, setHandoffAssignee] = useState(step.handoffAssignee ?? '');
   const [handoffLabel, setHandoffLabel] = useState(step.handoffLabel ?? '');
 
-  const fail = (e: unknown) => showToast.error((e as unknown as ApiError).message || 'Failed');
+  const fail = (e: unknown) => showToast.error(errorMessage(e, 'Failed'));
 
   const saveMut = useMutation({
     mutationFn: () =>

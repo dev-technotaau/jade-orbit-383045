@@ -103,12 +103,19 @@ export async function callBackend(
   const parsed = (await upstream.json().catch(() => ({}))) as {
     data?: BackendUnlock;
     error?: { message?: string };
+    message?: string;
   };
   if (!upstream.ok) {
     return {
       ok: false,
       status: upstream.status,
-      message: parsed?.error?.message ?? 'Unlock failed',
+      // BOTH shapes. The rate limiter answers `{ message }` at the top level
+      // rather than under `error`, so its own explanation — "too many attempts,
+      // try again in N minutes" — was discarded and every locked-out operator
+      // saw the generic "Unlock failed" instead, which reads as a wrong
+      // password and invites more attempts. Same fallback chain the axios
+      // client uses.
+      message: parsed?.error?.message ?? parsed?.message ?? 'Unlock failed',
     };
   }
   return { ok: true, status: 200, data: parsed.data };

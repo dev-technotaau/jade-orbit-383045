@@ -7,8 +7,8 @@ import DialogShell from '@/components/ui/DialogShell';
 import Input from '@/components/ui/Input';
 import Button from '@/components/ui/Button';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import { whatsappService as svc } from '@/services/whatsapp.service';
-import type { ApiError } from '@/types/api';
 
 /**
  * Compose + send a WhatsApp location pin into an open conversation.
@@ -80,8 +80,7 @@ export default function LocationComposeModal({
       onSent();
       onClose();
     },
-    onError: (e) =>
-      showToast.error((e as unknown as ApiError).message || 'Failed to send location'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to send location')),
   });
 
   const submit = () => {

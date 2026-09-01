@@ -13,10 +13,10 @@ import Button from '@/components/ui/Button';
 import Select from '@/components/ui/Select';
 import Tooltip from '@/components/ui/Tooltip';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import { confirmDialog } from '@/components/ui/dialog-service';
 import { useClickOutside } from '@/hooks/use-click-outside';
 import { whatsappService as svc } from '@/services/whatsapp.service';
-import type { ApiError } from '@/types/api';
 import type { WaCannedReply, WaInteractiveHeader } from '@/types/whatsapp';
 
 /** Per-send correlation id Meta echoes back on the flow submission. */
@@ -77,7 +77,7 @@ function CannedPopover({
       setTitle('');
       setText('');
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Failed to save'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to save')),
   });
   const delMut = useMutation({
     mutationFn: (id: string) => svc.deleteCannedReply(id),
@@ -85,7 +85,7 @@ function CannedPopover({
       showToast.success('Canned reply deleted');
       qc.invalidateQueries({ queryKey: ['wa-canned'] });
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Failed to delete'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to delete')),
   });
 
   // True while this popover's own confirm dialog is on screen. That dialog is
@@ -472,7 +472,7 @@ function InteractiveModal({
       showToast.success('Interactive message sent');
       onSent();
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Failed to send'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to send')),
   });
 
   const submit = () => {

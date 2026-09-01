@@ -26,6 +26,7 @@ import Select from '@/components/ui/Select';
 import Textarea from '@/components/ui/Textarea';
 import Checkbox from '@/components/ui/Checkbox';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { ROUTES } from '@/constants/routes';
 import { confirmDialog } from '@/components/ui/dialog-service';
@@ -37,7 +38,6 @@ import ContactBulkActionBar from '@/components/whatsapp/ContactBulkActionBar';
 import ContactSegmentBar from '@/components/whatsapp/ContactSegmentBar';
 import Pagination from '@/components/ui/Pagination';
 import type { WaContact, WaDuplicateGroup, WaImportJob } from '@/types/whatsapp';
-import type { ApiError } from '@/types/api';
 
 const OPT_IN_OPTIONS = [
   { value: '', label: 'All opt-in states' },
@@ -173,7 +173,7 @@ function ImportModal({ onClose }: { onClose: () => void }) {
       if (job.status === 'COMPLETED') announce(job);
       else setJobId(job.id);
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Import failed'),
+    onError: (e) => showToast.error(errorMessage(e, 'Import failed')),
   });
 
   const jobQuery = useQuery({
@@ -448,7 +448,7 @@ function DuplicatesModal({ onClose }: { onClose: () => void }) {
       qc.invalidateQueries({ queryKey: ['wa-contacts'] });
       void refetch();
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Merge failed'),
+    onError: (e) => showToast.error(errorMessage(e, 'Merge failed')),
   });
 
   const runMerge = async (key: string, group: WaDuplicateGroup) => {
@@ -582,7 +582,7 @@ function EditModal({ contact, onClose }: { contact: WaContact; onClose: () => vo
       qc.invalidateQueries({ queryKey: ['wa-contacts'] });
       onClose();
     },
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Update failed'),
+    onError: (e) => showToast.error(errorMessage(e, 'Update failed')),
   });
 
   return (
@@ -748,7 +748,7 @@ export default function SuperAdminWhatsappContactsPage() {
     mutationFn: (vars: { id: string; body: Parameters<typeof svc.updateContact>[1] }) =>
       svc.updateContact(vars.id, vars.body),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['wa-contacts'] }),
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Update failed'),
+    onError: (e) => showToast.error(errorMessage(e, 'Update failed')),
   });
 
   // "Open chat": the contact row carries no conversation id, so resolve it the
@@ -774,8 +774,7 @@ export default function SuperAdminWhatsappContactsPage() {
       }
       router.push(ROUTES.SUPER_ADMIN.WHATSAPP_CONVERSATION(conv.id));
     },
-    onError: (e) =>
-      showToast.error((e as unknown as ApiError).message || 'Could not open the conversation'),
+    onError: (e) => showToast.error(errorMessage(e, 'Could not open the conversation')),
   });
 
   return (

@@ -4,9 +4,9 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { CalendarClock, Trash2, FileText, MessageSquareText, Paperclip } from 'lucide-react';
 import Tooltip from '@/components/ui/Tooltip';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import { whatsappService as svc } from '@/services/whatsapp.service';
 import type { WaScheduledMessage } from '@/types/whatsapp';
-import type { ApiError } from '@/types/api';
 
 function fmtDateTime(iso: string): string {
   return new Date(iso).toLocaleString([], {
@@ -31,7 +31,7 @@ export default function ScheduledMessagesPanel({ conversationId }: { conversatio
   const cancelMut = useMutation({
     mutationFn: (msgId: string) => svc.cancelScheduled(conversationId, msgId),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['wa-scheduled', conversationId] }),
-    onError: (e) => showToast.error((e as unknown as ApiError).message || 'Failed to cancel'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to cancel')),
   });
 
   return (

@@ -145,9 +145,9 @@ export default function CampaignVariantBuilder({
               if (unsupported.length > 0) {
                 return (
                   <p className="text-error mt-3 text-[11px]">
-                    This template needs {unsupported.join(', ')}, which an A/B variant cannot
-                    supply — a campaign fills those in for its main template only. Pick a template
-                    that needs body values alone.
+                    This template needs {unsupported.join(', ')}, which an A/B variant cannot supply
+                    — a campaign fills those in for its main template only. Pick a template that
+                    needs body values alone.
                   </p>
                 );
               }

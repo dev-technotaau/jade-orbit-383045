@@ -4,9 +4,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { showToast } from '@/components/ui/Toast';
+import { errorMessage } from '@/lib/api';
 import BrandIcon from '@/components/common/BrandIcon';
 import { whatsappService as svc } from '@/services/whatsapp.service';
-import type { ApiError } from '@/types/api';
 
 /**
  * Quick Online/Away status toggle for the inbox. "Away" forces the away
@@ -49,8 +49,7 @@ export default function AwayToggle() {
         showToast.success(next ? 'Status set to Away' : 'Status set to Online');
       }
     },
-    onError: (e) =>
-      showToast.error((e as unknown as ApiError).message || 'Failed to update status'),
+    onError: (e) => showToast.error(errorMessage(e, 'Failed to update status')),
   });
 
   if (!settings) return null;
