@@ -29,7 +29,37 @@ export const WA_SKIP_ERROR_CODES = new Set<string>([
   // recipient into "retry failed", which is precisely the loop that drove the
   // per-user limit down in the first place.
   'WA_MARKETING_REFUSED',
+  // Ours: the contact opted out, or an operator blocked them, between the
+  // moment the campaign materialised its audience and the moment this batch
+  // reached them. A deliberate non-send is a SKIP for exactly the same reason
+  // the two above are — and `retryFailedRecipients` already refuses to re-send
+  // either, so recording them as FAILED only misreported the campaign and put a
+  // consent decision in the "something went wrong" column.
+  'WA_OPTED_OUT',
+  'WA_CONTACT_BLOCKED',
 ]);
+
+/**
+ * Codes that mean the ACCOUNT is in trouble, not this recipient.
+ *
+ * A campaign must stop on these rather than work through the rest of its
+ * audience. `368` in particular was classified as a transient throttle and
+ * retried indefinitely: it is Meta's "temporarily blocked for policy
+ * violations", so the retry loop was hammering an account that had just been
+ * restricted — the single fastest way to turn a temporary block into a
+ * permanent one.
+ */
+export const WA_STOP_CAMPAIGN_ERROR_CODES = new Set<string>([
+  '368', // temporarily blocked for policy violations
+  '131031', // account has been locked
+  '131042', // business eligibility / payment issue
+  '130497', // messaging limit reached for the account
+]);
+
+/** True when the error is about the account, not the recipient. */
+export function isAccountBlockingCode(code?: string | null): boolean {
+  return code != null && WA_STOP_CAMPAIGN_ERROR_CODES.has(String(code));
+}
 
 /**
  * Codes where Meta made a DELIBERATE decision not to deliver, and a re-send is
@@ -72,7 +102,6 @@ export const WA_RETRYABLE_ERROR_CODES = new Set<string>([
   '131056', // (business, recipient) pair rate limit
   '131048', // spam rate limit hit
   '80007', // rate-limit issues
-  '368', // temporarily blocked (often transient)
   '500', // internal Meta error
   '131000', // generic "something went wrong"
   'circuit_open', // our in-process circuit breaker tripped

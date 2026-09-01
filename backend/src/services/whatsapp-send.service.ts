@@ -512,7 +512,10 @@ export async function sendSessionMessage(
 export async function sendOptOutConfirmation(conversationId: string, text: string) {
   const body = text.trim();
   if (!body) throw new AppError('Message text is required', 400, 'WA_EMPTY_MESSAGE');
-  const conv = await loadSendableConversation(conversationId);
+  // The one send that must reach a suppressed number — they were suppressed
+  // moments ago BY this very message, and an unacknowledged STOP is re-sent and
+  // then reported to Meta.
+  const conv = await loadSendableConversation(conversationId, { bypassSuppression: true });
   return dispatchOutbound({
     conversationId: conv.id,
     channelId: conv.channelId,
@@ -1447,13 +1450,35 @@ export async function sendMediaMessage(
  * Resolve a conversation + its contact and enforce the standard send guards
  * (exists, not blocked, 24h window open). Shared by the session-type sends.
  */
-async function loadSendableConversation(conversationId: string) {
+async function loadSendableConversation(
+  conversationId: string,
+  opts: { bypassSuppression?: boolean } = {}
+) {
   const conv = await prisma.waConversation.findUnique({
     where: { id: conversationId },
     include: { contact: true },
   });
   if (!conv) throw new AppError('Conversation not found', 404, 'WA_CONVERSATION_NOT_FOUND');
   if (conv.contact.isBlocked) throw new AppError('Contact is blocked', 409, 'WA_CONTACT_BLOCKED');
+  // Do-not-contact, checked HERE rather than only in `dispatchOutbound`.
+  //
+  // `sendReaction` deliberately skips `dispatchOutbound` (a reaction is not a
+  // billable message and gets no bubble row), and the suppression gate lived
+  // there — so reacting was the one outbound path in the module that reached a
+  // number on the do-not-contact list. An emoji is still an outbound WhatsApp
+  // message to somebody who asked us to stop.
+  //
+  // The ONE exemption is the STOP acknowledgement, which by definition goes to
+  // somebody who has just been suppressed — the same exemption
+  // `dispatchOutbound` already carries as `bypassSuppression`. It is passed by
+  // name rather than inferred, so the exception stays reachable only on purpose.
+  if (!opts.bypassSuppression && (await isSuppressed(conv.contact.phone))) {
+    throw new AppError(
+      'Recipient is on the do-not-contact (suppression) list',
+      409,
+      'WA_SUPPRESSED'
+    );
+  }
   if (!windowOpen(conv.windowExpiresAt)) {
     throw new AppError(
       'The 24-hour reply window is closed — send an approved template instead.',

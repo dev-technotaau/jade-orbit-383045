@@ -177,15 +177,31 @@ export function invalidateOptOutKeywordCache(): void {
 /**
  * Opt-IN keywords: the built-ins, the env list and the operator's own.
  *
- * Re-subscribe is unambiguous by nature — nobody types "START" mid-sentence to
- * mean something else — so these are matched with the same whole-message /
- * strong-token rule as STOP.
+ * Matched with the same whole-message / strong-token rule as STOP — and the
+ * STRONG set below is what makes that rule mean anything.
  */
 const OPT_IN_KEYWORDS = new Set(
-  ['start', 'unstop', 'subscribe', 'resume', ...(env.WHATSAPP_OPT_IN_KEYWORDS || '').split(',')]
+  ['start', 'unstop', 'subscribe', ...(env.WHATSAPP_OPT_IN_KEYWORDS || '').split(',')]
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean)
 );
+
+/**
+ * Opt-in words safe to match MID-SENTENCE.
+ *
+ * The whole set used to be passed as its own strong set, which made every
+ * opt-in keyword a mid-sentence match — so "please start my order",
+ * "I want to subscribe to the newsletter" and "can we resume tomorrow" each
+ * silently granted marketing consent AND deleted a recorded opt-out. That is
+ * the wrong direction to be wrong in: an opt-out is a decision by the customer,
+ * and an ordinary sentence must not overturn it.
+ *
+ * Only `unstop` is unambiguous mid-sentence — it exists for no other purpose.
+ * Everything else now requires the whole message to BE the word, which is what
+ * an actual re-subscribe looks like. `resume` was dropped from the built-ins
+ * entirely; a bare "RESUME" still matches through the whole-message branch.
+ */
+const STRONG_OPT_IN_KEYWORDS = new Set(['unstop']);
 
 let settingsOptInKeywords: Set<string> = new Set();
 let settingsOptInKeywordsAt = 0;
@@ -210,9 +226,12 @@ export async function isOptInMessageAsync(text: string | null | undefined): Prom
   if (!text) return false;
   const trimmed = text.trim().toLowerCase();
   if (!trimmed) return false;
-  if (matchesKeyword(trimmed, OPT_IN_KEYWORDS, OPT_IN_KEYWORDS)) return true;
+  if (matchesKeyword(trimmed, OPT_IN_KEYWORDS, STRONG_OPT_IN_KEYWORDS)) return true;
   const configured = await loadSettingsOptInKeywords();
-  return matchesKeyword(trimmed, configured, configured);
+  // An operator's own opt-in words get the whole-message rule too: they are
+  // ordinary vocabulary by definition, and a customer typing one in a sentence
+  // is not asking to be re-subscribed.
+  return matchesKeyword(trimmed, configured, STRONG_OPT_IN_KEYWORDS);
 }
 
 /** Words safe to match mid-sentence. Everything else needs the whole message. */
@@ -406,9 +425,24 @@ export async function optOutContact(
     evidence?: Record<string, unknown>;
     /** Campaign the contact was reacting to, when the caller can attribute it. */
     campaignId?: string | null;
+    /**
+     * How far the refusal reaches. Defaults to 'all'.
+     *
+     * `'marketing'` records the consent change WITHOUT the blanket
+     * do-not-contact entry. Meta's own "Stop promotions" control — which arrives
+     * as `user_preferences` with category `marketing_messages` — is scoped that
+     * way, and writing it as an unscoped suppression made the customer
+     * unanswerable: they refused promotions, and the module then refused to let
+     * an agent reply to "where is my order?".
+     *
+     * `assertSendAllowed` already refuses MARKETING on `OPTED_OUT`, so the
+     * scoped path is fully enforced without touching WaSuppression.
+     */
+    scope?: 'all' | 'marketing';
   } = {}
 ) {
   const source = opts.source ?? 'reply';
+  const scope = opts.scope ?? 'all';
   // One transaction: the projection on WaContact and the immutable event have to
   // land together, or a crash between them leaves a contact suppressed with no
   // record of why.
@@ -441,23 +475,34 @@ export async function optOutContact(
   // an opt-out that only flipped the column left the one gate that actually
   // stops a send untouched: campaigns kept including the number, and a re-import
   // or a bulk edit could put the column back with nothing to say it ever moved.
-  await prisma.waSuppression
-    .upsert({
-      where: { phone: contact.phone },
-      create: { phone: contact.phone, reason: `opt-out (${source})`, createdBy: 'system' },
-      // Left alone on conflict: an operator's own note about why this number is
-      // suppressed is worth more than an automated restatement of it.
-      update: {},
-    })
-    .catch(() => {});
+  //
+  // Skipped entirely for a MARKETING-scoped refusal — see `scope` above. The
+  // consent columns and the event have already been written, which is what
+  // `assertSendAllowed` reads.
+  if (scope === 'all') {
+    await prisma.waSuppression
+      .upsert({
+        where: { phone: contact.phone },
+        create: { phone: contact.phone, reason: `opt-out (${source})`, createdBy: 'system' },
+        // Left alone on conflict: an operator's own note about why this number is
+        // suppressed is worth more than an automated restatement of it.
+        update: {},
+      })
+      .catch(() => {});
+  }
   // Mirror it onto the contact row, which every OTHER suppression path already
   // does (`addSuppression` and the bulk import both call this). Without it a
   // customer who sent STOP had `suppressedAt` null, so nothing the UI can read
   // knew: the composer stayed live, the send was accepted, the draft cleared,
   // and the reply came back as a red FAILED bubble — with the panel still
   // offering "Do not contact" as though they were reachable.
-  await markContactsSuppressed([contact.phone], true).catch(() => {});
-  return { ...contact, suppressedAt: contact.suppressedAt ?? new Date() };
+  if (scope === 'all') {
+    await markContactsSuppressed([contact.phone], true).catch(() => {});
+  }
+  return {
+    ...contact,
+    suppressedAt: scope === 'all' ? (contact.suppressedAt ?? new Date()) : contact.suppressedAt,
+  };
 }
 
 /**

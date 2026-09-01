@@ -17,10 +17,12 @@ import {
   isSkipErrorCode,
   isRetryableErrorCode,
   isAuthErrorCode,
+  isAccountBlockingCode,
 } from '../services/whatsapp-error-codes';
 import { withinBusinessHours } from '../utils/whatsapp-business-hours';
 import { appendRecipientToken, getCampaignLinkCodes } from '../services/whatsapp-shortlink.service';
 import { emitWa } from '../utils/whatsapp-realtime';
+import { AuditService } from '../services/audit.service';
 import { captureWaException } from '../utils/whatsapp-metrics';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -501,6 +503,40 @@ export async function processCampaignBatch(
             'token is replaced'
         );
         tokenRejected = true;
+        stop = true;
+        return;
+      }
+
+      // An ACCOUNT-level block: Meta has restricted the number or the WABA, not
+      // refused this recipient. `368` used to sit in the retryable set, so the
+      // worker kept hammering an account that had just been restricted for
+      // policy violations — the fastest way to turn a temporary block into a
+      // permanent one.
+      //
+      // Stop, PAUSE the campaign, and raise the same account alert the webhook
+      // path raises, so the banner shows it without depending on that
+      // subscription being configured. Recipients stay PENDING, so resuming
+      // once the account is clear is one click.
+      if (isAccountBlockingCode(message.errorCode)) {
+        logger.error(
+          `WhatsApp campaign ${campaign.id}: Meta returned ${message.errorCode} — an ` +
+            'account-level restriction. Pausing the campaign; the remaining recipients ' +
+            'stay PENDING.'
+        );
+        await prisma.waCampaign
+          .update({ where: { id: campaign.id }, data: { status: 'PAUSED' } })
+          .catch(() => {});
+        await AuditService.log({
+          action: 'WA_ACCOUNT_ALERT',
+          entity: 'WaCampaign',
+          entityId: campaign.id,
+          performedBy: 'system',
+          details: {
+            reason: 'account_blocked',
+            errorCode: message.errorCode,
+            campaignId: campaign.id,
+          },
+        }).catch(() => {});
         stop = true;
         return;
       }

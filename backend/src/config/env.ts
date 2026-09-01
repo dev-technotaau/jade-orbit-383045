@@ -277,7 +277,14 @@ const envSchema = z
     WHATSAPP_PRICE_UTILITY_PAISE: z.string().default('30'),
     WHATSAPP_PRICE_AUTH_PAISE: z.string().default('30'),
     WHATSAPP_OPT_OUT_KEYWORDS: z.string().default('STOP,UNSUBSCRIBE,CANCEL'),
-    WHATSAPP_OPT_IN_KEYWORDS: z.string().default('START,UNSTOP,SUBSCRIBE,RESUME'),
+    /**
+     * `RESUME` is deliberately NOT a default.
+     *
+     * Opt-in keywords are matched whole-message unless they are in the strong
+     * set (`unstop` alone), and "can we resume tomorrow" must not grant
+     * marketing consent. A bare "RESUME" still matches.
+     */
+    WHATSAPP_OPT_IN_KEYWORDS: z.string().default('START,UNSTOP,SUBSCRIBE'),
     WHATSAPP_CHATWOOT_BRIDGE_ENABLED: z.string().default('false'), // Phase 6 Chatwoot bridge
     CHATWOOT_BASE_URL: z.string().optional(), // self-hosted Chatwoot base URL
     CHATWOOT_BRIDGE_SECRET: z.string().optional(), // gates the outbound send-proxy

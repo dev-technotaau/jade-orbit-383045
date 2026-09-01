@@ -1810,9 +1810,19 @@ async function processChangeField(field: string, value: any): Promise<void> {
               ? new Date(Number(pref.timestamp) * 1000).toISOString()
               : new Date().toISOString();
             if (decision === 'stop') {
+              const category = String(pref?.category ?? 'marketing_messages');
               await optOutContact(contact.id, {
                 source: 'meta_preference',
-                evidence: { category: pref?.category ?? 'marketing_messages', at },
+                evidence: { category, at },
+                // Meta's control is "Stop promotions" — it is scoped to
+                // marketing, and `marketing_messages` is currently its only
+                // value. Recorded as an unscoped opt-out it wrote a blanket
+                // do-not-contact entry, so a customer who declined promotions
+                // could no longer be ANSWERED: their next "where is my order?"
+                // opened the 24h window, landed in the inbox, and hit a locked
+                // composer. Anything Meta adds later that is not explicitly
+                // marketing falls through to the blanket path.
+                scope: category === 'marketing_messages' ? 'marketing' : 'all',
               });
               emitWaEvent('whatsapp.contact.opted_out', {
                 contactId: contact.id,
