@@ -2488,6 +2488,19 @@ function earlierOf(a: Date | null, b: Date | null): Date | null {
  * which means a crash halfway leaves both rows present and the same call finishes
  * the job when it is retried.
  */
+/**
+ * How far a campaign recipient got. Mirrors `RECIP_RANK` in the campaign
+ * service; duplicated rather than imported because that module imports this one.
+ */
+const RECIPIENT_PROGRESS: Record<string, number> = {
+  PENDING: 0,
+  SKIPPED: 1,
+  FAILED: 1,
+  SENT: 2,
+  DELIVERED: 3,
+  READ: 4,
+};
+
 export async function mergeContacts(
   survivorId: string,
   loserId: string,
@@ -2598,34 +2611,57 @@ export async function mergeContacts(
     })
   ).count;
 
-  // WaCampaignRecipient is @@unique([campaignId, contactId]): where both rows
-  // were in the same campaign the survivor's row is authoritative (it holds the
-  // wamid the status webhooks reconcile against) and the loser's is dropped.
+  // WaCampaignRecipient is @@unique([campaignId, contactId]), so where both
+  // contacts were in the same campaign exactly one row can survive.
+  //
+  // Chosen by PROGRESS, not by which contact won the merge. Keeping the
+  // survivor's row unconditionally deleted the one that had actually been sent
+  // whenever the LOSER was the recipient Meta delivered to — taking its `wamid`
+  // with it, so the delivery and read receipts still arriving for that message
+  // could never be reconciled, and the campaign under-reported its own sends
+  // for good. A merge during a running campaign is exactly when this happens.
   const [loserRecipients, survivorRecipients] = await Promise.all([
     prisma.waCampaignRecipient.findMany({
       where: { contactId: loserId },
-      select: { id: true, campaignId: true },
+      select: { id: true, campaignId: true, status: true, wamid: true },
     }),
     prisma.waCampaignRecipient.findMany({
       where: { contactId: survivorId },
-      select: { campaignId: true },
+      select: { id: true, campaignId: true, status: true, wamid: true },
     }),
   ]);
-  const survivorCampaigns = new Set(survivorRecipients.map((r) => r.campaignId));
-  const movableIds = loserRecipients
-    .filter((r) => !survivorCampaigns.has(r.campaignId))
-    .map((r) => r.id);
-  const droppableIds = loserRecipients
-    .filter((r) => survivorCampaigns.has(r.campaignId))
-    .map((r) => r.id);
+  /** Higher = further along. A row with a wamid always outranks one without. */
+  const progress = (r: { status: string; wamid: string | null }) =>
+    (r.wamid ? 10 : 0) + (RECIPIENT_PROGRESS[r.status] ?? 0);
+
+  const survivorByCampaign = new Map(survivorRecipients.map((r) => [r.campaignId, r]));
+  const movableIds: string[] = [];
+  const droppableIds: string[] = [];
+  for (const loser of loserRecipients) {
+    const rival = survivorByCampaign.get(loser.campaignId);
+    if (!rival) {
+      movableIds.push(loser.id);
+      continue;
+    }
+    if (progress(loser) > progress(rival)) {
+      // The loser's row is the one that was actually sent. Drop the survivor's
+      // and repoint this one, so the wamid — and every receipt keyed to it —
+      // stays attached to the campaign.
+      droppableIds.push(rival.id);
+      movableIds.push(loser.id);
+    } else {
+      droppableIds.push(loser.id);
+    }
+  }
+  // Deleted BEFORE the repoint, or the unique constraint rejects it.
+  if (droppableIds.length) {
+    await prisma.waCampaignRecipient.deleteMany({ where: { id: { in: droppableIds } } });
+  }
   if (movableIds.length) {
     await prisma.waCampaignRecipient.updateMany({
       where: { id: { in: movableIds } },
       data: { contactId: survivorId },
     });
-  }
-  if (droppableIds.length) {
-    await prisma.waCampaignRecipient.deleteMany({ where: { id: { in: droppableIds } } });
   }
 
   await prisma.waLinkClick.updateMany({

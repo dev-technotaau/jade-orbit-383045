@@ -59,6 +59,11 @@ export interface WaConversation {
   lastReadAt: string | null;
   firstResponseAt: string | null;
   resolvedAt: string | null;
+  /**
+   * When the customer started waiting on US — stamped on an inbound with no
+   * agent reply after it, cleared when one is sent. Null = nobody is waiting.
+   */
+  awaitingReplySince?: string | null;
   /** Pinned to the top of the inbox; null when not pinned. */
   pinnedAt?: string | null;
   /**

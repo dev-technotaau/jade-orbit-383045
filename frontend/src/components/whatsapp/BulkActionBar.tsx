@@ -141,6 +141,15 @@ export default function BulkActionBar({
       ),
     onSuccess: (res) => {
       showToast.success(`Updated ${res.data?.count ?? 0} conversation(s)`);
+      // Rows already in the requested state are skipped rather than re-written,
+      // so the count can legitimately be smaller than the selection — labelling
+      // 40 threads that 12 already carried reported "Updated 28", and the
+      // operator went looking for what went wrong with the other twelve. Same
+      // line the contacts bulk bar already shows.
+      const noChange = res.data?.skippedNoChange ?? 0;
+      if (noChange > 0) {
+        showToast.info(`${noChange} already had it — left unchanged.`);
+      }
       onDone();
     },
     onError: (e) => showToast.error((e as unknown as ApiError).message || 'Bulk action failed'),

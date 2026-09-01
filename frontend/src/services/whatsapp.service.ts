@@ -391,7 +391,13 @@ export const whatsappService = {
     assignedTo?: string | null;
     snoozedUntil?: string | null;
     label?: string;
-  }): Promise<ApiResponse<{ count: number }>> {
+  }): Promise<
+    ApiResponse<{
+      count: number;
+      /** Rows already in the requested state — skipped, not failed. */
+      skippedNoChange?: number;
+    }>
+  > {
     const res = await api.post(API.SUPER_ADMIN.WA_CONVERSATIONS_BULK, payload);
     return res.data;
   },

@@ -1195,9 +1195,17 @@ function ConversationRow({
               {/* "You:" is what makes an answered thread distinguishable from an
                   unanswered one at a glance — the single most-scanned fact in a
                   shared queue, and the row carried no direction cue at all. */}
-              {conv.lastMessageDirection === 'OUTBOUND' && conv.lastMessagePreview && (
-                <span className="text-[var(--text-secondary)]">You: </span>
-              )}
+              {/* NOT on a thread that is still awaiting a reply.
+                  A campaign stamps an outbound on every targeted thread, so
+                  "You:" appeared on all of them and a broadcast read as an
+                  answer — the single most-scanned cue in a shared queue,
+                  inverted for the entire audience during a run. A thread with
+                  `awaitingReplySince` set has by definition NOT been answered. */}
+              {conv.lastMessageDirection === 'OUTBOUND' &&
+                conv.lastMessagePreview &&
+                !conv.awaitingReplySince && (
+                  <span className="text-[var(--text-secondary)]">You: </span>
+                )}
               {/* The preview only. The "You:" prefix above stays in the page's
                   direction, or an Arabic reply would move the label to the far
                   side and read as part of the message. */}
@@ -2196,10 +2204,29 @@ export default function SuperAdminWhatsappInboxPage() {
     // hazard and was never carried over here. The OPEN conversation is still
     // invalidated immediately: it is a single cheap row and it is what the
     // operator is looking at.
+    //
+    // A trailing debounce alone STARVES under a continuous stream: a campaign
+    // emits a frame per recipient, each one resets the timer, and 1.5s of quiet
+    // never arrives — so the list froze for the entire run, which is exactly
+    // when the queue matters most. The maximum wait is what makes it a debounce
+    // rather than an indefinite deferral.
     let listTimer: ReturnType<typeof setTimeout> | null = null;
+    let listFirstDeferredAt = 0;
+    const LIST_MAX_WAIT_MS = 5000;
     const invalidateListSoon = () => {
+      const now = Date.now();
+      if (!listFirstDeferredAt) listFirstDeferredAt = now;
+      if (now - listFirstDeferredAt >= LIST_MAX_WAIT_MS) {
+        if (listTimer) clearTimeout(listTimer);
+        listTimer = null;
+        listFirstDeferredAt = 0;
+        void qc.invalidateQueries({ queryKey: ['wa-conversations'] });
+        return;
+      }
       if (listTimer) clearTimeout(listTimer);
       listTimer = setTimeout(() => {
+        listTimer = null;
+        listFirstDeferredAt = 0;
         void qc.invalidateQueries({ queryKey: ['wa-conversations'] });
       }, 1500);
     };

@@ -103,12 +103,29 @@ function WhatsappUnreadBadge() {
     // navigation caught up. `markRead` and `markUnread` both emit
     // `wa:conversation` with the updated row, which is the event that actually
     // means "the unread total may have moved".
+    //
+    // With a MAXIMUM wait, because a pure trailing debounce starves: a campaign
+    // emits a frame per recipient, each one resets the timer, and the 5s of
+    // quiet never arrives — so the badge froze for the whole run rather than
+    // merely being throttled during it.
     let bumpTimer: ReturnType<typeof setTimeout> | null = null;
+    let firstDeferredAt = 0;
+    const MAX_WAIT_MS = 10_000;
     const bump = () => {
-      if (bumpTimer) clearTimeout(bumpTimer);
-      bumpTimer = setTimeout(() => {
+      const now = Date.now();
+      if (!firstDeferredAt) firstDeferredAt = now;
+      const run = () => {
+        bumpTimer = null;
+        firstDeferredAt = 0;
         void qc.invalidateQueries({ queryKey: ['wa-inbox-unread-total'] });
-      }, 5000);
+      };
+      if (now - firstDeferredAt >= MAX_WAIT_MS) {
+        if (bumpTimer) clearTimeout(bumpTimer);
+        run();
+        return;
+      }
+      if (bumpTimer) clearTimeout(bumpTimer);
+      bumpTimer = setTimeout(run, 5000);
     };
     socket.on('wa:message', bump);
     socket.on('wa:conversation', bump);

@@ -1439,7 +1439,22 @@ async function processStatuses(value: any): Promise<boolean> {
     if (conv?.origin?.type) patch.conversationOrigin = String(conv.origin.type);
     patches.set(msg.id, patch);
 
-    if (conv?.expiration_timestamp) {
+    // Adopt Meta's expiry only for a CUSTOMER-initiated conversation.
+    //
+    // A marketing/utility/authentication conversation is one WE opened, and its
+    // expiry describes how long that paid conversation is billable for — not a
+    // free-form service window. Adopting it made a campaign's own delivery
+    // receipt unlock the composer for every recipient who had never replied: the
+    // thread showed an open window, the agent typed a free-form message, and
+    // Meta refused it because no service window had ever been opened.
+    //
+    // `conversationOrigin` is parsed two lines above and was otherwise dead —
+    // it is the field that makes this decidable.
+    const originType = conv?.origin?.type ? String(conv.origin.type) : null;
+    const customerInitiated =
+      !originType || originType === 'service' || originType === 'referral_conversion';
+
+    if (conv?.expiration_timestamp && customerInitiated) {
       const expiresAt = new Date(Number(conv.expiration_timestamp) * 1000);
       // `extendWindowFromMeta` widens to the max, so only the furthest expiry
       // per conversation is worth a round-trip — the rest are no-op writes.

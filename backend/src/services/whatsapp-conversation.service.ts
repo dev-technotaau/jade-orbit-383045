@@ -781,7 +781,15 @@ export async function bulkUpdate(opts: {
   assignedTo?: string | null;
   snoozedUntil?: Date | null;
   label?: string;
-}): Promise<{ count: number }> {
+}): Promise<{
+  count: number;
+  /**
+   * Rows the action deliberately skipped because they were already in the
+   * requested state. Reported so a smaller count reads as deduplication rather
+   * than as a partial failure.
+   */
+  skippedNoChange?: number;
+}> {
   const where: Prisma.WaConversationWhereInput = opts.allMatching
     ? buildConversationListWhere(opts.filters ?? {})
     : { id: { in: opts.ids ?? [] } };
@@ -816,13 +824,23 @@ export async function bulkUpdate(opts: {
         where,
         data: { assignedTo: opts.assignedTo ?? null },
       });
-    case 'addLabel':
+    case 'addLabel': {
       if (!opts.label) return { count: 0 };
       // Only push to rows that don't already carry the label (dedupe via where).
-      return prisma.waConversation.updateMany({
+      const applied = await prisma.waConversation.updateMany({
         where: { AND: [where, { NOT: { labels: { has: opts.label } } }] },
         data: { labels: { push: opts.label } },
       });
+      // How many were skipped because they ALREADY had it. Without this the
+      // count came back smaller than the selection with no explanation, which
+      // reads as a partial failure — re-labelling 40 threads that 12 already
+      // carried reported "Updated 28", and the operator reasonably went looking
+      // for what went wrong with the other twelve.
+      const skippedNoChange = await prisma.waConversation.count({
+        where: { AND: [where, { labels: { has: opts.label } }] },
+      });
+      return { count: applied.count, skippedNoChange };
+    }
     case 'removeLabel': {
       if (!opts.label) return { count: 0 };
       // The inverse `addLabel` never had. A bulk label applied to the wrong
@@ -833,6 +851,11 @@ export async function bulkUpdate(opts: {
       // Prisma has no scalar-list "pull", and `Prisma.join` emits one bind
       // parameter per id against Postgres's 65535 cap — so "select all matching"
       // over a large inbox would fail outright, after the operator confirmed.
+      // Same reasoning as addLabel above, inverted: rows that never carried the
+      // label are a no-op, not a failure.
+      const skippedNoChange = await prisma.waConversation.count({
+        where: { AND: [where, { NOT: { labels: { has: opts.label } } }] },
+      });
       let count = 0;
       await forEachConversationIdChunk(
         { AND: [where, { labels: { has: opts.label } }] },
@@ -841,7 +864,7 @@ export async function bulkUpdate(opts: {
           count += ids.length;
         }
       );
-      return { count };
+      return { count, skippedNoChange };
     }
     default:
       return { count: 0 };
