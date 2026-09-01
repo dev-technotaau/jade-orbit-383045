@@ -517,7 +517,11 @@ export const recipients = async (
 
 export const launch = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const c = await campaignService.launchCampaign(String(req.params.id));
+    // The interactive "launch anyway" — an operator looking at the quality
+    // banner may still have a reason. The cron paths never pass it.
+    const c = await campaignService.launchCampaign(String(req.params.id), {
+      overrideHealth: req.body?.overrideHealth === true,
+    });
     res.json({ success: true, data: c });
   } catch (e) {
     next(e);

@@ -86,8 +86,68 @@ const STRONG_OPT_OUT_KEYWORDS = ['stop', 'unsubscribe', 'optout', 'opt-out'];
  */
 const WEAK_OPT_OUT_KEYWORDS = ['cancel', 'remove', 'quit', 'end'];
 
+/**
+ * Non-English opt-out words, matched WHOLE-MESSAGE only.
+ *
+ * The defaults were English-only while the module offers 22 template languages,
+ * so a Hindi or Arabic campaign could be answered with the local word for
+ * "stop" and the module heard nothing — the customer believed they had opted
+ * out, kept receiving marketing, and the next step is a block or a report to
+ * Meta, which is the quality signal that costs the number its rating.
+ *
+ * Weak by construction: every one of these is an ordinary word in its own
+ * language, so the whole message has to BE it — the same discipline
+ * WEAK_OPT_OUT_KEYWORDS applies to "cancel" and "end". Covers the languages
+ * this deployment's own template list actually offers.
+ */
+const NON_ENGLISH_OPT_OUT_KEYWORDS = [
+  // Hindi / Marathi
+  'बंद',
+  'रोको',
+  'रोकें',
+  'हटाओ',
+  'बंद करो',
+  // Urdu
+  'بند',
+  'بند کرو',
+  // Arabic
+  'توقف',
+  'إلغاء',
+  'الغاء',
+  'ايقاف',
+  'إيقاف',
+  // Bengali
+  'বন্ধ',
+  // Tamil / Telugu / Kannada / Malayalam / Gujarati / Punjabi
+  'நிறுத்து',
+  'ఆపు',
+  'ನಿಲ್ಲಿಸು',
+  'നിർത്തുക',
+  'બંધ',
+  'ਬੰਦ',
+  // Spanish / Portuguese
+  'baja',
+  'parar',
+  'cancelar',
+  'sair',
+  // French / German / Italian / Dutch / Indonesian / Turkish / Russian
+  'arret',
+  'arrêt',
+  'stopp',
+  'abmelden',
+  'ferma',
+  'stoppen',
+  'berhenti',
+  'durdur',
+  'стоп',
+];
+
 /** Both sets, for the whole-message comparison. */
-const DEFAULT_OPT_OUT_KEYWORDS = [...STRONG_OPT_OUT_KEYWORDS, ...WEAK_OPT_OUT_KEYWORDS];
+const DEFAULT_OPT_OUT_KEYWORDS = [
+  ...STRONG_OPT_OUT_KEYWORDS,
+  ...WEAK_OPT_OUT_KEYWORDS,
+  ...NON_ENGLISH_OPT_OUT_KEYWORDS,
+];
 
 const OPT_OUT_KEYWORDS = new Set(
   [...DEFAULT_OPT_OUT_KEYWORDS, ...(env.WHATSAPP_OPT_OUT_KEYWORDS || '').split(',')]

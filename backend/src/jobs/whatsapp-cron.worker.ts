@@ -109,6 +109,9 @@ export async function handleWaScheduledCampaigns(): Promise<void> {
   });
   for (const c of due) {
     try {
+      // NO health override: a scheduled launch into a flagged number should
+      // re-arm and wait for somebody to look at it, not fire because nobody was
+      // watching. The 4xx path below already returns it to DRAFT.
       await launchCampaign(c.id);
       logger.info(`Launched scheduled WhatsApp campaign ${c.id}`);
     } catch (e) {

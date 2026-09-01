@@ -165,6 +165,9 @@ type AudienceContact = Pick<
   | 'phone'
   | 'name'
   | 'optInStatus'
+  // The provenance behind `optInStatus`. The column defaults to OPTED_IN, so
+  // only this distinguishes collected consent from its absence.
+  | 'optInAt'
   | 'isBlocked'
   | 'lastMarketingAt'
   | 'marketingRefusedAt'
@@ -177,6 +180,7 @@ const AUDIENCE_SELECT = {
   phone: true,
   name: true,
   optInStatus: true,
+  optInAt: true,
   isBlocked: true,
   lastMarketingAt: true,
   marketingRefusedAt: true,
@@ -836,6 +840,10 @@ async function resolveUploadedContacts(
           phone: row.phone,
           name: null,
           optInStatus: 'OPTED_IN' as WaOptInStatus,
+          // Null, mirroring the schema: a phone that exists only in an uploaded
+          // file has no recorded consent, and the preview must say so rather
+          // than promising an audience the launch will then refuse.
+          optInAt: null,
           isBlocked: false,
           lastMarketingAt: null,
           marketingRefusedAt: null,
@@ -933,6 +941,19 @@ function eligibilityWhere(
     const windowStart = new Date(now - MARKETING_WINDOW_MS);
     // MARKETING requires *positive* consent; non-marketing only "not opted out".
     and.push({ optInStatus: 'OPTED_IN' });
+    // And PROVENANCE, not just the column.
+    //
+    // `optInStatus` defaults to OPTED_IN (schema.prisma), so every contact the
+    // inbound worker creates when a customer first messages us satisfied this
+    // gate without anyone ever collecting marketing consent — the column said
+    // "opted in" because nothing had said otherwise. Meta requires opt-in for
+    // marketing, and "they wrote to us once" is not it.
+    //
+    // `optInAt` is written by every path that actually RECORDS consent — an
+    // import with the opt-in box ticked, `optInContact`, an operator setting it
+    // on the contact — and by none that merely default it. It is the difference
+    // between consent and its absence, and the gate now reads it.
+    and.push({ optInAt: { not: null } });
     and.push({ OR: [{ marketingRefusedAt: null }, { marketingRefusedAt: { lte: windowStart } }] });
     // Cap > 1 is deliberately not screened here — see `eligible()` for why a
     // single lastMarketingAt cannot tell 1 from N inside the window.
@@ -1153,6 +1174,9 @@ function eligible(
     if (suppressed.has(c.phone)) return false;
     if (isMarketing) {
       if (c.optInStatus !== 'OPTED_IN') return false;
+      // Provenance, matching the SQL predicate above — a defaulted OPTED_IN with
+      // no `optInAt` is the absence of consent, not the presence of it.
+      if (!c.optInAt) return false;
       // Frequency cap. This is the cheap pre-filter — `lastMarketingAt` alone
       // cannot tell 1 from N in the window, so it only screens out contacts that
       // are definitely over a cap of 1. The authoritative count runs at the send
@@ -1682,9 +1706,42 @@ function campaignParamGaps(spec: TemplateSendSpec, params: CampaignTemplateParam
 }
 
 /** Launch (or resume) a campaign: materialize recipients + enqueue batches. */
-export async function launchCampaign(id: string) {
+export async function launchCampaign(id: string, opts: { overrideHealth?: boolean } = {}) {
   const campaign = await prisma.waCampaign.findUnique({ where: { id } });
   if (!campaign) throw new AppError('Campaign not found', 404, 'WA_CAMPAIGN_NOT_FOUND');
+
+  // REFUSE a launch into a number Meta has flagged.
+  //
+  // The quality rating and messaging tier were fetched, stored and rendered on
+  // the settings page, and gated nothing — so a campaign could be launched into
+  // a RED-rated number, which is the state where Meta is one complaint away
+  // from restricting it, and the launch would spend the whole audience proving
+  // it. The cached `healthStatus` is read rather than a fresh Graph call: it is
+  // refreshed by the health cron and by the quality webhook, and an extra
+  // round-trip on the launch path buys nothing.
+  //
+  // `overrideHealth` exists for the interactive "launch anyway" — an operator
+  // who can see the banner may still have a reason. The CRON paths must never
+  // pass it: a scheduled launch into a flagged number should re-arm and wait,
+  // not fire because nobody was watching.
+  if (!opts.overrideHealth) {
+    const channel = campaign.channelId
+      ? await prisma.waChannel.findUnique({
+          where: { id: campaign.channelId },
+          select: { healthStatus: true, qualityRating: true },
+        })
+      : null;
+    const rating = (channel?.qualityRating ?? '').toUpperCase();
+    if (channel?.healthStatus === 'BLOCKED' || rating === 'RED') {
+      throw new AppError(
+        rating === 'RED'
+          ? "This number's quality rating is RED — sending a campaign now risks it being restricted. Resolve the quality issues, or launch anyway from the campaign page."
+          : 'Meta reports this number as blocked from sending. Resolve it before launching.',
+        409,
+        'WA_SEND_BLOCKED'
+      );
+    }
+  }
   if (!['DRAFT', 'SCHEDULED', 'PAUSED'].includes(campaign.status)) {
     throw new AppError(`Cannot launch a ${campaign.status} campaign`, 409, 'WA_CAMPAIGN_BAD_STATE');
   }
