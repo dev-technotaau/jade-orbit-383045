@@ -63,6 +63,22 @@ const SEARCH_INDEXES: Array<{ name: string; ddl: string }> = [
      * `WaContact.tags` has the same GIN index, declared in the schema, from
      * before that lesson.
      */
+    /**
+     * The contacts list's default ordering.
+     *
+     * `orderBy: { createdAt: 'desc' }` had no index at all, so every page load
+     * sorted the entire contact table — and the companion `count()` scans it
+     * too. WaContact has six other declared indexes and never got the one its
+     * own list query uses.
+     *
+     * Here rather than in the schema for the same reason as the two below it:
+     * `db push` would build it holding an ACCESS EXCLUSIVE lock on the table
+     * the whole console reads.
+     */
+    name: 'wa_contact_created_at',
+    ddl: 'CREATE INDEX CONCURRENTLY IF NOT EXISTS "wa_contact_created_at" ON "WaContact" ("createdAt" DESC)',
+  },
+  {
     name: 'wa_conversation_labels_gin',
     ddl: 'CREATE INDEX CONCURRENTLY IF NOT EXISTS "wa_conversation_labels_gin" ON "WaConversation" USING gin ("labels")',
   },

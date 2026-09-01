@@ -232,12 +232,30 @@ export const waSendTemplateSchema = z.object({
  * each of which may re-upload a file, so an uncapped request is a way to hold a
  * request open for minutes and hand Meta a burst it will rate-limit.
  */
-export const waForwardMessageSchema = z.object({
-  body: z.object({
-    messageIds: z.array(z.string().uuid()).min(1).max(10),
-    toConversationIds: z.array(z.string().uuid()).min(1).max(10),
-  }),
-});
+export const waForwardMessageSchema = z
+  .object({
+    body: z.object({
+      messageIds: z.array(z.string().uuid()).min(1).max(10),
+      toConversationIds: z.array(z.string().uuid()).min(1).max(10),
+    }),
+  })
+  /**
+   * The PRODUCT is what costs, not either side.
+   *
+   * A forward performs `messages × targets` real sends, each of which may
+   * re-upload a file to Meta — so 10 × 10 was up to 100 sequential Graph
+   * round-trips inside one HTTP request. Past the proxy's own budget the
+   * operator sees a failure for messages that were in fact delivered, and
+   * retrying sends them twice.
+   *
+   * 20 keeps the realistic cases whole (a few messages to a few colleagues)
+   * and refuses the one that cannot finish.
+   */
+  .refine((v) => v.body.messageIds.length * v.body.toConversationIds.length <= 20, {
+    path: ['body', 'toConversationIds'],
+    message:
+      'That is too many forwards at once — messages × conversations must be 20 or fewer. Forward in smaller batches.',
+  });
 
 export const waStartConversationSchema = z.object({
   body: z.object({

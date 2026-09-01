@@ -116,6 +116,17 @@ export const WA_RETRYABLE_ERROR_CODES = new Set<string>([
   // it back for the recovery cron.
   'network_error',
   'request_timeout',
+  // Prisma's own transient failures. A thrown PrismaClientKnownRequestError
+  // carries `code: 'P2024'`, which OVERRIDES the `?? 'SEND_ERROR'` fallback the
+  // campaign worker's catch uses — so a pool timeout during a large run marked
+  // the recipient permanently FAILED, and "retry failed" is the only way back.
+  // Under load that is precisely when it happens, so a campaign could lose a
+  // slice of its audience to nothing but database contention.
+  'P2024', // timed out fetching a connection from the pool
+  'P2034', // transaction failed on a write conflict / deadlock — retry
+  'P1001', // cannot reach the database server
+  'P1002', // database server timed out
+  'P1008', // operation timed out
   // Not transient in the usual sense — but a missing token is a deployment
   // mistake, and burning the whole audience to FAILED over it leaves nothing to
   // resume once it is fixed.

@@ -4,6 +4,8 @@ dotenv.config();
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { Pool, type PoolClient } from 'pg';
+// Safe: env.ts imports only dotenv and zod, so there is no cycle back to here.
+import { env } from './env';
 
 // Ensure Decimal fields serialize as numbers in JSON responses (not strings)
 (Prisma.Decimal.prototype as any).toJSON = function () {
@@ -62,11 +64,20 @@ const createPool = () => {
   const pool = new Pool({
     connectionString,
     // Keep pool small for managed DB services
-    max: parseInt(process.env.DATABASE_POOL_SIZE || '5', 10),
+    // From the VALIDATED env, not `process.env`.
+    //
+    // Reading it raw here bypassed `env.ts`, whose declared default is 10 — so
+    // the effective pool was 5 while the workers declare 27 concurrent job slots
+    // (inbound 10, webhook 5, autoreply 4, media 4, scheduler 2, campaign 1,
+    // import 1) and every API request competes for the same connections. Under a
+    // campaign that is a queue of `P2024` pool timeouts, which the send path
+    // then recorded as permanently FAILED recipients.
+    max: parseInt(env.DATABASE_POOL_SIZE, 10) || 10,
     // Don't hold idle connections — managed DB poolers may reclaim them
     idleTimeoutMillis: 30_000,
     // Allow 30s for initial connection (managed DBs can be slow to wake)
-    connectionTimeoutMillis: parseInt(process.env.DATABASE_POOL_TIMEOUT || '30', 10) * 1000,
+    // Same divergence: env.ts declares 10 seconds, this said 30.
+    connectionTimeoutMillis: (parseInt(env.DATABASE_POOL_TIMEOUT, 10) || 10) * 1000,
     // Keep connections alive
     keepAlive: true,
     keepAliveInitialDelayMillis: 10_000,

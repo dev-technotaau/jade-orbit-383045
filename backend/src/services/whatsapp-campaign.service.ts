@@ -1956,7 +1956,31 @@ export async function launchCampaign(id: string, opts: { overrideHealth?: boolea
       const audience = await countEligibleAudience(campaign, isMarketing);
       limit = Math.max(1, Math.ceil((audience * samplePct) / 100));
     }
-    total = await materialize(campaign, isMarketing, limit != null ? { limit } : {});
+    try {
+      total = await materialize(campaign, isMarketing, limit != null ? { limit } : {});
+    } catch (err) {
+      // Materialization pages through the audience, so a failure part-way — a
+      // pool timeout, a lost connection — leaves SOME recipient rows behind.
+      // The campaign is already claimed RUNNING at this point, and the count at
+      // the top of this block means a relaunch would see `total > 0` and skip
+      // materialization entirely: the audience would be permanently truncated,
+      // and the campaign would then report itself COMPLETED at the truncated
+      // size with nothing anywhere saying it was short.
+      //
+      // Nothing has been ENQUEUED yet (that happens below), so the partial rows
+      // are safe to remove — and only PENDING ones are touched, so this cannot
+      // discard a send that somehow already happened.
+      await prisma.waCampaignRecipient
+        .deleteMany({ where: { campaignId: id, status: 'PENDING' } })
+        .catch(() => {});
+      await prisma.waCampaign
+        .update({
+          where: { id },
+          data: { status: 'DRAFT', startedAt: campaign.startedAt ?? null },
+        })
+        .catch(() => {});
+      throw err;
+    }
   }
   if (total === 0) {
     // We claimed but there's nothing to send — release the claim back to DRAFT so
